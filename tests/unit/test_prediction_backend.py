@@ -314,12 +314,71 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
 
     normalized = pd.read_csv(result["test_predictions_path"])
     assert result["replicate_count"] == 2
-    assert result["prediction_aggregation"] == "mean"
+    assert result["detected_replicate_count"] == 2
+    assert result["excluded_replicate_count"] == 0
+    assert result["prediction_aggregation"] == "mean_aligned_replicates"
     assert normalized["pEC50_true"].tolist() == [6.0, 4.0]
     assert normalized["prediction"].tolist() == [6.0, 4.0]
     assert normalized["pEC50_prediction"].tolist() == [6.0, 4.0]
     assert normalized["pEC50"].tolist() == [6.0, 4.0]
     assert normalized["prediction_std"].tolist() == [0.5, 0.5]
+
+
+def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "pEC50": [5.0, 6.0, 4.0],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_run"
+    output_dir.mkdir()
+    (output_dir / "splits.json").write_text(
+        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
+    )
+    replicate_payloads = [
+        (0, ["CCC", "CCN"], [5.5, 4.5]),
+        (1, ["CCN", "CCC"], [6.5, 3.5]),
+    ]
+    for replicate_index, smiles_values, values in replicate_payloads:
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "best.pt").write_text("model")
+        pd.DataFrame({"smiles": smiles_values, "pEC50": values}).to_csv(
+            replicate_dir / "test_predictions.csv",
+            index=False,
+        )
+
+    result = toolkit._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+    )
+
+    normalized = pd.read_csv(result["test_predictions_path"])
+    excluded = [
+        item
+        for item in result["replicate_artifacts"]
+        if item.get("aligned_for_validation") is False
+    ]
+    assert result["replicate_count"] == 1
+    assert result["detected_replicate_count"] == 2
+    assert result["excluded_replicate_count"] == 1
+    assert result["prediction_aggregation"] == "single_aligned_replicate"
+    assert result["raw_test_prediction_paths"] == [
+        str(output_dir / "replicate_0" / "model_0" / "test_predictions.csv")
+    ]
+    assert excluded[0]["replicate_index"] == 1
+    assert excluded[0]["exclusion_reason"] == "smiles_not_aligned_to_split_test_rows"
+    assert normalized["prediction"].tolist() == [5.5, 4.5]
+    assert normalized["prediction_replicate_0"].tolist() == [5.5, 4.5]
+    assert "prediction_replicate_1" not in normalized.columns
 
 
 def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_path):

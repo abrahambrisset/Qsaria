@@ -185,12 +185,7 @@ class ChempropToolkit(Toolkit):
             return {}
 
         replicate_artifacts = self._replicate_artifacts(output_path)
-        prediction_paths = [
-            Path(str(item["raw_test_predictions_path"])).expanduser()
-            for item in replicate_artifacts
-            if item.get("raw_test_predictions_path")
-        ]
-        if not prediction_paths:
+        if not any(item.get("raw_test_predictions_path") for item in replicate_artifacts):
             return {}
 
         dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
@@ -202,23 +197,64 @@ class ChempropToolkit(Toolkit):
         if target_column not in actual.columns:
             return {}
 
+        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+        actual_smiles = (
+            actual[smiles_column].astype(str).reset_index(drop=True)
+            if smiles_column in actual.columns
+            else None
+        )
         prediction_series: List[pd.Series] = []
         prediction_source_paths: List[str] = []
-        for prediction_path in prediction_paths:
+        included_replicate_indices: List[int] = []
+        normalized_replicate_artifacts: List[Dict[str, Any]] = []
+        for item in replicate_artifacts:
+            artifact = dict(item)
+            raw_predictions_path = item.get("raw_test_predictions_path")
+            if not raw_predictions_path:
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = "missing_test_predictions"
+                normalized_replicate_artifacts.append(artifact)
+                continue
+            prediction_path = Path(str(raw_predictions_path)).expanduser()
             if not prediction_path.exists():
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = "missing_test_predictions"
+                normalized_replicate_artifacts.append(artifact)
                 continue
             predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
-            if target_column not in predictions.columns or len(predictions) != len(actual):
+            exclusion_reason = None
+            if target_column not in predictions.columns:
+                exclusion_reason = "missing_target_prediction_column"
+            elif len(predictions) != len(actual):
+                exclusion_reason = "row_count_mismatch"
+            elif actual_smiles is not None:
+                if smiles_column not in predictions.columns:
+                    exclusion_reason = "missing_smiles_alignment_column"
+                else:
+                    predicted_smiles = predictions[smiles_column].astype(str).reset_index(drop=True)
+                    if not predicted_smiles.equals(actual_smiles):
+                        exclusion_reason = "smiles_not_aligned_to_split_test_rows"
+            if exclusion_reason:
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = exclusion_reason
+                normalized_replicate_artifacts.append(artifact)
                 continue
+            replicate_index = item.get("replicate_index")
+            if not isinstance(replicate_index, int):
+                replicate_index = len(included_replicate_indices)
+            artifact["aligned_for_validation"] = True
+            artifact["exclusion_reason"] = None
+            normalized_replicate_artifacts.append(artifact)
             prediction_series.append(pd.to_numeric(predictions[target_column], errors="coerce"))
             prediction_source_paths.append(str(prediction_path))
+            included_replicate_indices.append(replicate_index)
 
         if not prediction_series:
             return {}
 
         prediction_frame = pd.concat(prediction_series, axis=1)
         prediction_frame.columns = [
-            f"prediction_replicate_{idx}" for idx in range(len(prediction_series))
+            f"prediction_replicate_{idx}" for idx in included_replicate_indices
         ]
         y_true = pd.to_numeric(actual[target_column], errors="coerce")
         y_pred = prediction_frame.mean(axis=1, skipna=True)
@@ -227,8 +263,6 @@ class ChempropToolkit(Toolkit):
             if len(prediction_series) > 1
             else pd.Series([0.0] * len(prediction_frame))
         )
-
-        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
         smiles_values = (
             actual[smiles_column].reset_index(drop=True)
             if smiles_column in actual.columns
@@ -246,6 +280,7 @@ class ChempropToolkit(Toolkit):
                 "residual": y_true - y_pred,
                 "absolute_error": (y_true - y_pred).abs(),
                 "replicate_count": len(prediction_series),
+                "detected_replicate_count": len(replicate_artifacts),
             }
         )
         normalized = pd.concat([normalized, prediction_frame], axis=1)
@@ -253,12 +288,19 @@ class ChempropToolkit(Toolkit):
         normalized_path = output_path / "model_0" / "test_predictions.csv"
         normalized_path.parent.mkdir(parents=True, exist_ok=True)
         normalized.to_csv(normalized_path, index=False)
+        aggregation = "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
         return {
             "test_predictions_path": str(normalized_path),
             "raw_test_prediction_paths": prediction_source_paths,
-            "replicate_artifacts": replicate_artifacts,
+            "replicate_artifacts": normalized_replicate_artifacts,
             "replicate_count": len(prediction_series),
-            "prediction_aggregation": "mean" if len(prediction_series) > 1 else "single_replicate",
+            "detected_replicate_count": len(replicate_artifacts),
+            "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+            "prediction_aggregation": aggregation,
+            "replicate_alignment_policy": (
+                "Only replicate prediction files whose SMILES exactly match the split test rows "
+                "are aggregated for validation metrics."
+            ),
             "prediction_column": "prediction",
             "target_true_column": f"{target_column}_true",
             "target_prediction_column": f"{target_column}_prediction",
@@ -693,7 +735,10 @@ class ChempropToolkit(Toolkit):
             "test_size": len(test_indices),
             "replicate_artifacts": normalized_predictions.get("replicate_artifacts") or self._replicate_artifacts(output_path),
             "replicate_count": normalized_predictions.get("replicate_count") or 1,
+            "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
+            "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
             "prediction_aggregation": normalized_predictions.get("prediction_aggregation") or "single_replicate",
+            "replicate_alignment_policy": normalized_predictions.get("replicate_alignment_policy"),
             "prediction_column": normalized_predictions.get("prediction_column") or target_column,
             "target_true_column": normalized_predictions.get("target_true_column") or target_column,
             "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
@@ -949,15 +994,19 @@ class ChempropToolkit(Toolkit):
                 "catalog_primary_replicate_index": 0,
                 "catalog_primary_model_policy": (
                     "The catalog model artifact points to replicate_0/model_0/best.pt. "
-                    "Validation prediction CSVs are normalized and aggregate replicate predictions "
-                    "when multiple replicate outputs are present."
+                    "Validation prediction CSVs aggregate only replicate outputs whose SMILES "
+                    "exactly align to the split test rows; non-aligned Chemprop replicate outputs "
+                    "are recorded but excluded from validation metrics."
                 ),
                 "split_replicate_counts": [
                     {
                         "label": item.get("strategy_label"),
                         "strategy_family": item.get("strategy_family"),
                         "replicate_count": item.get("replicate_count"),
+                        "detected_replicate_count": item.get("detected_replicate_count"),
+                        "excluded_replicate_count": item.get("excluded_replicate_count"),
                         "prediction_aggregation": item.get("prediction_aggregation"),
+                        "replicate_alignment_policy": item.get("replicate_alignment_policy"),
                     }
                     for item in split_results
                 ],
