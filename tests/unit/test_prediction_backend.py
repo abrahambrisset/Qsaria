@@ -11,9 +11,12 @@ from cs_copilot.tools.prediction.backend import (
     PredictionModelRecord,
     PredictionTaskSpec,
 )
+import cs_copilot.tools.prediction.catalog as catalog_module
+import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
+from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
@@ -277,6 +280,32 @@ def test_chemprop_toolkit_is_backend_only():
     assert not hasattr(toolkit, "register_model")
     assert not hasattr(toolkit, "persist_registered_model")
     assert not hasattr(toolkit, "predict_from_csv")
+
+
+def test_chemprop_standard_qsar_forces_single_replicate():
+    toolkit = ChempropToolkit(register_tools=False)
+    training_policy = {"extra_args": {"num_replicates": 3}}
+
+    note = toolkit._apply_protocol_training_overrides(
+        training_policy=training_policy,
+        protocol_policy={"protocol": "standard_qsar"},
+    )
+
+    assert training_policy["extra_args"]["num_replicates"] == 1
+    assert "standard_qsar" in note
+
+
+def test_chemprop_robust_qsar_keeps_requested_replicates():
+    toolkit = ChempropToolkit(register_tools=False)
+    training_policy = {"extra_args": {"num_replicates": 3}}
+
+    note = toolkit._apply_protocol_training_overrides(
+        training_policy=training_policy,
+        protocol_policy={"protocol": "robust_qsar"},
+    )
+
+    assert training_policy["extra_args"]["num_replicates"] == 3
+    assert note is None
 
 
 def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
@@ -561,6 +590,78 @@ def test_prediction_registry_register_model_is_session_only(tmp_path):
     assert result["persistence_state"] == "session_registered_only"
     assert result["next_required_tool"] == "persist_registered_model"
     assert "session" in result["usage_hint"]
+
+
+def test_model_registry_persistence_uses_governance_recommended_status(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "pxr_challenge_train.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\n")
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-05-21T12:57:29+02:00",
+                "validation_protocol": "standard_qsar",
+                "validation_assessment": {
+                    "governance": {
+                        "recommended_status": "workflow_demo",
+                        "gates": {
+                            "hardest_split_gate": {"pass": False},
+                        },
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="experimental",
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        status="experimental",
+        agent=agent,
+    )
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    assert result["status"] == "workflow_demo"
+    assert result["record"]["status"] == "workflow_demo"
+    assert persisted_metadata["status"] == "workflow_demo"
+    assert result["status_reason"]
+    assert "workflow_demo" in result["status_reason"]
 
 
 def test_prediction_registry_summarize_model_unknown_id_returns_guidance():

@@ -433,6 +433,24 @@ class ChempropToolkit(Toolkit):
             protected_profiles=("heavy_validation", "benchmark"),
         )
 
+    def _apply_protocol_training_overrides(
+        self,
+        *,
+        training_policy: Dict[str, Any],
+        protocol_policy: Dict[str, Any],
+    ) -> Optional[str]:
+        """Apply Chemprop-specific training overrides once the QSAR protocol is known."""
+        extra_args = training_policy.setdefault("extra_args", {})
+        if protocol_policy.get("protocol") == "standard_qsar":
+            requested_replicates = int(extra_args.get("num_replicates") or 1)
+            extra_args["num_replicates"] = 1
+            if requested_replicates != 1:
+                return (
+                    "Chemprop standard_qsar uses one aligned replicate. "
+                    "Replicate stability and multi-run summaries are reserved for robust_qsar."
+                )
+        return None
+
     def _resolve_validation_protocol(
         self,
         *,
@@ -810,6 +828,10 @@ class ChempropToolkit(Toolkit):
             base_seed=training_policy["extra_args"].get("data_seed")
             or training_policy["extra_args"].get("random_state"),
         )
+        protocol_override_note = self._apply_protocol_training_overrides(
+            training_policy=training_policy,
+            protocol_policy=protocol_policy,
+        )
         training_policy["extra_args"]["data_seed"] = protocol_policy["seed_policy"]["model_seed"]
         task = PredictionTaskSpec(
             task_type=task_type,
@@ -990,6 +1012,7 @@ class ChempropToolkit(Toolkit):
                 result["effective_train_args"]["data_seed_scope"] = "primary_split"
             result["replicate_policy"] = {
                 "num_replicates_requested": int(result["effective_train_args"].get("num_replicates") or 1),
+                "protocol_override_note": protocol_override_note,
                 "prediction_aggregation": primary_run.get("prediction_aggregation"),
                 "catalog_primary_replicate_index": 0,
                 "catalog_primary_model_policy": (

@@ -1155,12 +1155,11 @@ class ModelRegistryToolkit(Toolkit):
         requested_status = status or current.status
         resolved_status = requested_status
         status_reason = None
-        governed_statuses = {"validated", "robust_validated"}
-        if requested_status in governed_statuses and recommended_status and recommended_status != requested_status:
+        if recommended_status and recommended_status != requested_status:
             resolved_status = recommended_status
             status_reason = (
-                f"Requested `{requested_status}` was adjusted by governance because the final "
-                "validation gates did not support that status."
+                f"Requested `{requested_status}` was adjusted to governance-recommended "
+                f"`{recommended_status}` based on the final validation gates."
             )
         activity_summary_payload = summary_payload.get("activity_cliffs") or {}
         resolved_description = _sanitize_activity_cliff_description(
