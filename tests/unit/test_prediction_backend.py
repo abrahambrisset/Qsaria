@@ -143,11 +143,13 @@ def test_shared_bundle_artifacts_expands_directories_to_files(tmp_path):
     model_path = run_dir / "random_seed_1_split" / "model_0" / "best.pkl"
     predictions_path = run_dir / "scaffold_split" / "model_0" / "test_predictions.csv"
     empty_dir = run_dir / "empty"
+    active_marker = run_dir / ".training_in_progress"
     model_path.parent.mkdir(parents=True)
     predictions_path.parent.mkdir(parents=True)
     empty_dir.mkdir(parents=True)
     model_path.write_text("model")
     predictions_path.write_text("prediction")
+    active_marker.write_text("{}")
 
     bundle = bundle_artifacts(tmp_path / "bundle.zip", [run_dir])
 
@@ -157,6 +159,7 @@ def test_shared_bundle_artifacts_expands_directories_to_files(tmp_path):
     assert any(name.endswith("scaffold_split/model_0/test_predictions.csv") for name in names)
     assert all(not name.endswith("/") for name in names)
     assert all("empty" not in name for name in names)
+    assert ".training_in_progress" not in names
 
 
 def test_shared_bundle_artifacts_writes_relative_file_names(tmp_path):

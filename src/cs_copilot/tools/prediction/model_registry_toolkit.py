@@ -63,6 +63,14 @@ def _load_json_if_available(path: Path) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _resolved_path_key(path: str | Path) -> str:
+    source_path = Path(str(path)).expanduser()
+    try:
+        return str(source_path.resolve())
+    except Exception:
+        return str(source_path)
+
+
 def _hydrate_curation_metadata(
     *,
     curation_payload: Dict[str, Any],
@@ -550,6 +558,7 @@ class ModelRegistryToolkit(Toolkit):
         split_prediction_sources: Dict[str, Path] = {}
         curation_sources: Dict[str, Path] = {}
         curation_payload: Dict[str, Any] = {}
+        feature_preparation_payload: Dict[str, Any] = {}
 
         for key in (
             "config_path",
@@ -592,6 +601,7 @@ class ModelRegistryToolkit(Toolkit):
         for artifact_name, raw_path in (curation_payload.get("artifacts") or {}).items():
             if raw_path:
                 curation_sources[str(artifact_name)] = Path(str(raw_path)).expanduser()
+        feature_preparation_payload = source_artifacts.get("feature_preparation") or {}
         activity_payload = source_artifacts.get("activity_cliffs") or {}
         for key in (
             "annotated_training_csv",
@@ -737,6 +747,53 @@ class ModelRegistryToolkit(Toolkit):
                     target_train_csv, model_root
                 )
 
+        copied_feature_preparation: Dict[str, Any] = {}
+        if feature_preparation_payload:
+            features_dir = artifacts_dir / "features"
+            copied_feature_tables: Dict[str, str] = {}
+            path_rewrites: Dict[str, str] = {}
+            if copied_files.get("training_dataset_path") and train_csv:
+                path_rewrites[_resolved_path_key(train_csv)] = copied_files["training_dataset_path"]
+
+            for index, raw_path in enumerate(feature_preparation_payload.get("feature_csvs") or [], start=1):
+                if not raw_path:
+                    continue
+                source_path = Path(str(raw_path)).expanduser()
+                if not source_path.exists():
+                    continue
+                features_dir.mkdir(parents=True, exist_ok=True)
+                target_path = features_dir / source_path.name
+                if target_path.exists():
+                    target_path = features_dir / f"{target_path.stem}_{index}{target_path.suffix}"
+                shutil.copy2(source_path, target_path)
+                relative_target = _relative_posix(target_path, model_root)
+                copied_feature_tables[source_path.stem] = relative_target
+                path_rewrites[_resolved_path_key(source_path)] = relative_target
+
+            copied_feature_preparation = dict(feature_preparation_payload)
+            if copied_feature_tables:
+                copied_feature_preparation["feature_csvs"] = list(copied_feature_tables.values())
+                copied_feature_preparation["feature_tables"] = copied_feature_tables
+                copied_files["feature_tables"] = copied_feature_tables
+            prepared_train_csv = copied_feature_preparation.get("prepared_train_csv")
+            if prepared_train_csv and _resolved_path_key(prepared_train_csv) in path_rewrites:
+                copied_feature_preparation["prepared_train_csv"] = path_rewrites[
+                    _resolved_path_key(prepared_train_csv)
+                ]
+            durations = copied_feature_preparation.get("durations") or {}
+            rewritten_steps = []
+            for step in durations.get("steps") or []:
+                rewritten_step = dict(step)
+                output_csv = rewritten_step.get("output_csv")
+                if output_csv and _resolved_path_key(output_csv) in path_rewrites:
+                    rewritten_step["output_csv"] = path_rewrites[_resolved_path_key(output_csv)]
+                rewritten_steps.append(rewritten_step)
+            if durations:
+                copied_feature_preparation["durations"] = {
+                    **durations,
+                    "steps": rewritten_steps,
+                }
+
         metadata_description = _sanitize_activity_cliff_description(
             record.description or "",
             source_artifacts.get("activity_cliffs") or {},
@@ -792,6 +849,8 @@ class ModelRegistryToolkit(Toolkit):
                 copied_curation_artifacts=copied_curation_artifacts,
                 model_root=model_root,
             )
+        if copied_feature_preparation:
+            metadata["feature_preparation"] = copied_feature_preparation
         if copied_activity_cliff_artifacts:
             activity_payload = source_artifacts.get("activity_cliffs") or {}
             metadata["activity_cliffs"] = {
@@ -1037,6 +1096,7 @@ class ModelRegistryToolkit(Toolkit):
                 or latest_curation_artifacts(agent)
                 or discover_curation_artifacts_near_dataset(train_csv)
             ),
+            "feature_preparation": summary_payload.get("feature_preparation") or {},
         }
 
         materialized = self._materialize_internal_model(
@@ -1093,6 +1153,20 @@ class ModelRegistryToolkit(Toolkit):
                 "seed_policy": summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy"),
                 "seed_policy_report": seed_policy_reporting_text(
                     summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
+                ),
+                "feature_preparation": (
+                    summary_payload.get("feature_preparation")
+                    or current.training_data_summary.get("feature_preparation")
+                    or {}
+                ),
+                "feature_preparation_durations": (
+                    summary_payload.get("feature_preparation_durations")
+                    or (
+                        summary_payload.get("feature_preparation")
+                        or current.training_data_summary.get("feature_preparation")
+                        or {}
+                    ).get("durations")
+                    or {}
                 ),
                 "activity_cliffs": {
                     "enabled": bool(activity_summary_payload.get("enabled")),

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from agno.agent import Agent
 
 _BUNDLE_DIRECTORY_ROOTS_TO_SKIP = {"/", "/app", "/app/.files", "/app/.files/sessions"}
+_BUNDLE_FILENAMES_TO_SKIP = {".training_in_progress"}
 
 
 def get_prediction_state(agent: Agent) -> Dict[str, Any]:
@@ -114,6 +115,8 @@ def _iter_bundle_files(paths: Iterable[Path], bundle_path: Path) -> List[Path]:
         candidates = sorted(path.rglob("*")) if path.is_dir() else [path]
         for candidate in candidates:
             if not candidate.is_file():
+                continue
+            if candidate.name in _BUNDLE_FILENAMES_TO_SKIP:
                 continue
             resolved = candidate.resolve()
             if resolved == resolved_bundle_path or resolved in seen:

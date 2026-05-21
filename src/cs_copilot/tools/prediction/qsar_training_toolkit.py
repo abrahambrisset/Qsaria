@@ -22,7 +22,11 @@ from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeature
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment
-from .session_state import bundle_artifacts
+from .session_state import (
+    bundle_artifacts,
+    discover_curation_artifacts_near_dataset,
+    latest_curation_artifacts,
+)
 from .tabicl_toolkit import TabICLToolkit
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
@@ -341,6 +345,12 @@ class QSARTrainingToolkit(Toolkit):
             for key in ("candidate_train_csv", "train_csv"):
                 if result.get(key):
                     bundle_inputs.append(Path(str(result[key])))
+            curation = result.get("curation") or {}
+            if curation.get("curated_dataset_path"):
+                bundle_inputs.append(Path(str(curation["curated_dataset_path"])))
+            for artifact_path in (curation.get("artifacts") or {}).values():
+                if artifact_path:
+                    bundle_inputs.append(Path(str(artifact_path)))
             bundle = bundle_artifacts(Path(str(bundle_path)), bundle_inputs)
             result["bundle_file_ref"] = str(bundle)
             result["training_bundle"] = str(bundle)
@@ -472,13 +482,22 @@ class QSARTrainingToolkit(Toolkit):
             result["feature_columns"] = list(normalized_feature_columns or [])
             result["feature_preparation"] = feature_preparation
             result["feature_preparation_durations"] = feature_preparation["durations"]
-            self._refresh_enriched_training_artifacts(
-                result=result,
-                output_dir=output_dir,
-            )
         else:
             raise ValueError(
                 "Unsupported backend_name. Expected one of ['chemprop', 'lightgbm', 'tabicl']."
+            )
+
+        if not ((result.get("curation") or {}).get("artifacts")):
+            curation_artifacts = latest_curation_artifacts(agent) if agent is not None else {}
+            if not (curation_artifacts.get("artifacts") if curation_artifacts else None):
+                curation_artifacts = discover_curation_artifacts_near_dataset(train_csv)
+            if curation_artifacts:
+                result["curation"] = curation_artifacts
+
+        if normalized_backend in {"lightgbm", "tabicl"}:
+            self._refresh_enriched_training_artifacts(
+                result=result,
+                output_dir=output_dir,
             )
 
         result["recommended_registry_payload"] = self._recommended_registry_payload(
