@@ -12,7 +12,7 @@ import random
 import secrets
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 import torch
@@ -191,19 +191,33 @@ def resolve_seed_policy(
     return policy
 
 
+def _coerce_seed_policy(seed_policy: Any) -> Dict[str, Any]:
+    """Return a dict seed policy even when agents pass loose text/list values."""
+    if isinstance(seed_policy, Mapping):
+        return dict(seed_policy)
+    if seed_policy is None:
+        return {}
+    if isinstance(seed_policy, str) and seed_policy.strip():
+        return {"reporting_text": seed_policy.strip()}
+    return {}
+
+
 def seed_policy_reporting_text(seed_policy: Optional[Dict[str, Any]]) -> str:
     """Return a short user-facing French reporting sentence for a seed policy."""
-    mode = str((seed_policy or {}).get("mode") or "").strip()
+    policy = _coerce_seed_policy(seed_policy)
+    mode = str(policy.get("mode") or "").strip()
     if mode == "generated_per_benchmark_campaign":
         return "Politique de seeds : partagée au niveau campagne benchmark"
     if mode == "user_provided_or_replay":
         return "Politique de seeds : fournie par l'utilisateur / replay"
+    if policy.get("reporting_text"):
+        return str(policy["reporting_text"])
     return "Politique de seeds : générées automatiquement et persistées"
 
 
 def seed_policy_reproducibility_metadata(seed_policy: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Build compact catalog metadata for reproducibility and future agent inspection."""
-    policy = dict(seed_policy or {})
+    policy = _coerce_seed_policy(seed_policy)
     return {
         "seed_policy_mode": policy.get("mode") or "unknown",
         "seed_policy_report": seed_policy_reporting_text(policy),

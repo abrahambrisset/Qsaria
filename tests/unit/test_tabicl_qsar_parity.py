@@ -8,6 +8,8 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     resolve_seed_policy,
     resolve_training_profile,
     resolve_validation_protocol,
+    seed_policy_reporting_text,
+    seed_policy_reproducibility_metadata,
 )
 from cs_copilot.tools.prediction.tabular_splitters import build_tabular_split_payload
 
@@ -51,6 +53,17 @@ def test_protocol_defaults_keep_compute_profile_separate_from_validation_scope()
         requested_protocol=None,
         training_profile="heavy_validation",
     )["protocol"] == "standard_qsar"
+
+
+def test_seed_policy_helpers_tolerate_loose_agent_values():
+    assert seed_policy_reporting_text("Politique de seeds : générées automatiquement") == (
+        "Politique de seeds : générées automatiquement"
+    )
+
+    metadata = seed_policy_reproducibility_metadata(["bad", "agent", "shape"])
+
+    assert metadata["seed_policy_mode"] == "unknown"
+    assert metadata["split_runs"] == []
 
 
 def test_robust_qsar_protocol_matches_chemprop_contract():
