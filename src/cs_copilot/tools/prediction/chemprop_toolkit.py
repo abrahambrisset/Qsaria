@@ -127,6 +127,143 @@ class ChempropToolkit(Toolkit):
             "splits_path": output_path / "splits.json",
         }
 
+    def _replicate_artifacts(self, output_dir: Path) -> List[Dict[str, Any]]:
+        """Return Chemprop replicate artifacts present in a split output directory."""
+        output_path = output_dir.expanduser().resolve()
+        replicate_dirs = sorted(
+            output_path.glob("replicate_*"),
+            key=lambda path: int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0,
+        )
+        artifacts: List[Dict[str, Any]] = []
+        for replicate_dir in replicate_dirs:
+            raw_index = replicate_dir.name.split("_")[-1]
+            replicate_index = int(raw_index) if raw_index.isdigit() else len(artifacts)
+            model_path = replicate_dir / "model_0" / "best.pt"
+            predictions_path = replicate_dir / "model_0" / "test_predictions.csv"
+            artifacts.append(
+                {
+                    "replicate_index": replicate_index,
+                    "model_path": str(model_path) if model_path.exists() else None,
+                    "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                }
+            )
+
+        if not artifacts:
+            model_path = output_path / "model_0" / "best.pt"
+            predictions_path = output_path / "model_0" / "test_predictions.csv"
+            if model_path.exists() or predictions_path.exists():
+                artifacts.append(
+                    {
+                        "replicate_index": 0,
+                        "model_path": str(model_path) if model_path.exists() else None,
+                        "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                    }
+                )
+        return artifacts
+
+    def _write_normalized_test_predictions(
+        self,
+        *,
+        train_csv: str,
+        output_dir: Path,
+        task: PredictionTaskSpec,
+    ) -> Dict[str, Any]:
+        """Create a self-contained Chemprop test-prediction CSV.
+
+        Chemprop writes prediction CSVs with the target column name reused for
+        predictions.  For validation artifacts we keep that compatibility
+        column but add explicit truth/prediction/error columns and aggregate
+        replicate predictions when multiple replicate outputs are present.
+        """
+        target_column = task.target_columns[0] if task.target_columns else None
+        if not target_column:
+            return {}
+
+        output_path = output_dir.expanduser().resolve()
+        splits_path = output_path / "splits.json"
+        if not splits_path.exists():
+            return {}
+
+        replicate_artifacts = self._replicate_artifacts(output_path)
+        prediction_paths = [
+            Path(str(item["raw_test_predictions_path"])).expanduser()
+            for item in replicate_artifacts
+            if item.get("raw_test_predictions_path")
+        ]
+        if not prediction_paths:
+            return {}
+
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        split_payload = json.loads(splits_path.read_text())
+        if not split_payload or "test" not in split_payload[0]:
+            return {}
+        test_indices = split_payload[0].get("test") or []
+        actual = dataset.iloc[test_indices].reset_index(drop=True)
+        if target_column not in actual.columns:
+            return {}
+
+        prediction_series: List[pd.Series] = []
+        prediction_source_paths: List[str] = []
+        for prediction_path in prediction_paths:
+            if not prediction_path.exists():
+                continue
+            predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
+            if target_column not in predictions.columns or len(predictions) != len(actual):
+                continue
+            prediction_series.append(pd.to_numeric(predictions[target_column], errors="coerce"))
+            prediction_source_paths.append(str(prediction_path))
+
+        if not prediction_series:
+            return {}
+
+        prediction_frame = pd.concat(prediction_series, axis=1)
+        prediction_frame.columns = [
+            f"prediction_replicate_{idx}" for idx in range(len(prediction_series))
+        ]
+        y_true = pd.to_numeric(actual[target_column], errors="coerce")
+        y_pred = prediction_frame.mean(axis=1, skipna=True)
+        prediction_std = (
+            prediction_frame.std(axis=1, ddof=0).fillna(0.0)
+            if len(prediction_series) > 1
+            else pd.Series([0.0] * len(prediction_frame))
+        )
+
+        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+        smiles_values = (
+            actual[smiles_column].reset_index(drop=True)
+            if smiles_column in actual.columns
+            else pd.Series([None] * len(actual))
+        )
+        normalized = pd.DataFrame(
+            {
+                "source_row_index": test_indices,
+                "smiles": smiles_values,
+                f"{target_column}_true": y_true,
+                f"{target_column}_prediction": y_pred,
+                "prediction": y_pred,
+                target_column: y_pred,
+                "prediction_std": prediction_std,
+                "residual": y_true - y_pred,
+                "absolute_error": (y_true - y_pred).abs(),
+                "replicate_count": len(prediction_series),
+            }
+        )
+        normalized = pd.concat([normalized, prediction_frame], axis=1)
+
+        normalized_path = output_path / "model_0" / "test_predictions.csv"
+        normalized_path.parent.mkdir(parents=True, exist_ok=True)
+        normalized.to_csv(normalized_path, index=False)
+        return {
+            "test_predictions_path": str(normalized_path),
+            "raw_test_prediction_paths": prediction_source_paths,
+            "replicate_artifacts": replicate_artifacts,
+            "replicate_count": len(prediction_series),
+            "prediction_aggregation": "mean" if len(prediction_series) > 1 else "single_replicate",
+            "prediction_column": "prediction",
+            "target_true_column": f"{target_column}_true",
+            "target_prediction_column": f"{target_column}_prediction",
+        }
+
     def _detect_physical_memory_bytes(self) -> Optional[int]:
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
@@ -480,15 +617,20 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
         output_path = Path(output_dir).expanduser()
-        resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
-        splits_path = resolved_artifacts["splits_path"]
-        preds_path = resolved_artifacts["test_predictions_path"]
-
-        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
-            return {}
-
         target_column = task.target_columns[0] if task.target_columns else None
         if not target_column:
+            return {}
+
+        normalized_predictions = self._write_normalized_test_predictions(
+            train_csv=train_csv,
+            output_dir=output_path,
+            task=task,
+        )
+        resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
+        splits_path = resolved_artifacts["splits_path"]
+        preds_path = Path(str(normalized_predictions.get("test_predictions_path") or resolved_artifacts["test_predictions_path"]))
+
+        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
             return {}
 
         dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
@@ -499,16 +641,18 @@ class ChempropToolkit(Toolkit):
             return {}
 
         test_indices = split_payload[0]["test"]
-        actual = dataset.iloc[test_indices].reset_index(drop=True)
-
-        if target_column not in actual.columns or target_column not in predictions.columns:
-            return {}
-
-        if len(actual) != len(predictions):
-            return {}
-
-        actual_values = pd.to_numeric(actual[target_column], errors="coerce")
-        predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
+        true_column = f"{target_column}_true"
+        if true_column in predictions.columns and "prediction" in predictions.columns:
+            actual_values = pd.to_numeric(predictions[true_column], errors="coerce")
+            predicted_values = pd.to_numeric(predictions["prediction"], errors="coerce")
+        else:
+            actual = dataset.iloc[test_indices].reset_index(drop=True)
+            if target_column not in actual.columns or target_column not in predictions.columns:
+                return {}
+            if len(actual) != len(predictions):
+                return {}
+            actual_values = pd.to_numeric(actual[target_column], errors="coerce")
+            predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
         valid_mask = actual_values.notna() & predicted_values.notna()
         if not valid_mask.any():
             return {}
@@ -542,7 +686,17 @@ class ChempropToolkit(Toolkit):
         return {
             "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
             "test_predictions_path": str(preds_path),
+            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths") or [],
             "splits_path": str(splits_path),
+            "train_size": len(split_payload[0].get("train") or []),
+            "val_size": len(split_payload[0].get("val") or split_payload[0].get("validation") or []),
+            "test_size": len(test_indices),
+            "replicate_artifacts": normalized_predictions.get("replicate_artifacts") or self._replicate_artifacts(output_path),
+            "replicate_count": normalized_predictions.get("replicate_count") or 1,
+            "prediction_aggregation": normalized_predictions.get("prediction_aggregation") or "single_replicate",
+            "prediction_column": normalized_predictions.get("prediction_column") or target_column,
+            "target_true_column": normalized_predictions.get("target_true_column") or target_column,
+            "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
             "metrics": {
                 "test": {
                     "mse": mse,
@@ -770,6 +924,7 @@ class ChempropToolkit(Toolkit):
             )
 
             result = dict(primary_run)
+            result["backend_name"] = self.backend.backend_name
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
@@ -783,6 +938,29 @@ class ChempropToolkit(Toolkit):
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = {
                 key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+            }
+            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get("model_seed")
+            if primary_run.get("seed") is not None:
+                result["effective_train_args"]["data_seed"] = primary_run.get("seed")
+                result["effective_train_args"]["data_seed_scope"] = "primary_split"
+            result["replicate_policy"] = {
+                "num_replicates_requested": int(result["effective_train_args"].get("num_replicates") or 1),
+                "prediction_aggregation": primary_run.get("prediction_aggregation"),
+                "catalog_primary_replicate_index": 0,
+                "catalog_primary_model_policy": (
+                    "The catalog model artifact points to replicate_0/model_0/best.pt. "
+                    "Validation prediction CSVs are normalized and aggregate replicate predictions "
+                    "when multiple replicate outputs are present."
+                ),
+                "split_replicate_counts": [
+                    {
+                        "label": item.get("strategy_label"),
+                        "strategy_family": item.get("strategy_family"),
+                        "replicate_count": item.get("replicate_count"),
+                        "prediction_aggregation": item.get("prediction_aggregation"),
+                    }
+                    for item in split_results
+                ],
             }
             result["training_resources"] = self._summarize_training_resources(
                 compute_env=training_policy["compute_environment"],
@@ -802,7 +980,6 @@ class ChempropToolkit(Toolkit):
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
-            write_training_summary(training_summary_path, result)
 
             resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
             best_model_path = Path(
@@ -815,12 +992,15 @@ class ChempropToolkit(Toolkit):
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)
+                result["model_path"] = str(best_model_path)
                 result["download_file_ref"] = str(best_model_path)
             result["summary_file_ref"] = str(training_summary_path)
             if root_artifacts.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
+                result["test_predictions_path"] = root_artifacts["test_predictions_path"]
             elif primary_run.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = primary_run["test_predictions_path"]
+                result["test_predictions_path"] = primary_run["test_predictions_path"]
             if ad_summary.get("applicability_domain_path"):
                 result["applicability_domain_file_ref"] = ad_summary["applicability_domain_path"]
             bundle_path = (
@@ -850,6 +1030,7 @@ class ChempropToolkit(Toolkit):
             result["bundle_file_ref"] = str(bundle)
             result["training_bundle"] = str(bundle)
             result["bundle_download_tag"] = f"<file>{bundle}</file>"
+            write_training_summary(training_summary_path, result)
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"

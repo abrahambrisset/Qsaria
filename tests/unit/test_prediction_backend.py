@@ -279,6 +279,49 @@ def test_chemprop_toolkit_is_backend_only():
     assert not hasattr(toolkit, "predict_from_csv")
 
 
+def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "pEC50": [5.0, 6.0, 4.0],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_run"
+    output_dir.mkdir()
+    (output_dir / "splits.json").write_text(
+        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
+    )
+    for replicate_index, values in enumerate(([5.5, 4.5], [6.5, 3.5])):
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "best.pt").write_text("model")
+        pd.DataFrame({"smiles": ["CCC", "CCN"], "pEC50": values}).to_csv(
+            replicate_dir / "test_predictions.csv",
+            index=False,
+        )
+
+    result = toolkit._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+    )
+
+    normalized = pd.read_csv(result["test_predictions_path"])
+    assert result["replicate_count"] == 2
+    assert result["prediction_aggregation"] == "mean"
+    assert normalized["pEC50_true"].tolist() == [6.0, 4.0]
+    assert normalized["prediction"].tolist() == [6.0, 4.0]
+    assert normalized["pEC50_prediction"].tolist() == [6.0, 4.0]
+    assert normalized["pEC50"].tolist() == [6.0, 4.0]
+    assert normalized["prediction_std"].tolist() == [0.5, 0.5]
+
+
 def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_path):
     toolkit = QSARTrainingToolkit()
     train_csv = tmp_path / "train.csv"

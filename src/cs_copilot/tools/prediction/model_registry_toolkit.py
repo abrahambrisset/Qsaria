@@ -559,6 +559,7 @@ class ModelRegistryToolkit(Toolkit):
         activity_cliff_sources: Dict[str, Path] = {}
         activity_cliff_variant_model_sources: List[Dict[str, Any]] = []
         split_prediction_sources: Dict[str, Path] = {}
+        split_splits_sources: Dict[str, Path] = {}
         curation_sources: Dict[str, Path] = {}
         curation_payload: Dict[str, Any] = {}
         feature_preparation_payload: Dict[str, Any] = {}
@@ -600,6 +601,11 @@ class ModelRegistryToolkit(Toolkit):
             split_prediction_sources[safe_slug(str(split_label)) or "split"] = Path(
                 str(raw_path)
             ).expanduser()
+            raw_splits_path = split_result.get("splits_path")
+            if raw_splits_path:
+                split_splits_sources[safe_slug(str(split_label)) or "split"] = Path(
+                    str(raw_splits_path)
+                ).expanduser()
         curation_payload = source_artifacts.get("curation") or {}
         if curation_payload.get("curated_dataset_path"):
             curation_sources["curated_dataset_csv"] = Path(
@@ -697,6 +703,19 @@ class ModelRegistryToolkit(Toolkit):
                 copied_split_predictions[split_label] = _relative_posix(target_path, model_root)
         if copied_split_predictions:
             copied_files["test_predictions_by_split"] = copied_split_predictions
+
+        copied_split_splits: Dict[str, str] = {}
+        if split_splits_sources:
+            split_splits_dir = artifacts_dir / "splits_by_split"
+            split_splits_dir.mkdir(parents=True, exist_ok=True)
+            for split_label, source_path in split_splits_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = split_splits_dir / f"splits_{split_label}.json"
+                shutil.copy2(source_path, target_path)
+                copied_split_splits[split_label] = _relative_posix(target_path, model_root)
+        if copied_split_splits:
+            copied_files["splits_by_split"] = copied_split_splits
 
         copied_curation_artifacts: Dict[str, str] = {}
         if curation_sources:
@@ -853,6 +872,8 @@ class ModelRegistryToolkit(Toolkit):
             metadata["plot_artifacts"] = copied_plot_artifacts
         if copied_split_predictions:
             metadata["test_predictions_by_split"] = copied_split_predictions
+        if copied_split_splits:
+            metadata["splits_by_split"] = copied_split_splits
         if copied_curation_artifacts:
             metadata["curation"] = _hydrate_curation_metadata(
                 curation_payload=curation_payload,
@@ -1190,6 +1211,11 @@ class ModelRegistryToolkit(Toolkit):
                         or current.training_data_summary.get("feature_preparation")
                         or {}
                     ).get("durations")
+                    or {}
+                ),
+                "replicate_policy": (
+                    summary_payload.get("replicate_policy")
+                    or current.training_data_summary.get("replicate_policy")
                     or {}
                 ),
                 "activity_cliffs": {
