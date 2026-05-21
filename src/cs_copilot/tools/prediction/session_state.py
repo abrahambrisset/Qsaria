@@ -47,6 +47,8 @@ def latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
     if not isinstance(latest, dict):
         return {}
     artifacts = dict(latest.get("curation_artifacts") or {})
+    if latest.get("curated_dataset_path"):
+        artifacts.setdefault("curated_dataset_csv", latest.get("curated_dataset_path"))
     if latest.get("report_path"):
         artifacts["curation_report_json"] = latest.get("report_path")
     if latest.get("bundle_file_ref"):
@@ -71,6 +73,19 @@ def discover_curation_artifacts_near_dataset(dataset_path: str | None) -> Dict[s
     if not parent.exists():
         return {}
     artifacts: Dict[str, str] = {}
+    curated_dataset_path: str | None = None
+    if path.exists() and path.is_file() and path.name.endswith("_curated.csv"):
+        curated_dataset_path = str(path)
+    else:
+        curated_candidates = sorted(
+            parent.glob("*_curated.csv"),
+            key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
+            reverse=True,
+        )
+        if curated_candidates:
+            curated_dataset_path = str(curated_candidates[0])
+    if curated_dataset_path:
+        artifacts["curated_dataset_csv"] = curated_dataset_path
     artifact_dirs = sorted(
         parent.glob("*_curation_artifacts"),
         key=lambda candidate: candidate.stat().st_mtime if candidate.exists() else 0,
@@ -96,9 +111,12 @@ def discover_curation_artifacts_near_dataset(dataset_path: str | None) -> Dict[s
     )
     if report_candidates:
         artifacts["curation_report_json"] = str(report_candidates[0])
-    if not artifacts:
+    if not artifacts and not curated_dataset_path:
         return {}
-    return {"artifacts": artifacts}
+    return {
+        "curated_dataset_path": curated_dataset_path,
+        "artifacts": artifacts,
+    }
 
 
 def _iter_bundle_files(paths: Iterable[Path], bundle_path: Path) -> List[Path]:

@@ -80,7 +80,10 @@ def _hydrate_curation_metadata(
     """Build catalog curation metadata from session payload plus persisted reports."""
     metadata: Dict[str, Any] = {
         "backend": curation_payload.get("curation_backend"),
-        "curated_dataset_path": curation_payload.get("curated_dataset_path"),
+        "curated_dataset_path": (
+            copied_curation_artifacts.get("curated_dataset_csv")
+            or curation_payload.get("curated_dataset_path")
+        ),
         "rows_in": curation_payload.get("rows_in"),
         "rows_out": curation_payload.get("rows_out"),
         "artifacts": copied_curation_artifacts,
@@ -598,9 +601,16 @@ class ModelRegistryToolkit(Toolkit):
                 str(raw_path)
             ).expanduser()
         curation_payload = source_artifacts.get("curation") or {}
+        if curation_payload.get("curated_dataset_path"):
+            curation_sources["curated_dataset_csv"] = Path(
+                str(curation_payload["curated_dataset_path"])
+            ).expanduser()
         for artifact_name, raw_path in (curation_payload.get("artifacts") or {}).items():
             if raw_path:
-                curation_sources[str(artifact_name)] = Path(str(raw_path)).expanduser()
+                curation_sources.setdefault(
+                    str(artifact_name),
+                    Path(str(raw_path)).expanduser(),
+                )
         feature_preparation_payload = source_artifacts.get("feature_preparation") or {}
         activity_payload = source_artifacts.get("activity_cliffs") or {}
         for key in (
@@ -1080,6 +1090,24 @@ class ModelRegistryToolkit(Toolkit):
             version=str(resolved_version),
         )
 
+        summary_curation = summary_payload.get("curation") or {}
+        fallback_curation = (
+            latest_curation_artifacts(agent)
+            or discover_curation_artifacts_near_dataset(train_csv)
+        )
+        merged_curation = {
+            **(fallback_curation or {}),
+            **(summary_curation or {}),
+        }
+        merged_curation["artifacts"] = {
+            **((fallback_curation or {}).get("artifacts") or {}),
+            **((summary_curation or {}).get("artifacts") or {}),
+        }
+        if not merged_curation.get("curated_dataset_path"):
+            merged_curation["curated_dataset_path"] = (fallback_curation or {}).get(
+                "curated_dataset_path"
+            )
+
         source_artifacts = {
             "training_summary_path": str(summary_path) if summary_path and summary_path.exists() else None,
             "config_path": summary_payload.get("config_path"),
@@ -1091,11 +1119,7 @@ class ModelRegistryToolkit(Toolkit):
             "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
-            "curation": (
-                summary_payload.get("curation")
-                or latest_curation_artifacts(agent)
-                or discover_curation_artifacts_near_dataset(train_csv)
-            ),
+            "curation": merged_curation,
             "feature_preparation": summary_payload.get("feature_preparation") or {},
         }
 

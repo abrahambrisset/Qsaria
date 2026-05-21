@@ -99,6 +99,8 @@ def test_shared_curation_artifact_helpers_are_backend_neutral(tmp_path):
 
     discovered = discover_curation_artifacts_near_dataset(str(dataset))
 
+    assert discovered["curated_dataset_path"] == str(dataset)
+    assert discovered["artifacts"]["curated_dataset_csv"] == str(dataset)
     assert discovered["artifacts"]["curation_report_json"] == str(report)
     assert discovered["artifacts"]["manifest_json"] == str(artifacts_dir / "curation_manifest.json")
 
@@ -118,6 +120,7 @@ def test_shared_curation_artifact_helpers_are_backend_neutral(tmp_path):
     latest = latest_curation_artifacts(agent)
 
     assert latest["curation_backend"] == "chembl_structure_v1"
+    assert latest["artifacts"]["curated_dataset_csv"] == str(dataset)
     assert latest["artifacts"]["curation_report_json"] == str(report)
 
 

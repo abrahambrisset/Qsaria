@@ -271,6 +271,9 @@ def collect_training_bundle_files(
     for artifact_path in ((curation_artifacts or {}).get("artifacts") or {}).values():
         if artifact_path:
             files.append(Path(str(artifact_path)).expanduser())
+    curated_dataset_path = (curation_artifacts or {}).get("curated_dataset_path")
+    if curated_dataset_path:
+        files.append(Path(str(curated_dataset_path)).expanduser())
 
     cliffs = activity_cliffs or {}
     for key in ("annotated_training_csv", "summary_path", "clean_training_csv"):
@@ -291,4 +294,3 @@ def collect_training_bundle_files(
     if extra_files:
         files.extend(Path(path).expanduser() for path in extra_files)
     return files
-
