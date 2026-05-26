@@ -166,6 +166,38 @@ def _compact_registry_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dic
     return compacted
 
 
+def _compact_feature_preparation_durations(feature_preparation: Dict[str, Any]) -> Dict[str, Any]:
+    durations = (feature_preparation or {}).get("durations") or {}
+    return {
+        "total_duration_seconds": durations.get("total_duration_seconds"),
+        "steps": [
+            {
+                "step": step.get("step"),
+                "cache_status": step.get("cache_status"),
+                "cache_hit": step.get("cache_hit"),
+                "duration_seconds": step.get("duration_seconds"),
+                "num_features": step.get("num_features"),
+                "num_descriptors": step.get("num_descriptors"),
+                "num_added_feature_columns": step.get("num_added_feature_columns"),
+            }
+            for step in durations.get("steps") or []
+        ],
+    }
+
+
+def _candidate_registry_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    payload = _compact_registry_payload(result.get("recommended_registry_payload")) or {}
+    if not payload.get("model_id"):
+        suffix = _cache_key(
+            {
+                "candidate_id": result.get("candidate_id"),
+                "model_path": result.get("best_model_path") or result.get("model_path"),
+            }
+        )
+        payload["model_id"] = f"{result.get('candidate_id') or 'qsar_candidate'}_{suffix}"
+    return payload
+
+
 def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def score(item: Dict[str, Any]) -> tuple:
         validation = item.get("validation_assessment") or {}
@@ -677,6 +709,10 @@ class QSARTrainingToolkit(Toolkit):
             "feature_cache_status": feature_prep.get("feature_cache_status"),
             "cache_hits": feature_prep.get("cache_hits"),
             "cache_misses": feature_prep.get("cache_misses"),
+            "feature_preparation_duration_seconds": (
+                (feature_prep.get("durations") or {}).get("total_duration_seconds")
+            ),
+            "feature_preparation_durations": _compact_feature_preparation_durations(feature_prep),
             "training_duration_seconds": (result.get("training_durations") or {}).get(
                 "total_duration_seconds"
             ),
@@ -701,6 +737,7 @@ class QSARTrainingToolkit(Toolkit):
         extra_args: Dict[str, Any],
         agent: Optional[Agent],
     ) -> Dict[str, Any]:
+        campaign_started_at = time.monotonic()
         campaign_root = Path(output_dir).expanduser().resolve()
         campaign_root.mkdir(parents=True, exist_ok=True)
         feature_cache_dir = str(Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache"))
@@ -734,9 +771,22 @@ class QSARTrainingToolkit(Toolkit):
         ranked_results = _rank_training_campaign_results(candidate_results)
         best_result = ranked_results[0]
         rows = [self._compact_campaign_row(result) for result in ranked_results]
-        compact_registry_payloads = [
-            _compact_registry_payload(result.get("recommended_registry_payload"))
+        payload_by_candidate_id = {
+            result.get("candidate_id"): _candidate_registry_payload(result)
             for result in candidate_results
+        }
+        candidate_registry_payloads = [
+            {
+                "rank": index,
+                "candidate_id": row.get("backend_name")
+                and f"{row.get('backend_name')}_{row.get('representation_name')}",
+                "backend_name": row.get("backend_name"),
+                "representation_name": row.get("representation_name"),
+                "registry_payload": payload_by_candidate_id.get(
+                    f"{row.get('backend_name')}_{row.get('representation_name')}"
+                ),
+            }
+            for index, row in enumerate(rows, start=1)
         ]
         cache_hits = sum(
             int((result.get("feature_preparation") or {}).get("cache_hits") or 0)
@@ -754,6 +804,7 @@ class QSARTrainingToolkit(Toolkit):
             "validation_protocol": validation_protocol,
             "representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             "feature_cache_dir": feature_cache_dir,
+            "campaign_duration_seconds": round(time.monotonic() - campaign_started_at, 3),
             "feature_cache": {
                 "cache_hits": cache_hits,
                 "cache_misses": cache_misses,
@@ -764,16 +815,35 @@ class QSARTrainingToolkit(Toolkit):
             "recommended_candidate": best_result.get("candidate_id")
             or f"{backend_name}_{best_result.get('representation_name')}",
             "recommended_representation_name": best_result.get("representation_name"),
-            "recommended_registry_payload": _compact_registry_payload(
-                best_result.get("recommended_registry_payload")
-            ),
-            "recommended_registry_payloads": compact_registry_payloads,
+            "recommended_registry_payload": _candidate_registry_payload(best_result),
+            "candidate_registry_payloads": candidate_registry_payloads,
+            "recommended_registry_payloads": [
+                item["registry_payload"] for item in candidate_registry_payloads
+            ],
+            "persistence_plan": {
+                "persist_all_candidates": True,
+                "candidate_count": len(candidate_registry_payloads),
+                "candidate_registry_payloads_key": "candidate_registry_payloads",
+                "required_tool_sequence": (
+                    "For each candidate_registry_payloads item: call register_model with "
+                    "`registry_payload`, then persist_registered_model with the returned "
+                    "temporary model_id. Report every persisted canonical catalog model_id."
+                ),
+                "recommended_candidate": best_result.get("candidate_id")
+                or f"{backend_name}_{best_result.get('representation_name')}",
+            },
             "best_model_path": best_result.get("best_model_path") or best_result.get("model_path"),
             "model_path": best_result.get("best_model_path") or best_result.get("model_path"),
             "train_csv": train_csv,
             "candidate_train_csv": best_result.get("candidate_train_csv"),
             **_feature_columns_summary_from_result(best_result),
             "feature_preparation": best_result.get("feature_preparation") or {},
+            "feature_preparation_durations": _compact_feature_preparation_durations(
+                best_result.get("feature_preparation") or {}
+            ),
+            "training_duration_seconds": (
+                (best_result.get("training_durations") or {}).get("total_duration_seconds")
+            ),
             "validation_assessment": best_result.get("validation_assessment") or {},
         }
         summary_path = campaign_root / "qsar_training_campaign_summary.json"
