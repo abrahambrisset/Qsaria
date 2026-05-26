@@ -38,6 +38,8 @@ from .tabular_representations import (
 )
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
+FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
+
 
 def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]:
     with S3.open(path, "r") as fh:
@@ -96,6 +98,72 @@ def _feature_step_name(component_name: str) -> str:
         "rdkit_all": "rdkit_all_descriptors",
         "rdkit_basic": "rdkit_basic_descriptors",
     }.get(component_name, component_name)
+
+
+def _feature_columns_summary(
+    feature_columns: Optional[List[str]],
+    *,
+    source: Optional[str] = None,
+) -> Dict[str, Any]:
+    columns = list(feature_columns or [])
+    omitted_count = max(0, len(columns) - FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT)
+    payload: Dict[str, Any] = {
+        "feature_columns_count": len(columns),
+        "feature_columns_sample": columns[:FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT],
+        "feature_columns_omitted_count": omitted_count,
+    }
+    if source:
+        payload["feature_columns_source"] = source
+    if omitted_count:
+        payload["feature_columns_note"] = (
+            "Full feature_columns are stored in the training summary and restored "
+            "during catalog persistence; they are omitted from the tool response "
+            "to keep agent context bounded."
+        )
+    return payload
+
+
+def _feature_columns_summary_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    feature_columns = result.get("feature_columns")
+    if isinstance(feature_columns, list):
+        return _feature_columns_summary(
+            feature_columns,
+            source=result.get("summary_path") or result.get("canonical_summary_path"),
+        )
+    payload = {
+        key: result[key]
+        for key in (
+            "feature_columns_count",
+            "feature_columns_sample",
+            "feature_columns_omitted_count",
+            "feature_columns_source",
+            "feature_columns_note",
+        )
+        if key in result
+    }
+    if "feature_columns_source" not in payload:
+        source = result.get("summary_path") or result.get("canonical_summary_path")
+        if source:
+            payload["feature_columns_source"] = source
+    return payload
+
+
+def _compact_registry_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not payload:
+        return payload
+    compacted = dict(payload)
+    inference_profile = dict(compacted.get("inference_profile") or {})
+    feature_columns = inference_profile.pop("feature_columns", None)
+    if isinstance(feature_columns, list):
+        inference_profile.update(
+            _feature_columns_summary(
+                feature_columns,
+                source=inference_profile.get("feature_columns_source")
+                or (compacted.get("training_data_summary") or {}).get("training_summary_path"),
+            )
+        )
+    compacted["inference_profile"] = inference_profile
+    return compacted
 
 
 def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -531,6 +599,8 @@ class QSARTrainingToolkit(Toolkit):
         target_columns: List[str],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
+        summary_path = result.get("summary_path") or result.get("canonical_summary_path")
+        feature_columns = list(result.get("feature_columns") or [])
         return {
             "backend_name": backend_name,
             "model_path": result.get("best_model_path") or result.get("model_path"),
@@ -544,10 +614,11 @@ class QSARTrainingToolkit(Toolkit):
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),
                 "feature_preparation": result.get("feature_preparation") or {},
+                "training_summary_path": summary_path,
             },
             "inference_profile": {
-                "feature_columns": list(result.get("feature_columns") or []),
                 "representation_name": result.get("representation_name"),
+                **_feature_columns_summary(feature_columns, source=summary_path),
             },
             "applicability_domain": result.get("applicability_domain") or {},
         }
@@ -594,12 +665,14 @@ class QSARTrainingToolkit(Toolkit):
             "representation_name": result.get("representation_name"),
             "model_path": result.get("best_model_path") or result.get("model_path"),
             "candidate_train_csv": result.get("candidate_train_csv"),
+            "summary_path": result.get("summary_path") or result.get("canonical_summary_path"),
             "random_r2": (random_family or {}).get("r2_mean", (random_family or {}).get("r2")),
             "scaffold_r2": (scaffold_family or {}).get("r2_mean", (scaffold_family or {}).get("r2")),
             "hardest_split": hardest,
             "hardest_split_r2": (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
             if hardest_family
             else None,
+            **_feature_columns_summary_from_result(result),
             "feature_cache_key": feature_prep.get("feature_cache_key"),
             "feature_cache_status": feature_prep.get("feature_cache_status"),
             "cache_hits": feature_prep.get("cache_hits"),
@@ -661,6 +734,10 @@ class QSARTrainingToolkit(Toolkit):
         ranked_results = _rank_training_campaign_results(candidate_results)
         best_result = ranked_results[0]
         rows = [self._compact_campaign_row(result) for result in ranked_results]
+        compact_registry_payloads = [
+            _compact_registry_payload(result.get("recommended_registry_payload"))
+            for result in candidate_results
+        ]
         cache_hits = sum(
             int((result.get("feature_preparation") or {}).get("cache_hits") or 0)
             for result in candidate_results
@@ -682,20 +759,20 @@ class QSARTrainingToolkit(Toolkit):
                 "cache_misses": cache_misses,
                 "feature_cache_dir": feature_cache_dir,
             },
-            "candidate_results": candidate_results,
+            "candidate_results": rows,
             "ranking": rows,
             "recommended_candidate": best_result.get("candidate_id")
             or f"{backend_name}_{best_result.get('representation_name')}",
             "recommended_representation_name": best_result.get("representation_name"),
-            "recommended_registry_payload": best_result.get("recommended_registry_payload"),
-            "recommended_registry_payloads": [
-                result.get("recommended_registry_payload") for result in candidate_results
-            ],
+            "recommended_registry_payload": _compact_registry_payload(
+                best_result.get("recommended_registry_payload")
+            ),
+            "recommended_registry_payloads": compact_registry_payloads,
             "best_model_path": best_result.get("best_model_path") or best_result.get("model_path"),
             "model_path": best_result.get("best_model_path") or best_result.get("model_path"),
             "train_csv": train_csv,
             "candidate_train_csv": best_result.get("candidate_train_csv"),
-            "feature_columns": best_result.get("feature_columns") or [],
+            **_feature_columns_summary_from_result(best_result),
             "feature_preparation": best_result.get("feature_preparation") or {},
             "validation_assessment": best_result.get("validation_assessment") or {},
         }
@@ -879,6 +956,14 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
+        if normalized_backend in {"lightgbm", "tabicl"} and isinstance(result.get("feature_columns"), list):
+            full_feature_columns = list(result.pop("feature_columns") or [])
+            result.update(
+                _feature_columns_summary(
+                    full_feature_columns,
+                    source=result.get("summary_path") or result.get("canonical_summary_path"),
+                )
+            )
         return result
 
     def train_chemprop_model(

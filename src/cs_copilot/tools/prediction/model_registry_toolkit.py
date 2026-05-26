@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
@@ -30,6 +31,7 @@ from .session_state import (
 )
 
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
 
 
 def _relative_posix(path: Path, start: Path) -> str:
@@ -61,6 +63,71 @@ def _load_json_if_available(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _compact_inference_profile_for_response(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    payload = dict(profile or {})
+    feature_columns = payload.pop("feature_columns", None)
+    if isinstance(feature_columns, list):
+        omitted_count = max(0, len(feature_columns) - FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT)
+        payload.update(
+            {
+                "feature_columns_count": len(feature_columns),
+                "feature_columns_sample": feature_columns[:FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT],
+                "feature_columns_omitted_count": omitted_count,
+            }
+        )
+        if omitted_count:
+            payload["feature_columns_note"] = (
+                "Full feature_columns are present in the catalog record but omitted "
+                "from this tool response to keep agent context bounded."
+            )
+    return payload
+
+
+def _compact_model_payload_for_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    compacted = dict(payload)
+    compacted["inference_profile"] = _compact_inference_profile_for_response(
+        compacted.get("inference_profile")
+    )
+    return compacted
+
+
+def _compact_recommendation_for_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    compacted = dict(payload)
+    for key in ("selected_model", "runnable_candidate"):
+        if isinstance(compacted.get(key), dict):
+            compacted[key] = _compact_model_payload_for_response(compacted[key])
+    alternatives = compacted.get("alternatives")
+    if isinstance(alternatives, list):
+        compacted["alternatives"] = [
+            _compact_model_payload_for_response(item) if isinstance(item, dict) else item
+            for item in alternatives
+        ]
+    return compacted
+
+
+def _hydrate_inference_profile_from_summary(
+    *,
+    current_profile: Dict[str, Any],
+    override_profile: Optional[Dict[str, Any]],
+    summary_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    profile = {
+        **(current_profile or {}),
+        **(override_profile or {}),
+    }
+    if not profile.get("feature_columns") and isinstance(summary_payload.get("feature_columns"), list):
+        profile["feature_columns"] = list(summary_payload["feature_columns"])
+    if not profile.get("categorical_feature_columns") and isinstance(
+        summary_payload.get("categorical_feature_columns"), list
+    ):
+        profile["categorical_feature_columns"] = list(summary_payload["categorical_feature_columns"])
+    if not profile.get("representation_name") and summary_payload.get("representation_name"):
+        profile["representation_name"] = summary_payload.get("representation_name")
+    if summary_payload.get("summary_path") and not profile.get("feature_columns_source"):
+        profile["feature_columns_source"] = summary_payload.get("summary_path")
+    return profile
 
 
 def _resolved_path_key(path: str | Path) -> str:
@@ -283,7 +350,7 @@ class ModelRegistryToolkit(Toolkit):
         }
 
     def annotate_record(self, record: PredictionModelRecord) -> Dict[str, Any]:
-        payload = record.as_dict()
+        payload = _compact_model_payload_for_response(record.as_dict())
         payload["backend_environment"] = self.get_backend(
             record.backend_name
         ).describe_environment()
@@ -306,7 +373,7 @@ class ModelRegistryToolkit(Toolkit):
             available_backend_names=available_backends,
             include_unavailable_paths=include_unavailable_paths,
         )
-        return [candidate.as_dict() for candidate in candidates]
+        return [_compact_model_payload_for_response(candidate.as_dict()) for candidate in candidates]
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
@@ -340,11 +407,12 @@ class ModelRegistryToolkit(Toolkit):
             include_unavailable_paths=include_unavailable_paths,
         )
 
+        compact_recommendation = _compact_recommendation_for_response(recommendation)
         if agent is not None:
             prediction_state = get_prediction_state(agent)
-            prediction_state["catalog_recommendations"] = recommendation
+            prediction_state["catalog_recommendations"] = compact_recommendation
 
-        return recommendation
+        return compact_recommendation
 
     def register_catalog_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Register a model from the persistent catalog into the current session."""
@@ -481,7 +549,7 @@ class ModelRegistryToolkit(Toolkit):
 
         prediction_state = get_prediction_state(agent)
         prediction_state["registered"][model_id] = record.as_dict()
-        payload = record.as_dict()
+        payload = _compact_model_payload_for_response(record.as_dict())
         payload.update(
             {
                 "registered": True,
@@ -1055,9 +1123,19 @@ class ModelRegistryToolkit(Toolkit):
             )
         if summary_path is None:
             summary_path = _find_training_summary_from_model_run(inferred_run_dir)
+        if summary_path is None:
+            explicit_summary_path = (
+                (current.training_data_summary or {}).get("training_summary_path")
+                or (current.inference_profile or {}).get("feature_columns_source")
+            )
+            if explicit_summary_path:
+                candidate_summary_path = Path(str(explicit_summary_path)).expanduser()
+                if candidate_summary_path.exists():
+                    summary_path = candidate_summary_path
         if summary_path is not None and summary_path.exists():
             try:
                 summary_payload = json.loads(summary_path.read_text())
+                summary_payload.setdefault("summary_path", str(summary_path))
                 train_csv = train_csv or summary_payload.get("train_csv")
                 applicability_domain = summary_payload.get("applicability_domain") or {}
                 governance_assessment = (
@@ -1143,9 +1221,15 @@ class ModelRegistryToolkit(Toolkit):
             "curation": merged_curation,
             "feature_preparation": summary_payload.get("feature_preparation") or {},
         }
+        hydrated_inference_profile = _hydrate_inference_profile_from_summary(
+            current_profile=current.inference_profile,
+            override_profile=inference_profile,
+            summary_payload=summary_payload,
+        )
+        materialization_record = replace(current, inference_profile=hydrated_inference_profile)
 
         materialized = self._materialize_internal_model(
-            record=current,
+            record=materialization_record,
             train_csv=train_csv,
             model_id=canonical_model_id,
             source_artifacts=source_artifacts,
@@ -1229,10 +1313,7 @@ class ModelRegistryToolkit(Toolkit):
                 if activity_summary_payload
                 else {},
             },
-            inference_profile={
-                **current.inference_profile,
-                **(inference_profile or {}),
-            },
+            inference_profile=hydrated_inference_profile,
             selection_hints={
                 **current.selection_hints,
                 **(selection_hints or {}),
@@ -1266,7 +1347,7 @@ class ModelRegistryToolkit(Toolkit):
             "metadata_path": persisted_record.metadata_path,
             "governance_assessment": governance_assessment,
             "status_reason": status_reason,
-            "record": persisted_record.as_dict(),
+            "record": _compact_model_payload_for_response(persisted_record.as_dict()),
         }
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
@@ -1274,7 +1355,10 @@ class ModelRegistryToolkit(Toolkit):
         if agent is None:
             return []
         prediction_state = get_prediction_state(agent)
-        return list(prediction_state["registered"].values())
+        return [
+            _compact_model_payload_for_response(record)
+            for record in prediction_state["registered"].values()
+        ]
 
     def summarize_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Return the stored summary for a registered model."""

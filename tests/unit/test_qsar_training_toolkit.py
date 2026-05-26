@@ -16,7 +16,7 @@ def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name
         "representation_name": representation_name,
         "validation_protocol": validation_protocol,
         "candidate_train_csv": str(tmp_path / f"{representation_name}.csv"),
-        "feature_columns": ["feature_a"],
+        "feature_columns": [f"feature_{index:04d}" for index in range(64)],
         "feature_preparation": {
             "representation_name": representation_name,
             "feature_cache_key": f"cache-{representation_name}",
@@ -89,6 +89,14 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
     ]
     assert called_representations == result["representations"]
     assert len(result["recommended_registry_payloads"]) == 4
+    assert "feature_columns" not in result
+    assert result["feature_columns_count"] == 64
+    assert result["feature_columns_omitted_count"] == 44
+    assert "feature_columns" not in result["candidate_results"][0]
+    assert result["candidate_results"][0]["feature_columns_count"] == 64
+    first_payload_profile = result["recommended_registry_payloads"][0]["inference_profile"]
+    assert "feature_columns" not in first_payload_profile
+    assert first_payload_profile["feature_columns_count"] == 64
 
 
 def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):
@@ -129,3 +137,6 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
     assert "campaign_started" not in result
     assert captured["representation_name"] == "rdkit_all"
     assert result["representation_name"] == "rdkit_all"
+    assert "feature_columns" not in result
+    assert result["feature_columns_count"] == 64
+    assert "feature_columns" not in result["recommended_registry_payload"]["inference_profile"]

@@ -621,6 +621,8 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
                 "train_csv": str(train_csv),
                 "trained_at": "2026-05-21T12:57:29+02:00",
                 "validation_protocol": "standard_qsar",
+                "representation_name": "morgan_count_only",
+                "feature_columns": [f"feature_{index:04d}" for index in range(64)],
                 "validation_assessment": {
                     "governance": {
                         "recommended_status": "workflow_demo",
@@ -668,7 +670,13 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
     assert result["status"] == "workflow_demo"
     assert result["record"]["status"] == "workflow_demo"
+    assert "feature_columns" not in result["record"]["inference_profile"]
+    assert result["record"]["inference_profile"]["feature_columns_count"] == 64
     assert persisted_metadata["status"] == "workflow_demo"
+    assert persisted_metadata["inference_profile"]["feature_columns"] == [
+        f"feature_{index:04d}" for index in range(64)
+    ]
+    assert persisted_metadata["inference_profile"]["representation_name"] == "morgan_count_only"
     assert result["status_reason"]
     assert "workflow_demo" in result["status_reason"]
 
