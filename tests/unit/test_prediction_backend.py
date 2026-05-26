@@ -295,7 +295,7 @@ def test_chemprop_standard_qsar_forces_single_replicate():
     assert "standard_qsar" in note
 
 
-def test_chemprop_robust_qsar_keeps_requested_replicates():
+def test_chemprop_robust_qsar_forces_single_replicate():
     toolkit = ChempropToolkit(register_tools=False)
     training_policy = {"extra_args": {"num_replicates": 3}}
 
@@ -304,8 +304,8 @@ def test_chemprop_robust_qsar_keeps_requested_replicates():
         protocol_policy={"protocol": "robust_qsar"},
     )
 
-    assert training_policy["extra_args"]["num_replicates"] == 3
-    assert note is None
+    assert training_policy["extra_args"]["num_replicates"] == 1
+    assert "split runs" in note
 
 
 def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):

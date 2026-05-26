@@ -441,13 +441,14 @@ class ChempropToolkit(Toolkit):
     ) -> Optional[str]:
         """Apply Chemprop-specific training overrides once the QSAR protocol is known."""
         extra_args = training_policy.setdefault("extra_args", {})
-        if protocol_policy.get("protocol") == "standard_qsar":
+        protocol = protocol_policy.get("protocol")
+        if protocol in {"fast_local", "standard_qsar", "robust_qsar", "challenging_qsar"}:
             requested_replicates = int(extra_args.get("num_replicates") or 1)
             extra_args["num_replicates"] = 1
             if requested_replicates != 1:
                 return (
-                    "Chemprop standard_qsar uses one aligned replicate. "
-                    "Replicate stability and multi-run summaries are reserved for robust_qsar."
+                    "Chemprop QSAR protocols use one replicate per split. "
+                    "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
                 )
         return None
 
