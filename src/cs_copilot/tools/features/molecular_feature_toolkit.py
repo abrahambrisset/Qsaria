@@ -39,6 +39,22 @@ def _feature_column_names(prefix: str, n_bits: int) -> List[str]:
     return [f"{prefix}{index:04d}" for index in range(n_bits)]
 
 
+def _normalize_fingerprint_kind(fingerprint_kind: str) -> str:
+    normalized = str(fingerprint_kind or "binary").strip().lower()
+    aliases = {
+        "bit": "binary",
+        "bits": "binary",
+        "binary": "binary",
+        "count": "count",
+        "counts": "count",
+        "count_based": "count",
+        "count-based": "count",
+    }
+    if normalized not in aliases:
+        raise ValueError("Unsupported fingerprint_kind. Supported values are 'binary' and 'count'.")
+    return aliases[normalized]
+
+
 _BASIC_RDKIT_DESCRIPTOR_FUNCS = {
     "MolWt": Descriptors.MolWt,
     "MolLogP": Descriptors.MolLogP,
@@ -197,6 +213,7 @@ class MolecularFeatureToolkit(Toolkit):
         include_input_columns: bool = False,
         input_columns_to_keep: Optional[List[str]] = None,
         feature_prefix: str = "fp_",
+        fingerprint_kind: str = "binary",
     ) -> Dict[str, Any]:
         """
         Transform a SMILES column into a tabular CSV of Morgan fingerprints.
@@ -206,6 +223,7 @@ class MolecularFeatureToolkit(Toolkit):
         featurization step without coupling it to training.
         """
         started_at = time.monotonic()
+        normalized_fingerprint_kind = _normalize_fingerprint_kind(fingerprint_kind)
         if radius != 2:
             raise ValueError(
                 "The current Morgan helper supports radius=2 only in this V1 implementation."
@@ -245,7 +263,10 @@ class MolecularFeatureToolkit(Toolkit):
                 raise ValueError(
                     f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}"
                 )
-            fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
+            if normalized_fingerprint_kind == "count":
+                fingerprint = fp_generator.GetCountFingerprintAsNumPy(mol)
+            else:
+                fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
             fingerprint_rows.append(fingerprint.astype(int).tolist())
 
         feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
@@ -272,6 +293,7 @@ class MolecularFeatureToolkit(Toolkit):
             "source_smiles_column": resolved_smiles_column,
             "radius": radius,
             "n_bits": n_bits,
+            "fingerprint_kind": normalized_fingerprint_kind,
             "num_features": len(feature_columns),
             "feature_prefix": feature_prefix,
             "feature_columns_sample": feature_columns[:5],

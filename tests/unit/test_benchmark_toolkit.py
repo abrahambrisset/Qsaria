@@ -109,10 +109,12 @@ def test_expand_candidates_includes_heavy_tabicl_all():
         training_profile="heavy_validation",
     )
     candidate_ids = [item["candidate_id"] for item in candidates]
+    assert "tabicl_rdkit_all" in candidate_ids
     assert "tabicl_morgan_only" in candidate_ids
-    assert "tabicl_rdkit_basic_only" in candidate_ids
-    assert "tabicl_morgan_rdkit_basic" in candidate_ids
-    assert "tabicl_morgan_rdkit_all" in candidate_ids
+    assert "tabicl_morgan_count_only" in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "tabicl_rdkit_basic_only" not in candidate_ids
+    assert "tabicl_morgan_rdkit_basic" not in candidate_ids
 
 
 def test_expand_candidates_includes_heavy_lightgbm_all():
@@ -126,10 +128,12 @@ def test_expand_candidates_includes_heavy_lightgbm_all():
         training_profile="heavy_validation",
     )
     candidate_ids = [item["candidate_id"] for item in candidates]
+    assert "lightgbm_rdkit_all" in candidate_ids
     assert "lightgbm_morgan_only" in candidate_ids
-    assert "lightgbm_rdkit_basic_only" in candidate_ids
-    assert "lightgbm_morgan_rdkit_basic" in candidate_ids
-    assert "lightgbm_morgan_rdkit_all" in candidate_ids
+    assert "lightgbm_morgan_count_only" in candidate_ids
+    assert "lightgbm_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "lightgbm_rdkit_basic_only" not in candidate_ids
+    assert "lightgbm_morgan_rdkit_basic" not in candidate_ids
 
 
 def test_rank_summary_rows_prefers_hardest_split_then_gap():
@@ -361,18 +365,18 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert result["campaign_seed_policy"]["mode"] == "generated_per_benchmark_campaign"
     assert result["campaign_seed_policy"]["shared_across_candidates"] is True
     assert result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
-    assert "feature_cache" not in result
+    assert result["feature_cache"]["feature_cache_dir"].endswith("feature_cache")
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids
+    assert "lightgbm_rdkit_all" in candidate_ids
     assert "lightgbm_morgan_only" in candidate_ids
-    assert "lightgbm_rdkit_basic_only" in candidate_ids
-    assert "lightgbm_morgan_rdkit_basic" in candidate_ids
-    assert "lightgbm_morgan_rdkit_all" in candidate_ids
+    assert "lightgbm_morgan_count_only" in candidate_ids
+    assert "lightgbm_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "tabicl_rdkit_all" in candidate_ids
     assert "tabicl_morgan_only" in candidate_ids
-    assert "tabicl_rdkit_basic_only" in candidate_ids
-    assert "tabicl_morgan_rdkit_basic" in candidate_ids
-    assert "tabicl_morgan_rdkit_all" in candidate_ids
+    assert "tabicl_morgan_count_only" in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
 
     for item in result["persisted_model_mapping"]:
         model_root = Path(item["internal_model_root"])
@@ -390,7 +394,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     benchmark_summary = json.loads(Path(result["summary_path"]).read_text())
     assert benchmark_summary["campaign_seed_policy"]["split_runs"] == result["campaign_seed_policy"]["split_runs"]
     assert benchmark_summary["seed_policy_report"] == result["seed_policy_report"]
-    assert "feature_cache" not in benchmark_summary
+    assert benchmark_summary["feature_cache"]["feature_cache_dir"].endswith("feature_cache")
 
     leaderboard = pd.read_csv(result["leaderboard_path"])
     assert set(["candidate_id", "model_id", "backend", "representation", "hardest_split_r2"]).issubset(

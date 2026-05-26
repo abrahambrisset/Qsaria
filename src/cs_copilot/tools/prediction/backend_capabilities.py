@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Mapping, Tuple
 
+from .tabular_representations import SUPPORTED_TABULAR_REPRESENTATION_NAMES
+
 
 @dataclass(frozen=True)
 class BackendCapabilities:
@@ -56,12 +58,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         prediction_input_kinds=("tabular_features_csv",),
         requires_feature_preparation=True,
         supported_task_types=("regression",),
-        supported_representations=(
-            "morgan_only",
-            "rdkit_basic_only",
-            "morgan_rdkit_basic",
-            "morgan_rdkit_all",
-        ),
+        supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
         supports_applicability_domain=True,
         supports_uncertainty="none",
         supports_activity_cliff_feedback_loops=True,
@@ -75,12 +72,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         prediction_input_kinds=("tabular_features_csv",),
         requires_feature_preparation=True,
         supported_task_types=("regression",),
-        supported_representations=(
-            "morgan_only",
-            "rdkit_basic_only",
-            "morgan_rdkit_basic",
-            "morgan_rdkit_all",
-        ),
+        supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
         supports_applicability_domain=True,
         supports_uncertainty="none",
         gpu_support="runtime_dependent",

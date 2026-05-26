@@ -31,6 +31,10 @@ from .qsar_training_policy import (
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
+from .tabular_representations import (
+    AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
+    LEGACY_TABULAR_REPRESENTATION_NAMES,
+)
 from .session_state import (
     get_prediction_state,
     write_active_training_marker,
@@ -225,17 +229,16 @@ class TabICLToolkit(Toolkit):
                 ],
                 "supported_split_families": ["random", "scaffold", "cluster_kmeans"],
                 "default_tabular_feature_policy": {
-                    "default_representation": "morgan_plus_rdkit",
-                    "local_light": {"rdkit_descriptor_set": "basic"},
-                    "local_standard": {"rdkit_descriptor_set": "basic"},
-                    "heavy_validation": {"rdkit_descriptor_set": "all"},
+                    "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+                    "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
+                    "default_single_representation": "morgan_rdkit_all",
                     "explicit_user_override": True,
                 },
                 "notes": [
                     "Supports the shared QSAR protocol names and split families.",
-                    "Default TabICL tabular features combine Morgan fingerprints with RDKit descriptors.",
-                    "Lighter profiles default to RDKit basic; heavy GPU-capable profiles default to RDKit all.",
-                    "If the user explicitly requests Morgan only or RDKit only, that override should win.",
+                    "Modern comparative campaigns use RDKit all, Morgan binary, Morgan count, and the complete combined pack.",
+                    "RDKit basic representations are legacy-only and require explicit user override.",
+                    "If the user explicitly requests a representation, that override should win.",
                     "The `.ckpt` checkpoint is a backend resource, not a trained model artifact.",
                     "`validate_tabicl_model_path` is intended for saved trained models such as `.pkl`.",
                 ],

@@ -94,6 +94,29 @@ def test_morgan_keeps_single_canonical_smiles_when_alias_columns_coexist(tmp_pat
     assert "Y" in output_df.columns
 
 
+def test_morgan_count_fingerprints_are_tabular_counts(tmp_path):
+    toolkit = MolecularFeatureToolkit()
+    input_csv = _sample_feature_input(tmp_path)
+    output_csv = tmp_path / "morgan_count.csv"
+
+    result = toolkit.smiles_to_morgan_fingerprints(
+        input_csv=str(input_csv),
+        smiles_column="SMILES",
+        output_csv=str(output_csv),
+        input_columns_to_keep=["Y"],
+        n_bits=64,
+        feature_prefix="cfp_",
+        fingerprint_kind="count",
+    )
+
+    output_df = pd.read_csv(output_csv)
+    feature_columns = [column for column in output_df.columns if column.startswith("cfp_")]
+    assert result["fingerprint_kind"] == "count"
+    assert len(feature_columns) == 64
+    assert output_df[feature_columns].to_numpy().max() >= 1
+    assert output_df[feature_columns].dtypes.apply(lambda dtype: dtype.kind).isin(["i", "u"]).all()
+
+
 def test_rdkit_output_keeps_normalized_smiles_for_future_joins(tmp_path):
     toolkit = MolecularFeatureToolkit()
     input_csv = _sample_feature_input(tmp_path)

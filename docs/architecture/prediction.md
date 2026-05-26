@@ -21,6 +21,7 @@ Agents
         |
         |-- training_orchestration.py
         |-- backend_factory.py
+        |-- tabular_representations.py
         |-- MolecularFeatureToolkit
         |-- ActivityCliffToolkit
         |
@@ -48,6 +49,42 @@ training facade.
   by delegating actual training to `QSARTrainingToolkit` and persistence to
   `ModelRegistryToolkit`.
 - `EnsembleToolkit`: ensemble creation, summary, and evaluation workflows.
+
+## Tabular QSAR Representations
+
+Tabular representations are declared once in `tabular_representations.py` and
+consumed by training, benchmark, and backend capability reporting.
+
+Modern automatic pack:
+
+- `rdkit_all`
+- `morgan_only`
+- `morgan_count_only`
+- `morgan_binary_count_rdkit_all`
+
+Legacy explicit-only representations:
+
+- `rdkit_basic_only`
+- `morgan_rdkit_basic`
+
+`MolecularFeatureToolkit` owns feature generation for all tabular backends.
+Features are cached by dataset fingerprint, SMILES column, representation, and
+feature parameters. Combined representations reuse the cached RDKit all, Morgan
+binary, and Morgan count feature tables rather than regenerating them per split
+or candidate.
+
+## Training Modes
+
+- `fast_local`: quick smoke test. Tabular backends use `rdkit_all`; Chemprop
+  uses molecular graphs.
+- `standard_qsar`: Chemprop trains one graph candidate; LightGBM/TabICL train
+  the full modern tabular pack with one random and one scaffold split.
+- `robust_qsar`: same candidates as `standard_qsar`, with three random splits
+  plus one scaffold split.
+- `benchmark_standard_qsar`: multi-backend comparison over Chemprop graph plus
+  the modern LightGBM/TabICL pack using the standard protocol.
+- `benchmark_robust_qsar`: the same benchmark candidates with the robust
+  protocol. There is no top-N preselection yet.
 
 ## Backend Construction
 

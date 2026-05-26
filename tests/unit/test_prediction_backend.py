@@ -73,6 +73,8 @@ def test_describe_backend_capabilities_is_serializable():
     json.dumps(payload)
     assert payload["chemprop"]["backend_name"] == "chemprop"
     assert "morgan_rdkit_all" in payload["lightgbm"]["supported_representations"]
+    assert "morgan_count_only" in payload["lightgbm"]["supported_representations"]
+    assert "morgan_binary_count_rdkit_all" in payload["tabicl"]["supported_representations"]
     assert payload["lightgbm"]["gpu_support"] == "supported_when_available"
 
 
@@ -454,8 +456,11 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             n_bits,
             include_input_columns,
             input_columns_to_keep,
+            feature_prefix="fp_",
+            fingerprint_kind="binary",
         ):
             assert smiles_column == "smiles"
+            assert fingerprint_kind == "binary"
             source = pd.read_csv(input_csv)
             pd.DataFrame(
                 {
@@ -517,8 +522,12 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
     assert "standardized_smiles" not in output_columns
     assert result["feature_columns"] == ["fp_0000"]
     assert result["feature_preparation"]["feature_count"] == 1
-    assert result["feature_preparation_durations"]["steps"][0]["step"] == "morgan_fingerprints"
-    assert result["feature_preparation_durations"]["steps"][0]["duration_seconds"] == 1.25
+    morgan_step = next(
+        step
+        for step in result["feature_preparation_durations"]["steps"]
+        if step["step"] == "morgan_binary_fingerprints"
+    )
+    assert morgan_step["duration_seconds"] == 1.25
 
 
 def test_prediction_registry_rejects_archive_model_paths_without_backend_validation():

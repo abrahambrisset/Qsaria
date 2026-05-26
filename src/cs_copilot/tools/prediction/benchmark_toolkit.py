@@ -25,6 +25,10 @@ from .qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
+from .tabular_representations import (
+    tabular_candidates_for_backend,
+    get_tabular_representation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,59 +106,6 @@ class BenchmarkToolkit(Toolkit):
         "standard_qsar": "benchmark_standard_qsar",
         "robust_qsar": "benchmark_robust_qsar",
         "challenging_qsar": "benchmark_challenging_qsar",
-    }
-
-    TABICL_VARIANT_SPECS = {
-        "tabicl_morgan_only": {
-            "representation_name": "morgan_only",
-            "use_morgan": True,
-            "use_rdkit": False,
-            "descriptor_set": None,
-        },
-        "tabicl_rdkit_basic_only": {
-            "representation_name": "rdkit_basic_only",
-            "use_morgan": False,
-            "use_rdkit": True,
-            "descriptor_set": "basic",
-        },
-        "tabicl_morgan_rdkit_basic": {
-            "representation_name": "morgan_rdkit_basic",
-            "use_morgan": True,
-            "use_rdkit": True,
-            "descriptor_set": "basic",
-        },
-        "tabicl_morgan_rdkit_all": {
-            "representation_name": "morgan_rdkit_all",
-            "use_morgan": True,
-            "use_rdkit": True,
-            "descriptor_set": "all",
-        },
-    }
-    LIGHTGBM_VARIANT_SPECS = {
-        "lightgbm_morgan_only": {
-            "representation_name": "morgan_only",
-            "use_morgan": True,
-            "use_rdkit": False,
-            "descriptor_set": None,
-        },
-        "lightgbm_rdkit_basic_only": {
-            "representation_name": "rdkit_basic_only",
-            "use_morgan": False,
-            "use_rdkit": True,
-            "descriptor_set": "basic",
-        },
-        "lightgbm_morgan_rdkit_basic": {
-            "representation_name": "morgan_rdkit_basic",
-            "use_morgan": True,
-            "use_rdkit": True,
-            "descriptor_set": "basic",
-        },
-        "lightgbm_morgan_rdkit_all": {
-            "representation_name": "morgan_rdkit_all",
-            "use_morgan": True,
-            "use_rdkit": True,
-            "descriptor_set": "all",
-        },
     }
 
     def __init__(
@@ -236,32 +187,13 @@ class BenchmarkToolkit(Toolkit):
         *,
         include_candidate_variants: bool,
         training_profile: str,
+        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
-        if include_candidate_variants:
-            variant_ids = [
-                "lightgbm_morgan_only",
-                "lightgbm_rdkit_basic_only",
-                "lightgbm_morgan_rdkit_basic",
-                "lightgbm_morgan_rdkit_all",
-            ]
-        else:
-            variant_ids = [
-                "lightgbm_morgan_rdkit_all"
-                if training_profile == "heavy_validation"
-                else "lightgbm_morgan_rdkit_basic"
-            ]
-
-        candidates: List[Dict[str, Any]] = []
-        for candidate_id in variant_ids:
-            spec = dict(self.LIGHTGBM_VARIANT_SPECS[candidate_id])
-            candidates.append(
-                {
-                    "candidate_id": candidate_id,
-                    "backend_name": "lightgbm",
-                    **spec,
-                }
-            )
-        return candidates
+        return tabular_candidates_for_backend(
+            "lightgbm",
+            single_default_protocol=None if include_candidate_variants else benchmark_protocol,
+            training_profile=training_profile,
+        )
 
     def _expand_tabicl_candidates(
         self,
@@ -269,38 +201,27 @@ class BenchmarkToolkit(Toolkit):
         include_candidate_variants: bool,
         requested_variants: Optional[List[str]],
         training_profile: str,
+        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
         if requested_variants:
-            unknown = [name for name in requested_variants if name not in self.TABICL_VARIANT_SPECS]
-            if unknown:
-                raise ValueError(f"Unknown TabICL benchmark variants: {unknown}")
-            variant_ids = requested_variants
-        elif include_candidate_variants:
-            variant_ids = [
-                "tabicl_morgan_only",
-                "tabicl_rdkit_basic_only",
-                "tabicl_morgan_rdkit_basic",
-            ]
-            if training_profile == "heavy_validation":
-                variant_ids.append("tabicl_morgan_rdkit_all")
-        else:
-            variant_ids = [
-                "tabicl_morgan_rdkit_all"
-                if training_profile == "heavy_validation"
-                else "tabicl_morgan_rdkit_basic"
-            ]
-
-        candidates: List[Dict[str, Any]] = []
-        for candidate_id in variant_ids:
-            spec = dict(self.TABICL_VARIANT_SPECS[candidate_id])
-            candidates.append(
-                {
-                    "candidate_id": candidate_id,
-                    "backend_name": "tabicl",
-                    **spec,
-                }
+            representation_names: List[str] = []
+            for name in requested_variants:
+                normalized = str(name).strip().lower()
+                if normalized.startswith("tabicl_"):
+                    normalized = normalized.replace("tabicl_", "", 1)
+                get_tabular_representation(normalized)
+                representation_names.append(normalized)
+            return tabular_candidates_for_backend(
+                "tabicl",
+                representation_names=representation_names,
+                training_profile=training_profile,
             )
-        return candidates
+
+        return tabular_candidates_for_backend(
+            "tabicl",
+            single_default_protocol=None if include_candidate_variants else benchmark_protocol,
+            training_profile=training_profile,
+        )
 
     def _expand_candidates(
         self,
@@ -311,6 +232,7 @@ class BenchmarkToolkit(Toolkit):
         include_candidate_variants: bool,
         requested_tabicl_variants: Optional[List[str]],
         training_profile: str,
+        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
         backends = self._resolve_backends(
             task_type=task_type,
@@ -331,6 +253,7 @@ class BenchmarkToolkit(Toolkit):
                 self._expand_lightgbm_candidates(
                     include_candidate_variants=include_candidate_variants,
                     training_profile=training_profile,
+                    benchmark_protocol=benchmark_protocol,
                 )
             )
         if "tabicl" in backends:
@@ -339,6 +262,7 @@ class BenchmarkToolkit(Toolkit):
                     include_candidate_variants=include_candidate_variants,
                     requested_variants=requested_tabicl_variants,
                     training_profile=training_profile,
+                    benchmark_protocol=benchmark_protocol,
                 )
             )
         return candidates
@@ -362,6 +286,7 @@ class BenchmarkToolkit(Toolkit):
             "validation_protocol": benchmark_protocol,
             "allow_heavy_compute": allow_heavy_compute,
             "seed_policy": campaign_seed_policy,
+            "feature_cache_dir": str(candidate_dir.parent / "feature_cache"),
         }
         if training_profile:
             requested_extra_args["training_profile"] = training_profile
@@ -458,6 +383,8 @@ class BenchmarkToolkit(Toolkit):
                 "reproducibility": seed_policy_reproducibility_metadata(
                     result.get("seed_policy") or campaign_seed_policy
                 ),
+                "feature_preparation": result.get("feature_preparation") or {},
+                "feature_preparation_durations": result.get("feature_preparation_durations") or {},
                 "trained_at": result.get("trained_at"),
             },
             inference_profile={
@@ -526,6 +453,10 @@ class BenchmarkToolkit(Toolkit):
             "status": persisted.get("status"),
             "internal_model_root": persisted.get("model_root"),
             "best_model_path": persisted.get("model_path"),
+            "feature_cache_key": (result.get("feature_preparation") or {}).get("feature_cache_key"),
+            "feature_cache_status": (result.get("feature_preparation") or {}).get("feature_cache_status"),
+            "feature_cache_hits": (result.get("feature_preparation") or {}).get("cache_hits"),
+            "feature_cache_misses": (result.get("feature_preparation") or {}).get("cache_misses"),
         }
         return row
 
@@ -568,6 +499,7 @@ class BenchmarkToolkit(Toolkit):
             "split_results": split_summaries,
             "internal_model_root": row.get("internal_model_root"),
             "best_model_path": row.get("best_model_path"),
+            "feature_preparation": result.get("feature_preparation") or {},
         }
 
     def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -655,6 +587,16 @@ class BenchmarkToolkit(Toolkit):
         )
         if split_seed_text:
             lines.append(f"- Shared split seeds: `{split_seed_text}`")
+        cache_hits = sum(
+            int(((result.get("feature_preparation") or {}).get("cache_hits") or 0))
+            for result in candidate_results
+        )
+        cache_misses = sum(
+            int(((result.get("feature_preparation") or {}).get("cache_misses") or 0))
+            for result in candidate_results
+        )
+        if cache_hits or cache_misses:
+            lines.append(f"- Feature cache hits/misses: `{cache_hits}` / `{cache_misses}`")
         lines.append("")
         lines.append("## Candidate inventory")
         lines.append("")
@@ -778,6 +720,9 @@ class BenchmarkToolkit(Toolkit):
         benchmark_protocol = self._resolve_benchmark_protocol(benchmark_mode)
         compute_payload = self._resolve_compute_profile()
         effective_training_profile = training_profile or compute_payload["training_profile"]
+        effective_include_candidate_variants = (
+            include_candidate_variants if benchmark_protocol != "fast_local" else False
+        )
         campaign_seed_policy = resolve_seed_policy(
             protocol=benchmark_protocol,
             mode="generated_per_benchmark_campaign",
@@ -787,9 +732,10 @@ class BenchmarkToolkit(Toolkit):
             task_type=task_type,
             target_columns=target_columns,
             requested_backends=requested_backends,
-            include_candidate_variants=include_candidate_variants,
+            include_candidate_variants=effective_include_candidate_variants,
             requested_tabicl_variants=requested_tabicl_variants,
             training_profile=effective_training_profile,
+            benchmark_protocol=benchmark_protocol,
         )
         if not candidates:
             raise ValueError("No compatible benchmark candidates are available.")
@@ -889,6 +835,11 @@ class BenchmarkToolkit(Toolkit):
 
         ranked_rows = self._rank_summary_rows(candidate_rows)
         recommendations = self._resolve_recommendations(ranked_rows, benchmark_protocol)
+        feature_cache = {
+            "feature_cache_dir": str(campaign_root / "feature_cache"),
+            "cache_hits": sum(int(row.get("feature_cache_hits") or 0) for row in candidate_rows),
+            "cache_misses": sum(int(row.get("feature_cache_misses") or 0) for row in candidate_rows),
+        }
 
         leaderboard_path = campaign_root / "leaderboard.csv"
         pd.DataFrame(ranked_rows).to_csv(leaderboard_path, index=False)
@@ -930,6 +881,7 @@ class BenchmarkToolkit(Toolkit):
             ],
             "candidate_results": compact_candidate_results,
             "persisted_model_mapping": persisted_model_mapping,
+            "feature_cache": feature_cache,
             "leaderboard_path": str(leaderboard_path),
             "report_path": str(report_path),
             **recommendations,
@@ -947,6 +899,7 @@ class BenchmarkToolkit(Toolkit):
             "candidate_results": compact_candidate_results,
             "leaderboard": ranked_rows,
             "persisted_model_mapping": persisted_model_mapping,
+            "feature_cache": feature_cache,
             "leaderboard_path": str(leaderboard_path),
             "summary_path": str(summary_path),
             "report_path": str(report_path),

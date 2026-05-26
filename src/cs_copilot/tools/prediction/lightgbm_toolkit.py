@@ -33,6 +33,10 @@ from .qsar_training_policy import (
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
+from .tabular_representations import (
+    AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
+    LEGACY_TABULAR_REPRESENTATION_NAMES,
+)
 from .session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
@@ -600,12 +604,9 @@ class LightGBMToolkit(Toolkit):
             {
                 "default_task_type": "regression",
                 "default_target_scope": "single_target",
-                "default_representations": [
-                    "morgan_only",
-                    "rdkit_basic_only",
-                    "morgan_rdkit_basic",
-                    "morgan_rdkit_all",
-                ],
+                "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+                "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
+                "default_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             }
         )
         return description
