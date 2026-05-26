@@ -462,13 +462,9 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             assert smiles_column == "smiles"
             assert fingerprint_kind == "binary"
             source = pd.read_csv(input_csv)
-            pd.DataFrame(
-                {
-                    "smiles": source["smiles"],
-                    "Y": source["Y"],
-                    "fp_0000": [1, 0],
-                }
-            ).to_csv(output_csv, index=False)
+            feature_df = source[input_columns_to_keep].copy()
+            feature_df["fp_0000"] = [1, 0]
+            feature_df.to_csv(output_csv, index=False)
             return {"output_csv": output_csv, "duration_seconds": 1.25, "num_features": 1}
 
         def build_tabular_qsar_dataset(
@@ -483,6 +479,7 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             canonicalize_smiles_join=True,
         ):
             assert canonicalize_smiles_join is False
+            assert join_on == ["__qsar_row_id"]
             assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
             for feature_csv in feature_csvs:
                 assembled = assembled.merge(

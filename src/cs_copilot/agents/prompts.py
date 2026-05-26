@@ -473,6 +473,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Use `validate_model_path` only for trained prediction artifacts (for example a saved `.pkl` model), not for the TabICL base checkpoint.",
     "  - Do not inspect `.json` training summaries with pandas dataframe tools. Treat them as structured artifacts, not CSV-like tables.",
     "  - If a JSON artifact path is returned during training, cite the path or use a JSON-aware artifact inspection path. Never call `create_pandas_dataframe(read_csv=...)` on `.json` files.",
+    "  - If a training tool fails before returning a successful result, stop and report the blocking error. Do not probe guessed output paths, guessed `test_predictions.csv` paths, or JSON summaries that were not returned by the failed tool call.",
     "  - Never pass a training bundle/archive (`.zip`, `.tar`, `.tar.gz`, `.tgz`) as `model_path` to `register_model`; use the concrete trained model artifact returned by the training tool, such as `best.pkl`, `best.pt`, or `.ckpt`.",
     "  - `register_model` is session-only. It is not catalog persistence. Do not stop after `register_model` for a completed training workflow; call `persist_registered_model` unless the user explicitly asked for session-only registration.",
     "  - If a training facade call returns a tabular representation campaign, read `persistence_plan` and `candidate_registry_payloads`. Register and persist every item in `candidate_registry_payloads`, not only `recommended_registry_payload`, then report the recommended candidate from the campaign ranking.",

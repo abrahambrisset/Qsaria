@@ -39,12 +39,13 @@ from .tabular_representations import (
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
 FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
+QSAR_ROW_ID_COLUMN = "__qsar_row_id"
 
 
 def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]:
     with S3.open(path, "r") as fh:
         columns = list(pd.read_csv(fh, nrows=0).columns)
-    excluded = {"smiles", *target_columns}
+    excluded = {"smiles", QSAR_ROW_ID_COLUMN, *target_columns}
     return [column for column in columns if column not in excluded]
 
 
@@ -321,32 +322,32 @@ class QSARTrainingToolkit(Toolkit):
         cache_root = Path(feature_cache_dir).expanduser().resolve() if feature_cache_dir else features_dir / "cache"
         cache_root.mkdir(parents=True, exist_ok=True)
 
-        base_csv_for_features = train_csv
-        feature_smiles_column = smiles_column
-        if smiles_column != "smiles":
-            step_started_at = time.monotonic()
-            with S3.open(train_csv, "r") as fh:
-                source_df = pd.read_csv(fh)
-            resolved_smiles_column = resolve_smiles_column_name(source_df, smiles_column)
-            missing_targets = [column for column in target_columns if column not in source_df.columns]
-            if missing_targets:
-                raise ValueError(f"Missing target columns: {missing_targets}")
-            normalized_df = source_df.copy()
-            if resolved_smiles_column != "smiles":
-                normalized_df["smiles"] = normalized_df[resolved_smiles_column]
-                normalized_df = normalized_df.drop(columns=[resolved_smiles_column])
-            normalized_csv = features_dir / f"{Path(train_csv).stem}_canonical_smiles.csv"
-            with S3.open(str(normalized_csv), "w") as fh:
-                normalized_df[["smiles", *target_columns]].to_csv(fh, index=False)
-            base_csv_for_features = str(normalized_csv)
-            feature_smiles_column = "smiles"
-            duration_steps.append(
-                {
-                    "step": "canonical_smiles_dataset",
-                    "duration_seconds": round(time.monotonic() - step_started_at, 3),
-                    "output_csv": base_csv_for_features,
-                }
-            )
+        step_started_at = time.monotonic()
+        with S3.open(train_csv, "r") as fh:
+            source_df = pd.read_csv(fh)
+        resolved_smiles_column = resolve_smiles_column_name(source_df, smiles_column)
+        missing_targets = [column for column in target_columns if column not in source_df.columns]
+        if missing_targets:
+            raise ValueError(f"Missing target columns: {missing_targets}")
+        normalized_df = source_df.copy()
+        if resolved_smiles_column != "smiles":
+            normalized_df["smiles"] = normalized_df[resolved_smiles_column]
+            normalized_df = normalized_df.drop(columns=[resolved_smiles_column])
+        normalized_df[QSAR_ROW_ID_COLUMN] = range(len(normalized_df))
+        normalized_csv = features_dir / f"{Path(train_csv).stem}_feature_base.csv"
+        with S3.open(str(normalized_csv), "w") as fh:
+            normalized_df[[QSAR_ROW_ID_COLUMN, "smiles", *target_columns]].to_csv(fh, index=False)
+        base_csv_for_features = str(normalized_csv)
+        feature_smiles_column = "smiles"
+        duration_steps.append(
+            {
+                "step": "feature_base_dataset",
+                "duration_seconds": round(time.monotonic() - step_started_at, 3),
+                "output_csv": base_csv_for_features,
+                "row_id_column": QSAR_ROW_ID_COLUMN,
+                "source_rows": int(len(normalized_df)),
+            }
+        )
 
         dataset_hash = _hash_file(base_csv_for_features)
 
@@ -413,7 +414,7 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
                     feature_prefix="fp_",
                     fingerprint_kind="binary",
                 )
@@ -455,7 +456,7 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
                     feature_prefix="cfp_",
                     fingerprint_kind="count",
                 )
@@ -498,7 +499,7 @@ class QSARTrainingToolkit(Toolkit):
                     output_csv=component["output_csv"],
                     descriptor_set=descriptor_set,
                     include_input_columns=True,
-                    input_columns_to_keep=[feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
@@ -527,6 +528,7 @@ class QSARTrainingToolkit(Toolkit):
             "representation_name": representation_name,
             "dataset_hash": dataset_hash,
             "smiles_column": feature_smiles_column,
+            "row_id_column": QSAR_ROW_ID_COLUMN,
             "target_columns": list(target_columns),
             "component_cache_keys": [component["cache_key"] for component in component_records],
         }
@@ -558,8 +560,8 @@ class QSARTrainingToolkit(Toolkit):
                 base_csv=base_csv_for_features,
                 output_csv=str(tabular_output_csv),
                 feature_csvs=feature_csvs,
-                join_on=["smiles", *target_columns],
-                base_columns_to_keep=["smiles", *target_columns],
+                join_on=[QSAR_ROW_ID_COLUMN],
+                base_columns_to_keep=[QSAR_ROW_ID_COLUMN, "smiles", *target_columns],
                 drop_duplicate_feature_columns=True,
                 canonicalize_smiles_join=False,
             )
