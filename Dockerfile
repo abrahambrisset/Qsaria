@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -7,17 +7,24 @@ ENV PYTHONUNBUFFERED=1 \
     UV_SYSTEM_PYTHON=1
 
 # System dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    curl \
-    libpq-dev \
-    libboost-all-dev \
-    libcairo2-dev \
-    libeigen3-dev \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get -o Acquire::Retries=5 update; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        build-essential \
+        git \
+        curl \
+        ca-certificates \
+        openssl \
+        libpq-dev \
+        libboost-dev \
+        libcairo2-dev \
+        libeigen3-dev \
+        nodejs \
+        npm; \
+    rm -rf /var/lib/apt/lists/*
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
