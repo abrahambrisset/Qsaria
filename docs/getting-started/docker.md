@@ -66,6 +66,11 @@ USE_S3=false  # in .env
 ## Dependencies
 
 Uses [uv](https://docs.astral.sh/uv/) for reproducible builds from `uv.lock`.
+The Docker image installs the QSAR runtime backends (`chemprop`, `lightgbm`,
+`tabicl`) into `/app/.venv` during build and starts Chainlit from that virtual
+environment directly. Avoid replacing the Docker command with `uv run ...` unless
+you also install/sync the QSAR backend extras, because a runtime sync can remove
+additive backend packages.
 
 ```bash
 uv sync                              # Update deps on host
@@ -89,6 +94,7 @@ docker-compose exec postgres psql -U postgres -d chainlit  # DB shell
 | Issue | Solution |
 |-------|----------|
 | App won't start | `docker-compose logs chainlit-app`, check `DEEPSEEK_API_KEY` |
+| QSAR backends missing | Rebuild without cache, then check `/app/.venv/bin/python -c "import chemprop, lightgbm, tabicl; print('QSAR_BACKENDS_OK')"` inside `chainlit-app` |
 | Port conflict | Use `./docker-start.sh` (auto-detects free ports) |
 | DB error "relation User does not exist" | `docker-compose up -d chainlit-db-init && docker-compose restart chainlit-app` |
 | MinIO issues | `docker-compose logs minio-setup` |
