@@ -18,14 +18,14 @@ docker compose build chainlit-app
 cp .env.example .env && docker-compose up -d  # Edit .env first
 ```
 
-**Access:** [App](http://localhost:8000) | [MinIO Console](http://localhost:9001) (cs_copilot / chempwd123) | PostgreSQL: localhost:5432
+**Access:** [App](http://localhost:8000) | PostgreSQL: localhost:5432
 
 ## Services
 
 | Service | Purpose | Ports |
 |---------|---------|-------|
 | chainlit-app | Main application | 8000 |
-| minio | S3-compatible storage | 9000, 9001 |
+| minio | Optional S3-compatible storage (`COMPOSE_PROFILES=minio`) | 9000, 9001 |
 | postgres | Chat history DB | 5432 |
 | minio-setup | One-time bucket init | - |
 | chainlit-db-init | Prisma migrations | - |
@@ -59,8 +59,11 @@ docker compose build chainlit-app
 # Complete reset
 docker compose down -v --remove-orphans --rmi all
 
-# Local storage only (no MinIO)
-USE_S3=false  # in .env
+# Local storage is the default; artifacts are persisted under ./.files
+USE_S3=false  # in .env, optional because this is already the Docker default
+
+# Optional MinIO/S3 mode
+USE_S3=true COMPOSE_PROFILES=minio docker compose up -d
 ```
 
 ## Dependencies

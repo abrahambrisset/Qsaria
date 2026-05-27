@@ -24,14 +24,26 @@ services:
       # Chainlit Auth
       - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET:-default-secret-change-in-production}
 
-      # S3/MinIO Configuration
-      - USE_S3=true
-      - MINIO_ENDPOINT=http://minio:9000
-      - S3_ENDPOINT_URL=http://minio:9000
+      # Local artifact storage (default Docker mode; no MinIO required)
+      - USE_S3=${USE_S3:-false}
+      - CS_COPILOT_STORAGE_ROOT=/app/.files
+
+      # Optional S3/MinIO Configuration. These are inert while USE_S3=false.
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://minio:9000}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
       - ASSETS_BUCKET=${ASSETS_BUCKET:-chatbot-assets}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-chatbot-assets}
+
+      # Previous always-on S3/MinIO Configuration (kept commented for reference)
+      # - USE_S3=true
+      # - MINIO_ENDPOINT=http://minio:9000
+      # - S3_ENDPOINT_URL=http://minio:9000
+      # - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
+      # - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
+      # - ASSETS_BUCKET=${ASSETS_BUCKET:-chatbot-assets}
+      # - S3_BUCKET_NAME=${S3_BUCKET_NAME:-chatbot-assets}
       - AWS_REGION=${AWS_REGION:-us-east-1}
 
       # Database Configuration (for Chainlit history)
@@ -41,13 +53,17 @@ services:
       - ./data:/app/data
       # Models directory
       - ./models:/app/models
+      # Local session uploads and generated artifacts
+      - ./.files:/app/.files
     depends_on:
-      minio:
-        condition: service_healthy
+      # MinIO dependencies are disabled by default for local Docker runs.
+      # Uncomment together with the MinIO services below to require S3 storage.
+      # minio:
+      #   condition: service_healthy
       postgres:
         condition: service_healthy
-      minio-setup:
-        condition: service_completed_successfully
+      # minio-setup:
+      #   condition: service_completed_successfully
       chainlit-db-init:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -72,6 +88,7 @@ services:
 
   # MinIO (S3-compatible storage)
   minio:
+    profiles: ["minio"]
     image: minio/minio:latest
     container_name: cs_copilot-minio
     ports:
@@ -95,6 +112,7 @@ services:
 
   # MinIO Setup (Create bucket on first run)
   minio-setup:
+    profiles: ["minio"]
     image: minio/mc:latest
     container_name: cs_copilot-minio-setup
     depends_on:

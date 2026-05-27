@@ -14,12 +14,13 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-# Check if Docker Compose is installed (V1: docker-compose, or V2: docker compose)
+# Check if Docker Compose is installed. Prefer V2 (`docker compose`) because
+# optional MinIO startup uses Compose profiles.
 COMPOSE_CMD=""
-if command -v docker-compose &> /dev/null; then
-    COMPOSE_CMD="docker-compose"
-elif docker compose version &> /dev/null; then
+if docker compose version &> /dev/null; then
     COMPOSE_CMD="docker compose"
+elif command -v docker-compose &> /dev/null; then
+    COMPOSE_CMD="docker-compose"
 else
     echo "❌ Error: Docker Compose is not installed"
     echo "Please install Docker Compose from https://docs.docker.com/compose/install/"
@@ -111,37 +112,49 @@ fi
 export CHAINLIT_PORT
 echo "📌 Chainlit App will use port $CHAINLIT_PORT (8000-8010 fallback)"
 
-# Find first free port for MinIO API (9000-9010 fallback)
-MINIO_PORT=""
-for p in 9000 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
-    if ! (echo >/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then
-        MINIO_PORT=$p
-        break
-    fi
-done
-if [ -z "$MINIO_PORT" ]; then
-    echo "❌ Error: All ports 9000-9010 are in use. Cannot start MinIO."
-    echo "Please free one of these ports or stop another MinIO/process using them."
-    exit 1
-fi
-export MINIO_PORT
+USE_S3="${USE_S3:-false}"
+export USE_S3
 
-# Find first free port for MinIO console (9001-9010 fallback; must differ from MINIO_PORT)
-MINIO_CONSOLE_PORT=""
-for p in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
-    [ "$p" = "$MINIO_PORT" ] && continue
-    if ! (echo >/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then
-        MINIO_CONSOLE_PORT=$p
-        break
+if [ "$USE_S3" = "true" ]; then
+    export COMPOSE_PROFILES="${COMPOSE_PROFILES:-minio}"
+
+    # MinIO port detection (optional S3 mode; disabled by default for local Docker runs)
+    MINIO_PORT=""
+    for p in 9000 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
+        if ! (echo >/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then
+            MINIO_PORT=$p
+            break
+        fi
+    done
+    if [ -z "$MINIO_PORT" ]; then
+        echo "❌ Error: All ports 9000-9010 are in use. Cannot start MinIO."
+        echo "Please free one of these ports or stop another MinIO/process using them."
+        exit 1
     fi
-done
-if [ -z "$MINIO_CONSOLE_PORT" ]; then
-    echo "❌ Error: No free port for MinIO console (9001-9010, excluding $MINIO_PORT)."
-    echo "Please free one of these ports or stop another MinIO/process using them."
-    exit 1
+    export MINIO_PORT
+
+    # Find first free port for MinIO console (9001-9010 fallback; must differ from MINIO_PORT)
+    MINIO_CONSOLE_PORT=""
+    for p in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010; do
+        [ "$p" = "$MINIO_PORT" ] && continue
+        if ! (echo >/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then
+            MINIO_CONSOLE_PORT=$p
+            break
+        fi
+    done
+    if [ -z "$MINIO_CONSOLE_PORT" ]; then
+        echo "❌ Error: No free port for MinIO console (9001-9010, excluding $MINIO_PORT)."
+        echo "Please free one of these ports or stop another MinIO/process using them."
+        exit 1
+    fi
+    export MINIO_CONSOLE_PORT
+    echo "📌 Storage: MinIO/S3 enabled"
+    echo "📌 MinIO API port $MINIO_PORT, Console port $MINIO_CONSOLE_PORT (9000-9010 fallback)"
+else
+    # Previous always-on MinIO startup is intentionally disabled for local Docker runs.
+    # Set USE_S3=true to enable the MinIO Compose profile.
+    echo "📌 Storage: local filesystem (/app/.files); MinIO disabled"
 fi
-export MINIO_CONSOLE_PORT
-echo "📌 MinIO API port $MINIO_PORT, Console port $MINIO_CONSOLE_PORT (9000-9010 fallback)"
 
 # Find first free port for PostgreSQL (5432-5441 fallback)
 POSTGRES_PORT=""
@@ -203,7 +216,9 @@ echo "✅ Cs_copilot is starting up!"
 echo ""
 echo "🌐 Access Points:"
 echo "   - Chainlit App:   http://localhost:${CHAINLIT_PORT:-8000}"
-echo "   - MinIO Console:  http://localhost:${MINIO_CONSOLE_PORT:-9001}"
+if [ "$USE_S3" = "true" ]; then
+    echo "   - MinIO Console:  http://localhost:${MINIO_CONSOLE_PORT:-9001}"
+fi
 echo "   - PostgreSQL:     localhost:${POSTGRES_PORT:-5432}"
 echo ""
 echo "📋 Useful Commands:"
