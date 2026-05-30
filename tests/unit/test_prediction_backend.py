@@ -60,6 +60,7 @@ def test_backend_capabilities_registry_core_contracts():
     assert "classification" in lightgbm.supported_task_types
     assert "classification" in chemprop.supported_task_types
     assert "classification" in tabicl.supported_task_types
+    assert "classification" in ensemble.supported_task_types
     assert chemprop.supports_activity_cliff_feedback_loops is False
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"

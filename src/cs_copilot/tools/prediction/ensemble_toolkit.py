@@ -18,11 +18,17 @@ from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import backend_supports_component_orchestration
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
-from .ensemble_backend import EnsembleBackend
+from .ensemble_backend import (
+    EnsembleBackend,
+    _is_classification_task,
+    _json_safe_label,
+    _label_key,
+    _normalize_classification_label,
+    _resolve_class_labels_from_values,
+)
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import project_now, safe_slug
 from .tabicl_backend import TabICLBackend
-
 
 ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_only", "rdkit_basic_only", "rdkit_all_only"}
 PROMOTED_STATUSES = {"production", "validated", "robust_validated"}
@@ -121,8 +127,37 @@ def _target_matches(record: PredictionModelRecord, target: str) -> bool:
     return normalized in haystack
 
 
+def _task_kind(task_type: str) -> str:
+    normalized = str(task_type or "").strip().lower()
+    if _is_classification_task(normalized):
+        return "classification"
+    if normalized == "regression":
+        return "regression"
+    return normalized
+
+
+def _record_class_labels(record: PredictionModelRecord) -> List[Any]:
+    metadata = _load_json(record.metadata_path)
+    for source in (
+        metadata,
+        record.inference_profile,
+        record.training_data_summary,
+        record.known_metrics,
+        record.selection_hints,
+    ):
+        labels = (source or {}).get("class_labels")
+        if isinstance(labels, list) and labels:
+            return [_json_safe_label(label) for label in labels]
+    return []
+
+
 def _representation(record: PredictionModelRecord) -> str:
-    for source in (record.inference_profile, record.selection_hints, record.training_data_summary, record.tags):
+    for source in (
+        record.inference_profile,
+        record.selection_hints,
+        record.training_data_summary,
+        record.tags,
+    ):
         value = (source or {}).get("representation_name") or (source or {}).get("representation")
         if value:
             return str(value)
@@ -184,6 +219,40 @@ def _nested_metric(payload: Dict[str, Any], *keys: str) -> Optional[float]:
 
 def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
     metrics = record.known_metrics or {}
+    if _task_kind(record.task.task_type) == "classification":
+        scaffold_score = (
+            _nested_metric(metrics, "scaffold", "balanced_accuracy")
+            or _nested_metric(metrics, "scaffold", "roc_auc")
+            or _nested_metric(metrics, "scaffold", "accuracy")
+            or _nested_metric(metrics, "scaffold_split", "balanced_accuracy")
+            or _nested_metric(metrics, "scaffold_split", "roc_auc")
+            or _nested_metric(metrics, "scaffold_split", "accuracy")
+        )
+        random_score = (
+            _nested_metric(metrics, "random", "balanced_accuracy")
+            or _nested_metric(metrics, "random", "roc_auc")
+            or _nested_metric(metrics, "random", "accuracy")
+            or _nested_metric(metrics, "random_split", "balanced_accuracy")
+            or _nested_metric(metrics, "random_split", "roc_auc")
+            or _nested_metric(metrics, "random_split", "accuracy")
+        )
+        fallback_score = (
+            _nested_metric(metrics, "test", "balanced_accuracy")
+            or _nested_metric(metrics, "test", "roc_auc")
+            or _nested_metric(metrics, "test", "accuracy")
+            or _safe_float(metrics.get("balanced_accuracy"))
+            or _safe_float(metrics.get("roc_auc"))
+            or _safe_float(metrics.get("accuracy"))
+        )
+        return {
+            "scaffold_score": scaffold_score,
+            "random_score": random_score,
+            "hardest_split": "scaffold" if scaffold_score is not None else None,
+            "hardest_split_score": scaffold_score or fallback_score,
+            "fallback_score": fallback_score,
+            "primary_metric": "balanced_accuracy_or_roc_auc",
+        }
+
     scaffold_r2 = (
         _nested_metric(metrics, "scaffold", "r2_mean")
         or _nested_metric(metrics, "scaffold", "r2")
@@ -202,9 +271,8 @@ def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
             if metrics.get(key):
                 hardest_name = str(metrics.get(key))
         if hardest_name:
-            hardest_r2 = (
-                _nested_metric(metrics, hardest_name, "r2_mean")
-                or _nested_metric(metrics, hardest_name, "r2")
+            hardest_r2 = _nested_metric(metrics, hardest_name, "r2_mean") or _nested_metric(
+                metrics, hardest_name, "r2"
             )
     fallback_r2 = _safe_float(metrics.get("r2")) if isinstance(metrics, dict) else None
     return {
@@ -221,6 +289,17 @@ def _evidence_tier(record: PredictionModelRecord, metrics: Dict[str, Any]) -> st
     text = f"{_protocol(record)} {_flatten(record.known_metrics)} {_flatten(record.training_data_summary)}".lower()
     if "external" in text or "challenging" in text:
         return "A"
+    if _task_kind(record.task.task_type) == "classification":
+        if "robust" in text and metrics.get("random_score") is not None:
+            return "A"
+        if (
+            metrics.get("scaffold_score") is not None
+            or metrics.get("hardest_split_score") is not None
+        ):
+            return "B"
+        if metrics.get("random_score") is not None or metrics.get("fallback_score") is not None:
+            return "C"
+        return "D"
     if "robust" in text and metrics.get("random_r2_std") is not None:
         return "A"
     if metrics.get("scaffold_r2") is not None or metrics.get("hardest_split_r2") is not None:
@@ -232,13 +311,22 @@ def _evidence_tier(record: PredictionModelRecord, metrics: Dict[str, Any]) -> st
 
 def _sort_score(evidence: Dict[str, Any]) -> tuple[float, float, float, float]:
     tier_weight = {"A": 4.0, "B": 3.0, "C": 2.0, "D": 1.0}.get(evidence.get("evidence_tier"), 0.0)
-    metric = evidence.get("metrics", {}).get("hardest_split_r2")
+    metrics = evidence.get("metrics", {})
+    metric = metrics.get("hardest_split_r2")
     if metric is None:
-        metric = evidence.get("metrics", {}).get("scaffold_r2")
+        metric = metrics.get("hardest_split_score")
     if metric is None:
-        metric = evidence.get("metrics", {}).get("random_r2")
+        metric = metrics.get("scaffold_r2")
     if metric is None:
-        metric = evidence.get("metrics", {}).get("fallback_r2")
+        metric = metrics.get("scaffold_score")
+    if metric is None:
+        metric = metrics.get("random_r2")
+    if metric is None:
+        metric = metrics.get("random_score")
+    if metric is None:
+        metric = metrics.get("fallback_r2")
+    if metric is None:
+        metric = metrics.get("fallback_score")
     status_weight = {
         "production": 4.0,
         "robust_validated": 3.5,
@@ -265,6 +353,108 @@ def _metrics(y_true: pd.Series, y_pred: pd.Series) -> Dict[str, float]:
     return {"n": int(mask.sum()), "r2": r2, "rmse": rmse, "mae": mae, "mse": mse}
 
 
+def _binary_roc_auc(y_true: pd.Series, scores: pd.Series, positive_label: Any) -> Optional[float]:
+    positive = y_true.map(_label_for_compare) == _label_for_compare(positive_label)
+    n_pos = int(positive.sum())
+    n_neg = int((~positive).sum())
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = scores.astype(float).rank(method="average")
+    rank_sum_pos = float(ranks[positive].sum())
+    return float((rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)) / float(n_pos * n_neg))
+
+
+def _label_for_compare(value: Any) -> str:
+    normalized = _normalize_classification_label(value)
+    return _label_key(normalized) if normalized is not None else "null"
+
+
+def _classification_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    class_labels: List[Any],
+    positive_scores: Optional[pd.Series] = None,
+) -> Dict[str, Any]:
+    truth = y_true.map(_normalize_classification_label)
+    pred = y_pred.map(_normalize_classification_label)
+    mask = truth.notna() & pred.notna()
+    truth = truth[mask].reset_index(drop=True)
+    pred = pred[mask].reset_index(drop=True)
+    n = int(len(truth))
+    if not class_labels:
+        class_labels = _resolve_class_labels_from_values(truth.tolist() + pred.tolist())
+    class_keys = [_label_for_compare(label) for label in class_labels]
+    truth_keys = truth.map(_label_for_compare)
+    pred_keys = pred.map(_label_for_compare)
+    accuracy = float((truth_keys == pred_keys).mean()) if n else None
+    recalls: List[float] = []
+    precisions: List[float] = []
+    f1_values: List[float] = []
+    per_class: Dict[str, Dict[str, Any]] = {}
+    for class_index, class_label in enumerate(class_labels):
+        key = class_keys[class_index]
+        true_positive = int(((truth_keys == key) & (pred_keys == key)).sum())
+        false_positive = int(((truth_keys != key) & (pred_keys == key)).sum())
+        false_negative = int(((truth_keys == key) & (pred_keys != key)).sum())
+        precision = (
+            true_positive / (true_positive + false_positive)
+            if true_positive + false_positive
+            else 0.0
+        )
+        recall = (
+            true_positive / (true_positive + false_negative)
+            if true_positive + false_negative
+            else 0.0
+        )
+        f1 = 2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
+        recalls.append(float(recall))
+        precisions.append(float(precision))
+        f1_values.append(float(f1))
+        token = str(_json_safe_label(class_label))
+        per_class[token] = {
+            "support": int((truth_keys == key).sum()),
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+        }
+    metrics: Dict[str, Any] = {
+        "n": n,
+        "accuracy": accuracy,
+        "balanced_accuracy": float(sum(recalls) / len(recalls)) if recalls else None,
+        "precision_macro": float(sum(precisions) / len(precisions)) if precisions else None,
+        "recall_macro": float(sum(recalls) / len(recalls)) if recalls else None,
+        "f1_macro": float(sum(f1_values) / len(f1_values)) if f1_values else None,
+        "class_labels": [_json_safe_label(label) for label in class_labels],
+        "per_class": per_class,
+    }
+    if len(class_labels) == 2:
+        positive_label = class_labels[1]
+        positive_key = class_keys[1]
+        negative_key = class_keys[0]
+        true_positive = int(((truth_keys == positive_key) & (pred_keys == positive_key)).sum())
+        false_positive = int(((truth_keys == negative_key) & (pred_keys == positive_key)).sum())
+        false_negative = int(((truth_keys == positive_key) & (pred_keys == negative_key)).sum())
+        true_negative = int(((truth_keys == negative_key) & (pred_keys == negative_key)).sum())
+        metrics.update(
+            {
+                "positive_class": _json_safe_label(positive_label),
+                "negative_class": _json_safe_label(class_labels[0]),
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "true_negative": true_negative,
+            }
+        )
+        if positive_scores is not None:
+            scores = pd.to_numeric(positive_scores.reset_index(drop=True)[mask], errors="coerce")
+            valid_scores = scores.notna()
+            if valid_scores.any():
+                aligned_truth = truth[valid_scores].reset_index(drop=True)
+                aligned_scores = scores[valid_scores].astype(float).reset_index(drop=True)
+                metrics["roc_auc"] = _binary_roc_auc(aligned_truth, aligned_scores, positive_label)
+    return metrics
+
+
 class EnsembleToolkit(Toolkit):
     """Create and evaluate post-hoc catalog ensembles."""
 
@@ -286,19 +476,25 @@ class EnsembleToolkit(Toolkit):
         backend = self.backends.get(backend_name)
         return bool(backend and backend.is_available())
 
-    def _candidate_evidence(self, record: PredictionModelRecord, target: str, task_type: str) -> Dict[str, Any]:
+    def _candidate_evidence(
+        self, record: PredictionModelRecord, target: str, task_type: str
+    ) -> Dict[str, Any]:
         representation = _representation(record)
         representation_slug = safe_slug(representation) or "unknown"
         metrics = _metric_summary(record)
         metadata = _load_json(record.metadata_path)
-        activity = metadata.get("activity_cliffs") or record.training_data_summary.get("activity_cliffs") or {}
+        activity = (
+            metadata.get("activity_cliffs")
+            or record.training_data_summary.get("activity_cliffs")
+            or {}
+        )
         is_ablation = representation_slug in ABLATION_REPRESENTATIONS or any(
             token in safe_slug(record.model_id) for token in ABLATION_REPRESENTATIONS
         )
         compatible = True
         reasons: List[str] = []
         warnings: List[str] = []
-        if record.task.task_type != task_type:
+        if _task_kind(record.task.task_type) != _task_kind(task_type):
             compatible = False
             warnings.append(f"Task type mismatch: {record.task.task_type}.")
         if not _target_matches(record, target):
@@ -315,12 +511,17 @@ class EnsembleToolkit(Toolkit):
             compatible = False
             warnings.append(f"Backend `{record.backend_name}` is not available.")
         if is_ablation:
-            warnings.append("Ablation representation; include only with explicit scientific justification.")
+            warnings.append(
+                "Ablation representation; include only with explicit scientific justification."
+            )
         if compatible:
             reasons.append("Compatible target, task, backend and model path.")
-        if metrics.get("hardest_split_r2") is not None:
+        if (
+            metrics.get("hardest_split_r2") is not None
+            or metrics.get("hardest_split_score") is not None
+        ):
             reasons.append("Has hardest/scaffold-style validation evidence.")
-        elif metrics.get("random_r2") is not None:
+        elif metrics.get("random_r2") is not None or metrics.get("random_score") is not None:
             reasons.append("Has random-split validation evidence only.")
         else:
             reasons.append("No direct validation metric was extracted; usable only with caution.")
@@ -352,7 +553,9 @@ class EnsembleToolkit(Toolkit):
         evidence["selection_score"] = list(_sort_score(evidence))
         return evidence
 
-    def _component_payload(self, record: PredictionModelRecord, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    def _component_payload(
+        self, record: PredictionModelRecord, evidence: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return {
             "model_id": record.model_id,
             "component_slug": safe_slug(record.model_id) or record.model_id,
@@ -363,11 +566,15 @@ class EnsembleToolkit(Toolkit):
             "status": record.status,
             "version": record.version,
             "description": record.description,
-            "task": record.task.as_dict() if hasattr(record.task, "as_dict") else {
-                "task_type": record.task.task_type,
-                "smiles_columns": list(record.task.smiles_columns),
-                "target_columns": list(record.task.target_columns),
-            },
+            "task": (
+                record.task.as_dict()
+                if hasattr(record.task, "as_dict")
+                else {
+                    "task_type": record.task.task_type,
+                    "smiles_columns": list(record.task.smiles_columns),
+                    "target_columns": list(record.task.target_columns),
+                }
+            ),
             "known_metrics": record.known_metrics,
             "training_data_summary": record.training_data_summary,
             "inference_profile": record.inference_profile,
@@ -417,7 +624,10 @@ class EnsembleToolkit(Toolkit):
         max_components: int,
     ) -> tuple[List[PredictionModelRecord], List[Dict[str, Any]], List[Dict[str, Any]]]:
         records_by_id = {record.model_id: record for record in self.catalog.list_models()}
-        all_evidence = [self._candidate_evidence(record, target, task_type) for record in self.catalog.list_models()]
+        all_evidence = [
+            self._candidate_evidence(record, target, task_type)
+            for record in self.catalog.list_models()
+        ]
         evidence_by_id = {item["model_id"]: item for item in all_evidence}
         selected: List[PredictionModelRecord] = []
         if model_ids:
@@ -427,7 +637,9 @@ class EnsembleToolkit(Toolkit):
             for model_id in model_ids:
                 evidence = evidence_by_id[model_id]
                 if not evidence["compatible"]:
-                    raise ValueError(f"Model `{model_id}` is not compatible: {evidence['warnings']}")
+                    raise ValueError(
+                        f"Model `{model_id}` is not compatible: {evidence['warnings']}"
+                    )
                 selected.append(records_by_id[model_id])
         else:
             compatible = [item for item in all_evidence if item["compatible"]]
@@ -439,7 +651,9 @@ class EnsembleToolkit(Toolkit):
                 key = str(evidence["representation_key"])
                 if key in seen_keys:
                     evidence["selection_decision"] = "excluded"
-                    evidence["selection_reason"] = "Redundant backend/representation combination for V1 default selection."
+                    evidence["selection_reason"] = (
+                        "Redundant backend/representation combination for V1 default selection."
+                    )
                     continue
                 selected.append(records_by_id[evidence["model_id"]])
                 seen_keys.add(key)
@@ -447,12 +661,18 @@ class EnsembleToolkit(Toolkit):
         for evidence in all_evidence:
             if evidence["model_id"] in selected_ids:
                 evidence["selection_decision"] = "included"
-                reason = "Explicitly requested by user." if model_ids else "Selected as a high-evidence, non-redundant component."
+                reason = (
+                    "Explicitly requested by user."
+                    if model_ids
+                    else "Selected as a high-evidence, non-redundant component."
+                )
                 if evidence.get("is_ablation"):
                     reason += " Warning: ablation representation included."
                 evidence["selection_reason"] = reason
             elif evidence["selection_decision"] == "not_selected":
-                evidence["selection_decision"] = "excluded" if evidence["compatible"] else "incompatible"
+                evidence["selection_decision"] = (
+                    "excluded" if evidence["compatible"] else "incompatible"
+                )
                 evidence["selection_reason"] = (
                     "Lower-ranked or redundant compatible candidate."
                     if evidence["compatible"]
@@ -472,10 +692,29 @@ class EnsembleToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Create and persist a post-hoc ensemble from compatible catalog models."""
-        if aggregation_strategy != "median":
-            raise ValueError("Only median aggregation is supported in ensemble V1.")
-        if task_type != "regression":
-            raise ValueError("Ensemble V1 is limited to regression QSAR.")
+        task_kind = _task_kind(task_type)
+        if task_kind not in {"regression", "classification"}:
+            raise ValueError("Ensemble V1 supports regression or classification QSAR.")
+        if task_kind == "regression":
+            if aggregation_strategy != "median":
+                raise ValueError("Only median aggregation is supported for regression ensemble V1.")
+            resolved_aggregation_strategy = "median"
+            ensemble_kind = "catalog_consensus_regression"
+            uncertainty_strategy = "component_disagreement_std"
+        else:
+            resolved_aggregation_strategy = (
+                "probability_mean" if aggregation_strategy == "median" else aggregation_strategy
+            )
+            if resolved_aggregation_strategy not in {"probability_mean", "majority_vote"}:
+                raise ValueError(
+                    "Classification ensemble V1 supports probability_mean or majority_vote aggregation."
+                )
+            ensemble_kind = "catalog_consensus_classification"
+            uncertainty_strategy = (
+                "component_probability_disagreement_std"
+                if resolved_aggregation_strategy == "probability_mean"
+                else "component_vote_disagreement"
+            )
         self.catalog.refresh_from_internal_store(persist=True)
         model_ids = _coerce_list(model_ids)
         selected, selected_evidence, all_evidence = self._select_components(
@@ -489,7 +728,9 @@ class EnsembleToolkit(Toolkit):
 
         now = project_now()
         target_slug = safe_slug(target) or "target"
-        model_id = f"{target_slug}_catalog_consensus_ensemble_v1_0_{now.strftime('%d%m%Y_%H%M%S_%f')}"
+        model_id = (
+            f"{target_slug}_catalog_consensus_ensemble_v1_0_{now.strftime('%d%m%Y_%H%M%S_%f')}"
+        )
         model_root = DEFAULT_INTERNAL_MODEL_ROOT / model_id
         model_dir = model_root / "model"
         artifacts_dir = model_root / "artifacts"
@@ -498,25 +739,38 @@ class EnsembleToolkit(Toolkit):
 
         components = [
             self._component_payload(record, evidence)
-            for record, evidence in zip(selected, selected_evidence)
+            for record, evidence in zip(selected, selected_evidence, strict=False)
         ]
+        class_labels: List[Any] = []
+        if task_kind == "classification":
+            for record in selected:
+                class_labels = _record_class_labels(record)
+                if class_labels:
+                    break
         ensemble_payload = {
             "schema_version": 1,
-            "ensemble_kind": "catalog_consensus_regression",
+            "ensemble_kind": ensemble_kind,
             "target": target,
             "task_type": task_type,
-            "aggregation_strategy": "median",
-            "uncertainty_strategy": "component_disagreement_std",
+            "aggregation_strategy": resolved_aggregation_strategy,
+            "uncertainty_strategy": uncertainty_strategy,
             "created_from": "catalog",
             "created_at": now.isoformat(),
             "selection_policy": {
                 "max_components": max_components,
-                "component_selection": "top_diverse_by_evidence" if not model_ids else "explicit_model_ids",
+                "component_selection": (
+                    "top_diverse_by_evidence" if not model_ids else "explicit_model_ids"
+                ),
                 "status_policy": "workflow_demo_until_ensemble_level_evaluation",
             },
             "components": components,
             "evaluations": [],
         }
+        if task_kind == "classification":
+            ensemble_payload["class_labels"] = class_labels
+            ensemble_payload["positive_class_label"] = (
+                class_labels[1] if len(class_labels) == 2 else None
+            )
         ensemble_path = model_dir / "ensemble.json"
         _write_json(ensemble_path, ensemble_payload)
 
@@ -534,6 +788,15 @@ class EnsembleToolkit(Toolkit):
         report_path = artifacts_dir / "selection_report.md"
         report_path.write_text(self._selection_report(evidence_payload, ensemble_payload))
 
+        inference_profile = {
+            "aggregation_strategy": resolved_aggregation_strategy,
+            "uncertainty_strategy": uncertainty_strategy,
+        }
+        if task_kind == "classification":
+            inference_profile["class_labels"] = class_labels
+            inference_profile["positive_class_label"] = (
+                class_labels[1] if len(class_labels) == 2 else None
+            )
         record = PredictionModelRecord(
             model_id=model_id,
             backend_name="ensemble",
@@ -552,10 +815,7 @@ class EnsembleToolkit(Toolkit):
                 "component_count": len(components),
                 "has_ensemble_level_evaluation": False,
             },
-            inference_profile={
-                "aggregation_strategy": "median",
-                "uncertainty_strategy": "component_disagreement_std",
-            },
+            inference_profile=inference_profile,
             selection_hints={
                 "selection_evidence_path": str(evidence_path.resolve()),
                 "selection_report_path": str(report_path.resolve()),
@@ -581,7 +841,7 @@ class EnsembleToolkit(Toolkit):
                 "model_root": str(model_root.resolve()),
                 "selection_evidence_path": str(evidence_path.resolve()),
             }
-        return {
+        result = {
             "created": True,
             "catalog_persisted": True,
             "model_id": model_id,
@@ -593,11 +853,22 @@ class EnsembleToolkit(Toolkit):
             "selection_evidence_path": str(evidence_path.resolve()),
             "selection_report_path": str(report_path.resolve()),
             "component_count": len(components),
-            "components": [{"model_id": item["model_id"], "backend_name": item["backend_name"]} for item in components],
+            "components": [
+                {"model_id": item["model_id"], "backend_name": item["backend_name"]}
+                for item in components
+            ],
             "known_metrics": {},
+            "ensemble_kind": ensemble_kind,
+            "aggregation_strategy": resolved_aggregation_strategy,
         }
+        if task_kind == "classification":
+            result["class_labels"] = class_labels
+            result["positive_class_label"] = class_labels[1] if len(class_labels) == 2 else None
+        return result
 
-    def _selection_report(self, evidence_payload: Dict[str, Any], ensemble_payload: Dict[str, Any]) -> str:
+    def _selection_report(
+        self, evidence_payload: Dict[str, Any], ensemble_payload: Dict[str, Any]
+    ) -> str:
         included = set(evidence_payload.get("included_components") or [])
         lines = [
             f"# Rapport Ensemble — {ensemble_payload.get('target')}",
@@ -722,35 +993,135 @@ class EnsembleToolkit(Toolkit):
         predictions = pd.read_csv(preds_path)
         if target_column not in source.columns:
             raise ValueError(f"Target column `{target_column}` is missing from evaluation dataset.")
-        comparison = pd.concat([source.reset_index(drop=True), predictions.reset_index(drop=True)], axis=1)
+        comparison = pd.concat(
+            [source.reset_index(drop=True), predictions.reset_index(drop=True)], axis=1
+        )
         comparison.to_csv(preds_path, index=False)
 
-        prediction_columns = [column for column in predictions.columns if column.startswith("prediction_")]
+        prediction_columns = [
+            column for column in predictions.columns if column.startswith("prediction_")
+        ]
+        task_kind = _task_kind(record.task.task_type)
         metrics_rows = []
-        for column in prediction_columns:
-            metrics_rows.append({"model": column.removeprefix("prediction_"), **_metrics(source[target_column], predictions[column])})
-        metrics_rows.append({"model": "ensemble_median", **_metrics(source[target_column], predictions["ensemble_prediction_median"])})
-        metrics_df = pd.DataFrame(metrics_rows)
         metrics_path = eval_dir / "metrics_by_component.csv"
-        metrics_df.to_csv(metrics_path, index=False)
-
-        residuals = pd.DataFrame(
-            {
-                "y_true": pd.to_numeric(source[target_column], errors="coerce"),
-                "ensemble_prediction": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce"),
-                "ensemble_residual": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce")
-                - pd.to_numeric(source[target_column], errors="coerce"),
-                "ensemble_disagreement_std": pd.to_numeric(predictions["ensemble_prediction_std"], errors="coerce"),
-            }
-        )
-        residuals_path = eval_dir / "residuals.csv"
-        residuals.to_csv(residuals_path, index=False)
-        disagreement_path = eval_dir / "disagreement_analysis.csv"
-        residuals.sort_values("ensemble_disagreement_std", ascending=False).to_csv(disagreement_path, index=False)
-
         component_predictions_path = eval_dir / "component_predictions.csv"
-        predictions[prediction_columns].to_csv(component_predictions_path, index=False)
-        ensemble_metrics = metrics_rows[-1]
+        disagreement_path = eval_dir / "disagreement_analysis.csv"
+
+        if task_kind == "classification":
+            class_labels = list(ensemble_payload.get("class_labels") or [])
+            if not class_labels:
+                class_labels = _resolve_class_labels_from_values(
+                    source[target_column].tolist() + predictions["prediction"].tolist()
+                )
+            for column in prediction_columns:
+                metrics_rows.append(
+                    {
+                        "model": column.removeprefix("prediction_"),
+                        **_classification_metrics(
+                            source[target_column],
+                            predictions[column],
+                            class_labels,
+                        ),
+                    }
+                )
+            positive_scores = (
+                predictions["positive_class_probability"]
+                if "positive_class_probability" in predictions.columns
+                else None
+            )
+            ensemble_metrics = {
+                "model": "ensemble_classification",
+                **_classification_metrics(
+                    source[target_column],
+                    predictions["prediction"],
+                    class_labels,
+                    positive_scores=positive_scores,
+                ),
+            }
+            metrics_rows.append(ensemble_metrics)
+            metrics_df = pd.DataFrame(metrics_rows)
+            metrics_df.to_csv(metrics_path, index=False)
+            predictions[prediction_columns].to_csv(component_predictions_path, index=False)
+            disagreement_column = (
+                "ensemble_probability_disagreement_std"
+                if "ensemble_probability_disagreement_std" in predictions.columns
+                else "ensemble_vote_disagreement"
+            )
+            classification_comparison = pd.DataFrame(
+                {
+                    "y_true": source[target_column],
+                    "ensemble_prediction": predictions["prediction"],
+                    "is_correct": source[target_column].map(_label_for_compare)
+                    == predictions["prediction"].map(_label_for_compare),
+                    "ensemble_disagreement": pd.to_numeric(
+                        predictions.get(disagreement_column, pd.Series([0.0] * len(predictions))),
+                        errors="coerce",
+                    ),
+                }
+            )
+            residuals_path = eval_dir / "classification_comparison.csv"
+            classification_comparison.to_csv(residuals_path, index=False)
+            classification_comparison.sort_values("ensemble_disagreement", ascending=False).to_csv(
+                disagreement_path, index=False
+            )
+            artifacts = {
+                "evaluation_summary": "evaluation_summary.json",
+                "component_predictions": "component_predictions.csv",
+                "ensemble_predictions": "ensemble_predictions.csv",
+                "metrics_by_component": "metrics_by_component.csv",
+                "classification_comparison": "classification_comparison.csv",
+                "disagreement_analysis": "disagreement_analysis.csv",
+                "evaluation_report": "evaluation_report.md",
+            }
+        else:
+            for column in prediction_columns:
+                metrics_rows.append(
+                    {
+                        "model": column.removeprefix("prediction_"),
+                        **_metrics(source[target_column], predictions[column]),
+                    }
+                )
+            metrics_rows.append(
+                {
+                    "model": "ensemble_median",
+                    **_metrics(source[target_column], predictions["ensemble_prediction_median"]),
+                }
+            )
+            metrics_df = pd.DataFrame(metrics_rows)
+            metrics_df.to_csv(metrics_path, index=False)
+
+            residuals = pd.DataFrame(
+                {
+                    "y_true": pd.to_numeric(source[target_column], errors="coerce"),
+                    "ensemble_prediction": pd.to_numeric(
+                        predictions["ensemble_prediction_median"], errors="coerce"
+                    ),
+                    "ensemble_residual": pd.to_numeric(
+                        predictions["ensemble_prediction_median"], errors="coerce"
+                    )
+                    - pd.to_numeric(source[target_column], errors="coerce"),
+                    "ensemble_disagreement_std": pd.to_numeric(
+                        predictions["ensemble_prediction_std"], errors="coerce"
+                    ),
+                }
+            )
+            residuals_path = eval_dir / "residuals.csv"
+            residuals.to_csv(residuals_path, index=False)
+            residuals.sort_values("ensemble_disagreement_std", ascending=False).to_csv(
+                disagreement_path, index=False
+            )
+            predictions[prediction_columns].to_csv(component_predictions_path, index=False)
+            ensemble_metrics = metrics_rows[-1]
+            artifacts = {
+                "evaluation_summary": "evaluation_summary.json",
+                "component_predictions": "component_predictions.csv",
+                "ensemble_predictions": "ensemble_predictions.csv",
+                "metrics_by_component": "metrics_by_component.csv",
+                "residuals": "residuals.csv",
+                "disagreement_analysis": "disagreement_analysis.csv",
+                "evaluation_report": "evaluation_report.md",
+            }
+
         summary = {
             "evaluation_id": evaluation_id,
             "evaluation_kind": evaluation_kind,
@@ -759,20 +1130,13 @@ class EnsembleToolkit(Toolkit):
             "smiles_column": smiles_column,
             "created_at": now.isoformat(),
             "n": int(len(source)),
+            "task_type": record.task.task_type,
             "ensemble_metrics": ensemble_metrics,
             "component_metrics": metrics_rows[:-1],
-            "artifacts": {
-                "evaluation_summary": "evaluation_summary.json",
-                "component_predictions": "component_predictions.csv",
-                "ensemble_predictions": "ensemble_predictions.csv",
-                "metrics_by_component": "metrics_by_component.csv",
-                "residuals": "residuals.csv",
-                "disagreement_analysis": "disagreement_analysis.csv",
-                "evaluation_report": "evaluation_report.md",
-            },
+            "artifacts": artifacts,
             "notes": [
                 "Metrics are ensemble-level metrics computed on this evaluation dataset.",
-                "Component disagreement std is not calibrated uncertainty.",
+                "Component disagreement is not calibrated predictive uncertainty.",
             ],
         }
         summary_path = eval_dir / "evaluation_summary.json"
@@ -810,19 +1174,42 @@ class EnsembleToolkit(Toolkit):
             "component_prediction_paths": result.get("component_prediction_paths") or {},
         }
 
-    def _evaluation_report(self, model_id: str, summary: Dict[str, Any], metrics_rows: List[Dict[str, Any]]) -> str:
+    def _evaluation_report(
+        self, model_id: str, summary: Dict[str, Any], metrics_rows: List[Dict[str, Any]]
+    ) -> str:
         lines = [
             f"# Evaluation Ensemble — {model_id}",
             "",
             f"Evaluation: {summary['evaluation_id']} ({summary['evaluation_kind']})",
             "",
-            "| Modele | R2 | RMSE | MAE | MSE | n |",
-            "|---|---:|---:|---:|---:|---:|",
         ]
-        for row in metrics_rows:
-            lines.append(
-                f"| {row['model']} | {row['r2']:.4f} | {row['rmse']:.4f} | {row['mae']:.4f} | {row['mse']:.4f} | {row['n']} |"
+        if _task_kind(summary.get("task_type")) == "classification":
+            lines.extend(
+                [
+                    "| Modele | Accuracy | Balanced accuracy | F1 macro | ROC AUC | n |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ]
             )
+            for row in metrics_rows:
+                roc_auc = row.get("roc_auc")
+                roc_auc_text = f"{roc_auc:.4f}" if roc_auc is not None else ""
+                lines.append(
+                    f"| {row['model']} | {row.get('accuracy', 0.0):.4f} | "
+                    f"{row.get('balanced_accuracy', 0.0):.4f} | "
+                    f"{row.get('f1_macro', 0.0):.4f} | {roc_auc_text} | {row['n']} |"
+                )
+        else:
+            lines.extend(
+                [
+                    "| Modele | R2 | RMSE | MAE | MSE | n |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for row in metrics_rows:
+                lines.append(
+                    f"| {row['model']} | {row['r2']:.4f} | {row['rmse']:.4f} | "
+                    f"{row['mae']:.4f} | {row['mse']:.4f} | {row['n']} |"
+                )
         lines.extend(
             [
                 "",

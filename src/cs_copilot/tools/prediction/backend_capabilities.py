@@ -89,8 +89,11 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("smiles_csv",),
         requires_feature_preparation=False,
-        supported_task_types=("regression",),
-        supported_representations=("catalog_consensus_regression",),
+        supported_task_types=("regression", "classification"),
+        supported_representations=(
+            "catalog_consensus_regression",
+            "catalog_consensus_classification",
+        ),
         supports_applicability_domain=False,
         supports_uncertainty="component_disagreement_std",
         supports_component_orchestration=True,
