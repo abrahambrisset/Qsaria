@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import time
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -199,6 +199,19 @@ def _candidate_registry_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _metric_value(family: Optional[Dict[str, Any]], *names: str) -> Optional[float]:
+    payload = family or {}
+    for name in names:
+        value = payload.get(f"{name}_mean", payload.get(name))
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def score(item: Dict[str, Any]) -> tuple:
         validation = item.get("validation_assessment") or {}
@@ -206,12 +219,24 @@ def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[
         hardest = validation.get("hardest_split")
         hardest_family = aggregated.get(hardest) if hardest else None
         random_family = aggregated.get("random") or {}
-        hardest_r2 = (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
-        random_r2 = random_family.get("r2_mean", random_family.get("r2"))
-        duration = ((item.get("training_durations") or {}).get("total_duration_seconds"))
+        hardest_score = _metric_value(
+            hardest_family,
+            "r2",
+            "balanced_accuracy",
+            "roc_auc",
+            "accuracy",
+        )
+        random_score = _metric_value(
+            random_family,
+            "r2",
+            "balanced_accuracy",
+            "roc_auc",
+            "accuracy",
+        )
+        duration = (item.get("training_durations") or {}).get("total_duration_seconds")
         return (
-            float(hardest_r2) if hardest_r2 is not None else float("-inf"),
-            float(random_r2) if random_r2 is not None else float("-inf"),
+            hardest_score if hardest_score is not None else float("-inf"),
+            random_score if random_score is not None else float("-inf"),
             -float(duration) if duration is not None else 0.0,
         )
 
@@ -275,17 +300,22 @@ class QSARTrainingToolkit(Toolkit):
         with S3.open(input_csv, "r") as fh:
             df = pd.read_csv(fh)
 
-        normalized_target_columns = normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        normalized_target_columns = (
+            normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
         df = standardize_smiles_column(df, resolved_smiles_column)
         if resolved_smiles_column != "smiles":
             df["smiles"] = df[resolved_smiles_column]
             df = df.drop(columns=[resolved_smiles_column])
-        missing_targets = [column for column in normalized_target_columns if column not in df.columns]
+        missing_targets = [
+            column for column in normalized_target_columns if column not in df.columns
+        ]
         if missing_targets:
             raise ValueError(f"Missing target columns: {missing_targets}")
 
@@ -319,7 +349,11 @@ class QSARTrainingToolkit(Toolkit):
         output_path = Path(output_dir).expanduser().resolve()
         features_dir = output_path / "features"
         features_dir.mkdir(parents=True, exist_ok=True)
-        cache_root = Path(feature_cache_dir).expanduser().resolve() if feature_cache_dir else features_dir / "cache"
+        cache_root = (
+            Path(feature_cache_dir).expanduser().resolve()
+            if feature_cache_dir
+            else features_dir / "cache"
+        )
         cache_root.mkdir(parents=True, exist_ok=True)
 
         step_started_at = time.monotonic()
@@ -414,7 +448,11 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                     feature_prefix="fp_",
                     fingerprint_kind="binary",
                 )
@@ -456,7 +494,11 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                     feature_prefix="cfp_",
                     fingerprint_kind="count",
                 )
@@ -499,7 +541,11 @@ class QSARTrainingToolkit(Toolkit):
                     output_csv=component["output_csv"],
                     descriptor_set=descriptor_set,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
@@ -534,10 +580,16 @@ class QSARTrainingToolkit(Toolkit):
         }
         tabular_cache_key = _cache_key(tabular_key_payload)
         tabular_output_csv = cache_root / f"tabular_{representation_name}_{tabular_cache_key}.csv"
-        tabular_metadata_path = cache_root / f"tabular_{representation_name}_{tabular_cache_key}.json"
+        tabular_metadata_path = (
+            cache_root / f"tabular_{representation_name}_{tabular_cache_key}.json"
+        )
         cached_tabular = _read_json_if_exists(tabular_metadata_path)
         tabular_cache_status = "generated"
-        if cached_tabular and cached_tabular.get("cache_key") == tabular_cache_key and _storage_path_exists(tabular_output_csv):
+        if (
+            cached_tabular
+            and cached_tabular.get("cache_key") == tabular_cache_key
+            and _storage_path_exists(tabular_output_csv)
+        ):
             tabular_cache_status = "reused_from_cache"
             tabular = cached_tabular.get("result") or {"output_csv": str(tabular_output_csv)}
             tabular["output_csv"] = str(tabular_output_csv)
@@ -700,12 +752,16 @@ class QSARTrainingToolkit(Toolkit):
             "model_path": result.get("best_model_path") or result.get("model_path"),
             "candidate_train_csv": result.get("candidate_train_csv"),
             "summary_path": result.get("summary_path") or result.get("canonical_summary_path"),
-            "random_r2": (random_family or {}).get("r2_mean", (random_family or {}).get("r2")),
-            "scaffold_r2": (scaffold_family or {}).get("r2_mean", (scaffold_family or {}).get("r2")),
+            "random_r2": _metric_value(random_family, "r2"),
+            "scaffold_r2": _metric_value(scaffold_family, "r2"),
+            "random_balanced_accuracy": _metric_value(random_family, "balanced_accuracy"),
+            "scaffold_balanced_accuracy": _metric_value(scaffold_family, "balanced_accuracy"),
+            "random_roc_auc": _metric_value(random_family, "roc_auc"),
+            "scaffold_roc_auc": _metric_value(scaffold_family, "roc_auc"),
             "hardest_split": hardest,
-            "hardest_split_r2": (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
-            if hardest_family
-            else None,
+            "hardest_split_r2": _metric_value(hardest_family, "r2"),
+            "hardest_split_balanced_accuracy": _metric_value(hardest_family, "balanced_accuracy"),
+            "hardest_split_roc_auc": _metric_value(hardest_family, "roc_auc"),
             **_feature_columns_summary_from_result(result),
             "feature_cache_key": feature_prep.get("feature_cache_key"),
             "feature_cache_status": feature_prep.get("feature_cache_status"),
@@ -742,7 +798,9 @@ class QSARTrainingToolkit(Toolkit):
         campaign_started_at = time.monotonic()
         campaign_root = Path(output_dir).expanduser().resolve()
         campaign_root.mkdir(parents=True, exist_ok=True)
-        feature_cache_dir = str(Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache"))
+        feature_cache_dir = str(
+            Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache")
+        )
         candidate_results: List[Dict[str, Any]] = []
 
         for representation_name in AUTOMATIC_TABULAR_REPRESENTATION_NAMES:
@@ -876,10 +934,13 @@ class QSARTrainingToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Train a QSAR model with the requested backend."""
         normalized_backend = backend_name.strip().lower()
-        normalized_target_columns = normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        normalized_target_columns = (
+            normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
         normalized_feature_columns = normalize_json_list_argument(
             feature_columns,
             argument_name="feature_columns",
@@ -936,9 +997,12 @@ class QSARTrainingToolkit(Toolkit):
             working_train_csv = train_csv
             resolved_representation = representation_name
             if not normalized_feature_columns:
-                resolved_representation = resolved_representation or default_tabular_representation_for_protocol(
-                    validation_protocol,
-                    training_profile=requested_extra_args.get("training_profile"),
+                resolved_representation = (
+                    resolved_representation
+                    or default_tabular_representation_for_protocol(
+                        validation_protocol,
+                        training_profile=requested_extra_args.get("training_profile"),
+                    )
                 )
                 prepared = self._prepare_tabular_training_dataset(
                     train_csv=train_csv,
@@ -1028,7 +1092,9 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
-        if normalized_backend in {"lightgbm", "tabicl"} and isinstance(result.get("feature_columns"), list):
+        if normalized_backend in {"lightgbm", "tabicl"} and isinstance(
+            result.get("feature_columns"), list
+        ):
             full_feature_columns = list(result.pop("feature_columns") or [])
             result.update(
                 _feature_columns_summary(

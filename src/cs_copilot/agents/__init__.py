@@ -50,10 +50,28 @@ Agent Capabilities Breakdown:
   - QSAR-adjacent analysis: exploratory structural analyses that can support QSAR work, without replacing the isolated QSAR system
 """
 
-from .factories import AgentConfig, AgentCreationError, BaseAgentFactory
-from .registry import create_agent, get_registry, list_available_agent_types
-from .teams import get_cs_copilot_agent_team, get_qsar_agent_team
-from .utils import get_last_agent_reply
+_FACTORY_EXPORTS = {"AgentConfig", "AgentCreationError", "BaseAgentFactory"}
+_REGISTRY_EXPORTS = {"create_agent", "get_registry", "list_available_agent_types"}
+_TEAM_EXPORTS = {"get_cs_copilot_agent_team", "get_qsar_agent_team"}
+_UTIL_EXPORTS = {"get_last_agent_reply"}
+
+
+def __getattr__(name: str):
+    if name in _FACTORY_EXPORTS:
+        from . import factories as module
+    elif name in _REGISTRY_EXPORTS:
+        from . import registry as module
+    elif name in _TEAM_EXPORTS:
+        from . import teams as module
+    elif name in _UTIL_EXPORTS:
+        from . import utils as module
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     # Primary API

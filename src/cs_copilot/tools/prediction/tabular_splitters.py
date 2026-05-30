@@ -87,7 +87,7 @@ def _group_balanced_split_payload(
         assigned["train"].extend(remainder)
 
     for split_name in assigned:
-        assigned[split_name] = sorted(set(int(i) for i in assigned[split_name]))
+        assigned[split_name] = sorted({int(i) for i in assigned[split_name]})
 
     return [assigned]
 
@@ -100,6 +100,7 @@ def build_tabular_split_payload(
     random_state: int,
     smiles_column: Optional[str] = None,
     feature_columns: Optional[List[str]] = None,
+    stratify_column: Optional[str] = None,
 ) -> List[Dict[str, List[int]]]:
     n_rows = len(df)
     if n_rows < 10:
@@ -109,6 +110,44 @@ def build_tabular_split_payload(
     indices = np.arange(n_rows)
 
     if split_type == "random":
+        if stratify_column and stratify_column in df.columns:
+            stratify_values = df[stratify_column].reset_index(drop=True)
+            class_counts = stratify_values.value_counts(dropna=False)
+            n_classes = int(len(class_counts))
+            can_stratify = (
+                n_classes > 1
+                and int(class_counts.min()) >= 3
+                and counts["train"] >= n_classes
+                and counts["val"] >= n_classes
+                and counts["test"] >= n_classes
+            )
+            if can_stratify:
+                try:
+                    train_val_idx, test_idx = train_test_split(
+                        indices,
+                        test_size=counts["test"],
+                        random_state=random_state,
+                        shuffle=True,
+                        stratify=stratify_values,
+                    )
+                    relative_val_size = counts["val"] / float(counts["train"] + counts["val"])
+                    train_idx, val_idx = train_test_split(
+                        train_val_idx,
+                        test_size=relative_val_size,
+                        random_state=random_state,
+                        shuffle=True,
+                        stratify=stratify_values.iloc[train_val_idx],
+                    )
+                    return [
+                        {
+                            "train": sorted(int(i) for i in train_idx),
+                            "val": sorted(int(i) for i in val_idx),
+                            "test": sorted(int(i) for i in test_idx),
+                        }
+                    ]
+                except ValueError:
+                    pass
+
         train_val_idx, test_idx = train_test_split(
             indices,
             test_size=counts["test"],
@@ -144,15 +183,24 @@ def build_tabular_split_payload(
 
     if split_type == "kmeans":
         if not feature_columns:
-            raise InvalidPredictionInputError("KMeans split requires explicit numeric feature columns.")
+            raise InvalidPredictionInputError(
+                "KMeans split requires explicit numeric feature columns."
+            )
         missing = [column for column in feature_columns if column not in df.columns]
         if missing:
             raise InvalidPredictionInputError(f"KMeans split is missing feature columns: {missing}")
-        matrix = df[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        matrix = (
+            df[feature_columns]
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
         scaled = StandardScaler().fit_transform(matrix)
         n_clusters = max(3, min(20, int(math.sqrt(max(n_rows, 1) / 2.0))))
         n_clusters = min(n_clusters, n_rows)
-        labels = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10).fit_predict(scaled)
+        labels = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10).fit_predict(
+            scaled
+        )
         return _group_balanced_split_payload(
             [f"cluster_{label}" for label in labels.tolist()],
             split_sizes=split_sizes,

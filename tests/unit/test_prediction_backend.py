@@ -6,25 +6,25 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
+import cs_copilot.tools.prediction.catalog as catalog_module
+import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.backend import (
     InvalidPredictionInputError,
     PredictionModelRecord,
     PredictionTaskSpec,
 )
-import cs_copilot.tools.prediction.catalog as catalog_module
-import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
-from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
-from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
-from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
-from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
-from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
-from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
     describe_backend_capabilities,
     get_backend_capabilities,
 )
+from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
+from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
@@ -54,6 +54,7 @@ def test_backend_capabilities_registry_core_contracts():
     assert backend_supports_component_orchestration("ensemble") is True
     assert ensemble.supports_uncertainty == "component_disagreement_std"
     assert lightgbm.supports_activity_cliff_feedback_loops is True
+    assert "classification" in lightgbm.supported_task_types
     assert chemprop.supports_activity_cliff_feedback_loops is False
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
@@ -186,7 +187,9 @@ def test_shared_bundle_artifacts_writes_relative_file_names(tmp_path):
 def test_training_orchestration_normalizes_agent_list_arguments():
     assert normalize_json_list_argument("pEC50", argument_name="target_columns") == ["pEC50"]
     assert normalize_json_list_argument('["smiles"]', argument_name="smiles_columns") == ["smiles"]
-    assert normalize_json_list_argument("0.8,0.1,0.1", argument_name="split_sizes", coerce_numbers=True) == [
+    assert normalize_json_list_argument(
+        "0.8,0.1,0.1", argument_name="split_sizes", coerce_numbers=True
+    ) == [
         0.8,
         0.1,
         0.1,
@@ -321,9 +324,7 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
     ).to_csv(train_csv, index=False)
     output_dir = tmp_path / "chemprop_run"
     output_dir.mkdir()
-    (output_dir / "splits.json").write_text(
-        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
-    )
+    (output_dir / "splits.json").write_text(json.dumps([{"train": [0], "val": [], "test": [1, 2]}]))
     for replicate_index, values in enumerate(([5.5, 4.5], [6.5, 3.5])):
         replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
         replicate_dir.mkdir(parents=True)
@@ -366,9 +367,7 @@ def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
     ).to_csv(train_csv, index=False)
     output_dir = tmp_path / "chemprop_run"
     output_dir.mkdir()
-    (output_dir / "splits.json").write_text(
-        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
-    )
+    (output_dir / "splits.json").write_text(json.dumps([{"train": [0], "val": [], "test": [1, 2]}]))
     replicate_payloads = [
         (0, ["CCC", "CCN"], [5.5, 4.5]),
         (1, ["CCN", "CCC"], [6.5, 3.5]),

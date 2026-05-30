@@ -57,7 +57,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("tabular_features_csv",),
         requires_feature_preparation=True,
-        supported_task_types=("regression",),
+        supported_task_types=("regression", "classification"),
         supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
         supports_applicability_domain=True,
         supports_uncertainty="none",
@@ -115,10 +115,7 @@ def get_backend_capabilities(
 
 def describe_backend_capabilities() -> Dict[str, Dict[str, object]]:
     """Return all known backend capabilities as serializable dictionaries."""
-    return {
-        name: capabilities.as_dict()
-        for name, capabilities in BACKEND_CAPABILITIES.items()
-    }
+    return {name: capabilities.as_dict() for name, capabilities in BACKEND_CAPABILITIES.items()}
 
 
 def enrich_backend_environment(

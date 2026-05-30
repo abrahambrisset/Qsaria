@@ -16,7 +16,6 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .model_registry_toolkit import ModelRegistryToolkit
-from .qsar_training_toolkit import QSARTrainingToolkit
 from .qsar_training_policy import (
     describe_compute_environment,
     resolve_seed_policy,
@@ -25,9 +24,10 @@ from .qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
+from .qsar_training_toolkit import QSARTrainingToolkit
 from .tabular_representations import (
-    tabular_candidates_for_backend,
     get_tabular_representation,
+    tabular_candidates_for_backend,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,29 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _metric_value(family: Optional[Dict[str, Any]], *names: str) -> Optional[float]:
+    payload = family or {}
+    for name in names:
+        value = payload.get(f"{name}_mean", payload.get(name))
+        coerced = _safe_float(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
+def _format_metric_summary(metrics: Dict[str, Any]) -> str:
+    if metrics.get("r2") is not None or metrics.get("rmse") is not None:
+        return (
+            f"R2={metrics.get('r2')}, RMSE={metrics.get('rmse')}, "
+            f"MAE={metrics.get('mae')}, MSE={metrics.get('mse')}"
+        )
+    return (
+        f"accuracy={metrics.get('accuracy')}, "
+        f"balanced_accuracy={metrics.get('balanced_accuracy')}, "
+        f"F1_macro={metrics.get('f1_macro')}, ROC_AUC={metrics.get('roc_auc')}"
+    )
 
 
 def _benchmark_dataset_token(train_csv: str) -> str:
@@ -162,7 +185,14 @@ class BenchmarkToolkit(Toolkit):
             available.append("chemprop")
         if (
             backends["lightgbm"].is_available()
-            and task_type == "regression"
+            and task_type
+            in {
+                "regression",
+                "classification",
+                "binary_classification",
+                "multiclass",
+                "multiclass_classification",
+            }
             and len(target_columns) == 1
         ):
             available.append("lightgbm")
@@ -339,7 +369,9 @@ class BenchmarkToolkit(Toolkit):
         temporary_model_id = f"{candidate['candidate_id']}_session"
         model_path = result.get("best_model_path") or result.get("model_path")
         if not model_path:
-            raise ValueError(f"Candidate {candidate['candidate_id']} did not produce a model artifact path.")
+            raise ValueError(
+                f"Candidate {candidate['candidate_id']} did not produce a model artifact path."
+            )
 
         metrics_payload = (
             ((result.get("validation_assessment") or {}).get("aggregated_split_metrics"))
@@ -378,7 +410,9 @@ class BenchmarkToolkit(Toolkit):
                 "training_profile": training_profile,
                 "campaign_root": str(campaign_root),
                 "seed_policy": result.get("seed_policy") or campaign_seed_policy,
-                "seed_policy_report": seed_policy_reporting_text(result.get("seed_policy") or campaign_seed_policy),
+                "seed_policy_report": seed_policy_reporting_text(
+                    result.get("seed_policy") or campaign_seed_policy
+                ),
                 "campaign_seed_policy": campaign_seed_policy,
                 "reproducibility": seed_policy_reproducibility_metadata(
                     result.get("seed_policy") or campaign_seed_policy
@@ -429,8 +463,26 @@ class BenchmarkToolkit(Toolkit):
         random_family = aggregated.get("random") or {}
         scaffold_family = aggregated.get("scaffold") or {}
         kmeans_family = aggregated.get("cluster_kmeans") or {}
-        hardest_r2 = _safe_float((hardest_family or {}).get("r2_mean") or (hardest_family or {}).get("r2"))
         delta_vs_random = validation_assessment.get("delta_vs_random") or {}
+        primary_metric = governance.get("primary_metric")
+        if not primary_metric:
+            for metric_name in ("r2", "balanced_accuracy", "roc_auc", "accuracy"):
+                if (
+                    _metric_value(hardest_family, metric_name) is not None
+                    or _metric_value(random_family, metric_name) is not None
+                ):
+                    primary_metric = metric_name
+                    break
+
+        hardest_primary = _metric_value(hardest_family, primary_metric) if primary_metric else None
+        random_primary = _metric_value(random_family, primary_metric) if primary_metric else None
+        hardest_delta_primary = None
+        if hardest_split and primary_metric:
+            hardest_delta_primary = _safe_float(
+                (delta_vs_random.get(hardest_split) or {}).get(primary_metric)
+            )
+
+        hardest_r2 = _metric_value(hardest_family, "r2")
         hardest_delta_r2 = None
         if hardest_split:
             hardest_delta_r2 = _safe_float((delta_vs_random.get(hardest_split) or {}).get("r2"))
@@ -441,20 +493,39 @@ class BenchmarkToolkit(Toolkit):
             "backend": candidate["backend_name"],
             "representation": candidate["representation_name"],
             "protocol": benchmark_protocol,
-            "random_r2": _safe_float(random_family.get("r2_mean") or random_family.get("r2")),
-            "scaffold_r2": _safe_float(scaffold_family.get("r2_mean") or scaffold_family.get("r2")),
-            "cluster_kmeans_r2": _safe_float(kmeans_family.get("r2_mean") or kmeans_family.get("r2")),
+            "primary_metric": primary_metric,
+            "primary_score": hardest_primary,
+            "random_primary_score": random_primary,
+            "delta_primary_score": hardest_delta_primary,
+            "random_r2": _metric_value(random_family, "r2"),
+            "scaffold_r2": _metric_value(scaffold_family, "r2"),
+            "cluster_kmeans_r2": _metric_value(kmeans_family, "r2"),
+            "random_balanced_accuracy": _metric_value(random_family, "balanced_accuracy"),
+            "scaffold_balanced_accuracy": _metric_value(scaffold_family, "balanced_accuracy"),
+            "cluster_kmeans_balanced_accuracy": _metric_value(kmeans_family, "balanced_accuracy"),
+            "random_roc_auc": _metric_value(random_family, "roc_auc"),
+            "scaffold_roc_auc": _metric_value(scaffold_family, "roc_auc"),
+            "cluster_kmeans_roc_auc": _metric_value(kmeans_family, "roc_auc"),
             "hardest_split": hardest_split,
             "hardest_split_r2": hardest_r2,
+            "hardest_split_balanced_accuracy": _metric_value(hardest_family, "balanced_accuracy"),
+            "hardest_split_roc_auc": _metric_value(hardest_family, "roc_auc"),
             "delta_r2": hardest_delta_r2,
-            "random_family_r2_mean": _safe_float(random_family.get("r2_mean")),
+            "random_family_r2_mean": _metric_value(random_family, "r2"),
             "random_family_r2_std": _safe_float(random_family.get("r2_std")),
-            "train_time_s": _safe_float((result.get("training_durations") or {}).get("total_duration_seconds")),
+            "random_primary_std": (
+                _safe_float(random_family.get(f"{primary_metric}_std")) if primary_metric else None
+            ),
+            "train_time_s": _safe_float(
+                (result.get("training_durations") or {}).get("total_duration_seconds")
+            ),
             "status": persisted.get("status"),
             "internal_model_root": persisted.get("model_root"),
             "best_model_path": persisted.get("model_path"),
             "feature_cache_key": (result.get("feature_preparation") or {}).get("feature_cache_key"),
-            "feature_cache_status": (result.get("feature_preparation") or {}).get("feature_cache_status"),
+            "feature_cache_status": (result.get("feature_preparation") or {}).get(
+                "feature_cache_status"
+            ),
             "feature_cache_hits": (result.get("feature_preparation") or {}).get("cache_hits"),
             "feature_cache_misses": (result.get("feature_preparation") or {}).get("cache_misses"),
         }
@@ -469,7 +540,7 @@ class BenchmarkToolkit(Toolkit):
         validation_assessment = result.get("validation_assessment") or {}
         split_summaries: List[Dict[str, Any]] = []
         for split_result in result.get("split_results") or []:
-            metrics = ((split_result.get("metrics") or {}).get("test") or {})
+            metrics = (split_result.get("metrics") or {}).get("test") or {}
             split_summaries.append(
                 {
                     "strategy_label": split_result.get("strategy_label"),
@@ -479,6 +550,10 @@ class BenchmarkToolkit(Toolkit):
                         "rmse": _safe_float(metrics.get("rmse")),
                         "mae": _safe_float(metrics.get("mae")),
                         "mse": _safe_float(metrics.get("mse")),
+                        "accuracy": _safe_float(metrics.get("accuracy")),
+                        "balanced_accuracy": _safe_float(metrics.get("balanced_accuracy")),
+                        "f1_macro": _safe_float(metrics.get("f1_macro")),
+                        "roc_auc": _safe_float(metrics.get("roc_auc")),
                     },
                 }
             )
@@ -489,10 +564,20 @@ class BenchmarkToolkit(Toolkit):
             "representation_name": row.get("representation"),
             "status": row.get("status"),
             "hardest_split": row.get("hardest_split"),
+            "primary_metric": row.get("primary_metric"),
+            "primary_score": row.get("primary_score"),
+            "random_primary_score": row.get("random_primary_score"),
+            "delta_primary_score": row.get("delta_primary_score"),
             "hardest_split_r2": row.get("hardest_split_r2"),
             "random_r2": row.get("random_r2"),
             "scaffold_r2": row.get("scaffold_r2"),
             "cluster_kmeans_r2": row.get("cluster_kmeans_r2"),
+            "hardest_split_balanced_accuracy": row.get("hardest_split_balanced_accuracy"),
+            "random_balanced_accuracy": row.get("random_balanced_accuracy"),
+            "scaffold_balanced_accuracy": row.get("scaffold_balanced_accuracy"),
+            "hardest_split_roc_auc": row.get("hardest_split_roc_auc"),
+            "random_roc_auc": row.get("random_roc_auc"),
+            "scaffold_roc_auc": row.get("scaffold_roc_auc"),
             "delta_r2": row.get("delta_r2"),
             "train_time_s": row.get("train_time_s"),
             "governance": validation_assessment.get("governance"),
@@ -504,14 +589,20 @@ class BenchmarkToolkit(Toolkit):
 
     def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sort_key(row: Dict[str, Any]) -> tuple[float, float, float, float]:
-            hardest_r2 = row.get("hardest_split_r2")
-            delta_r2 = row.get("delta_r2")
-            random_r2 = row.get("random_r2")
+            primary_score = row.get("primary_score")
+            if primary_score is None:
+                primary_score = row.get("hardest_split_r2")
+            delta_score = row.get("delta_primary_score")
+            if delta_score is None:
+                delta_score = row.get("delta_r2")
+            random_score = row.get("random_primary_score")
+            if random_score is None:
+                random_score = row.get("random_r2")
             train_time = row.get("train_time_s")
             return (
-                -(hardest_r2 if hardest_r2 is not None else float("-inf")),
-                -(delta_r2 if delta_r2 is not None else float("-inf")),
-                -(random_r2 if random_r2 is not None else float("-inf")),
+                -(primary_score if primary_score is not None else float("-inf")),
+                -(delta_score if delta_score is not None else float("-inf")),
+                -(random_score if random_score is not None else float("-inf")),
                 train_time if train_time is not None else float("inf"),
             )
 
@@ -524,23 +615,41 @@ class BenchmarkToolkit(Toolkit):
     ) -> Dict[str, Optional[str]]:
         ranked = self._rank_summary_rows(rows)
         best_overall = ranked[0]["candidate_id"] if ranked else None
+
+        def best_metric_score(row: Dict[str, Any]) -> float:
+            value = row.get("primary_score")
+            if value is None:
+                value = row.get("hardest_split_r2")
+            return value if value is not None else float("-inf")
+
         best_hardest = max(
             rows,
-            key=lambda row: row.get("hardest_split_r2") if row.get("hardest_split_r2") is not None else float("-inf"),
+            key=best_metric_score,
             default=None,
         )
         best_fast = min(
             rows,
-            key=lambda row: row.get("train_time_s") if row.get("train_time_s") is not None else float("inf"),
+            key=lambda row: (
+                row.get("train_time_s") if row.get("train_time_s") is not None else float("inf")
+            ),
             default=None,
         )
         best_stability = None
         if benchmark_protocol == "robust_qsar":
-            stability_rows = [row for row in rows if row.get("random_family_r2_std") is not None]
+            stability_rows = [
+                row
+                for row in rows
+                if row.get("random_primary_std") is not None
+                or row.get("random_family_r2_std") is not None
+            ]
             if stability_rows:
                 best_stability = min(
                     stability_rows,
-                    key=lambda row: row.get("random_family_r2_std", float("inf")),
+                    key=lambda row: (
+                        row.get("random_primary_std")
+                        if row.get("random_primary_std") is not None
+                        else row.get("random_family_r2_std", float("inf"))
+                    ),
                 )
 
         return {
@@ -583,7 +692,8 @@ class BenchmarkToolkit(Toolkit):
         lines.append(f"- Suggested profile: `{compute_environment.get('suggested_profile')}`")
         lines.append(f"- Campaign seed: `{campaign_seed_policy.get('campaign_seed')}`")
         split_seed_text = ", ".join(
-            f"{item.get('label')}={item.get('seed')}" for item in campaign_seed_policy.get("split_runs", [])
+            f"{item.get('label')}={item.get('seed')}"
+            for item in campaign_seed_policy.get("split_runs", [])
         )
         if split_seed_text:
             lines.append(f"- Shared split seeds: `{split_seed_text}`")
@@ -607,8 +717,10 @@ class BenchmarkToolkit(Toolkit):
         lines.append("")
         lines.append("## Leaderboard")
         lines.append("")
-        lines.append("| candidate_id | backend | representation | hardest_split | hardest_split_r2 | random_r2 | scaffold_r2 | cluster_kmeans_r2 | delta_r2 | train_time_s | status |")
-        lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---|")
+        lines.append(
+            "| candidate_id | backend | representation | hardest_split | primary_metric | primary_score | random_score | delta_score | train_time_s | status |"
+        )
+        lines.append("|---|---|---|---|---|---:|---:|---:|---:|---|")
         for row in self._rank_summary_rows(candidate_rows):
             lines.append(
                 "| "
@@ -618,11 +730,22 @@ class BenchmarkToolkit(Toolkit):
                         str(row.get("backend") or ""),
                         str(row.get("representation") or ""),
                         str(row.get("hardest_split") or ""),
-                        f"{row['hardest_split_r2']:.3f}" if row.get("hardest_split_r2") is not None else "",
-                        f"{row['random_r2']:.3f}" if row.get("random_r2") is not None else "",
-                        f"{row['scaffold_r2']:.3f}" if row.get("scaffold_r2") is not None else "",
-                        f"{row['cluster_kmeans_r2']:.3f}" if row.get("cluster_kmeans_r2") is not None else "",
-                        f"{row['delta_r2']:.3f}" if row.get("delta_r2") is not None else "",
+                        str(row.get("primary_metric") or ""),
+                        (
+                            f"{row['primary_score']:.3f}"
+                            if row.get("primary_score") is not None
+                            else ""
+                        ),
+                        (
+                            f"{row['random_primary_score']:.3f}"
+                            if row.get("random_primary_score") is not None
+                            else ""
+                        ),
+                        (
+                            f"{row['delta_primary_score']:.3f}"
+                            if row.get("delta_primary_score") is not None
+                            else ""
+                        ),
                         f"{row['train_time_s']:.3f}" if row.get("train_time_s") is not None else "",
                         str(row.get("status") or ""),
                     ]
@@ -640,10 +763,10 @@ class BenchmarkToolkit(Toolkit):
             validation_assessment = item.get("validation_assessment") or {}
             lines.append(f"- hardest split: `{validation_assessment.get('hardest_split')}`")
             for split_result in item.get("split_results") or []:
-                metrics = ((split_result.get("metrics") or {}).get("test") or {})
+                metrics = (split_result.get("metrics") or {}).get("test") or {}
                 lines.append(
                     f"- `{split_result.get('strategy_label')}`: "
-                    f"R²={metrics.get('r2')}, RMSE={metrics.get('rmse')}, MAE={metrics.get('mae')}, MSE={metrics.get('mse')}"
+                    f"{_format_metric_summary(metrics)}"
                 )
             lines.append("")
         lines.append("## Governance and recommendation")
@@ -814,12 +937,14 @@ class BenchmarkToolkit(Toolkit):
                 )
             )
             logger.info(
-                "Benchmark progress: candidate %d/%d - %s completed (status=%s, hardest_split_r2=%s).",
+                "Benchmark progress: candidate %d/%d - %s completed "
+                "(status=%s, primary_metric=%s, primary_score=%s).",
                 candidate_index,
                 total_candidates,
                 candidate["candidate_id"],
                 persisted.get("status"),
-                candidate_row.get("hardest_split_r2"),
+                candidate_row.get("primary_metric"),
+                candidate_row.get("primary_score"),
             )
             persisted_model_mapping.append(
                 {
@@ -838,7 +963,9 @@ class BenchmarkToolkit(Toolkit):
         feature_cache = {
             "feature_cache_dir": str(campaign_root / "feature_cache"),
             "cache_hits": sum(int(row.get("feature_cache_hits") or 0) for row in candidate_rows),
-            "cache_misses": sum(int(row.get("feature_cache_misses") or 0) for row in candidate_rows),
+            "cache_misses": sum(
+                int(row.get("feature_cache_misses") or 0) for row in candidate_rows
+            ),
         }
 
         leaderboard_path = campaign_root / "leaderboard.csv"

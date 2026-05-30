@@ -33,16 +33,16 @@ from .qsar_training_policy import (
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
-from .tabular_representations import (
-    AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
-    LEGACY_TABULAR_REPRESENTATION_NAMES,
-)
 from .session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
     get_prediction_state,
     latest_curation_artifacts,
     write_active_training_marker,
+)
+from .tabular_representations import (
+    AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
+    LEGACY_TABULAR_REPRESENTATION_NAMES,
 )
 from .training_orchestration import (
     apply_training_profile,
@@ -133,7 +133,9 @@ class LightGBMToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+        def _limit(
+            profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
+        ) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
                     merged["n_estimators"] = max(int(merged.get("n_estimators", 1000)), 1000)
@@ -291,7 +293,9 @@ class LightGBMToolkit(Toolkit):
                         "split": split_result.get("strategy_label"),
                         "removed_tiers": variant.get("removed_tiers") or [],
                         "removed_count_dataset": variant.get("removed_count", 0),
-                        "requested_exclusion_count": split_result.get("requested_exclusion_count", 0),
+                        "requested_exclusion_count": split_result.get(
+                            "requested_exclusion_count", 0
+                        ),
                         "removed_from_train_count": split_result.get("removed_from_train_count", 0),
                         "source_train_count": split_result.get("source_train_count"),
                         "effective_train_count": split_result.get("effective_train_count"),
@@ -431,7 +435,11 @@ class LightGBMToolkit(Toolkit):
             "|---|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for row in variant_comparison_rows:
-            marker = " (recommandee)" if recommended_variant and row.get("variant_id") == recommended_variant else ""
+            marker = (
+                " (recommandee)"
+                if recommended_variant and row.get("variant_id") == recommended_variant
+                else ""
+            )
             lines.append(
                 "| "
                 f"{cls._format_activity_cliff_value(row.get('variant_id'))}{marker} | "
@@ -564,7 +572,8 @@ class LightGBMToolkit(Toolkit):
         if comparable:
             comparable.sort(
                 key=lambda item: (
-                    self._hardest_split_r2(item.get("validation_assessment") or {}) or float("-inf"),
+                    self._hardest_split_r2(item.get("validation_assessment") or {})
+                    or float("-inf"),
                     -int(item.get("loop_index") or 0),
                 ),
                 reverse=True,
@@ -603,6 +612,7 @@ class LightGBMToolkit(Toolkit):
         description.update(
             {
                 "default_task_type": "regression",
+                "supported_task_types": ["regression", "classification"],
                 "default_target_scope": "single_target",
                 "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
                 "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
@@ -657,11 +667,14 @@ class LightGBMToolkit(Toolkit):
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train a LightGBM regressor with QSAR validation protocols."""
-        normalized_target_columns = self._normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        """Train a LightGBM regressor or classifier with QSAR validation protocols."""
+        normalized_target_columns = (
+            self._normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
         normalized_feature_columns = self._normalize_json_list_argument(
             feature_columns,
             argument_name="feature_columns",
@@ -702,7 +715,11 @@ class LightGBMToolkit(Toolkit):
 
         target_column = normalized_target_columns[0] if normalized_target_columns else None
         activity_cliffs: Dict[str, Any] = {}
-        if task_type == "regression" and len(normalized_target_columns) == 1 and target_column:
+        if (
+            str(task_type).strip().lower() == "regression"
+            and len(normalized_target_columns) == 1
+            and target_column
+        ):
             try:
                 activity_cliffs = prepare_activity_cliff_context(
                     train_csv=train_csv,
@@ -772,7 +789,11 @@ class LightGBMToolkit(Toolkit):
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
                 run_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "feature_columns": normalized_feature_columns,
                     "categorical_feature_columns": normalized_categorical_feature_columns,
                     "split_sizes": normalized_split_sizes,
@@ -819,8 +840,12 @@ class LightGBMToolkit(Toolkit):
                 single_result["seed"] = split_run["seed"]
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
-                single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
-                single_result["completed_at"] = single_result.get("completed_at") or completed_at.isoformat()
+                single_result["started_at"] = (
+                    single_result.get("started_at") or started_at.isoformat()
+                )
+                single_result["completed_at"] = (
+                    single_result.get("completed_at") or completed_at.isoformat()
+                )
                 single_result["duration_seconds"] = single_result.get("duration_seconds") or round(
                     (completed_at - started_at).total_seconds(), 3
                 )
@@ -850,7 +875,11 @@ class LightGBMToolkit(Toolkit):
                 removed_indices = [int(idx) for idx in (variant.get("removed_row_indices") or [])]
                 variant_results: List[Dict[str, Any]] = []
                 for baseline_result in split_results:
-                    label = str(baseline_result.get("strategy_label") or baseline_result.get("strategy") or "split")
+                    label = str(
+                        baseline_result.get("strategy_label")
+                        or baseline_result.get("strategy")
+                        or "split"
+                    )
                     run_output_dir = (
                         root_output_path
                         / "activity_cliff_variants"
@@ -860,7 +889,11 @@ class LightGBMToolkit(Toolkit):
                     run_output_dir.mkdir(parents=True, exist_ok=True)
                     started_at = project_now()
                     run_args = {
-                        **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                        **{
+                            key: value
+                            for key, value in training_policy["extra_args"].items()
+                            if key != "seed_policy"
+                        },
                         "feature_columns": normalized_feature_columns,
                         "categorical_feature_columns": normalized_categorical_feature_columns,
                         "split_sizes": normalized_split_sizes,
@@ -896,11 +929,15 @@ class LightGBMToolkit(Toolkit):
                     variant_result["seed"] = baseline_result.get("seed")
                     variant_result["validation_protocol"] = protocol_policy["protocol"]
                     variant_result["output_dir"] = str(run_output_dir)
-                    variant_result["started_at"] = variant_result.get("started_at") or started_at.isoformat()
-                    variant_result["completed_at"] = variant_result.get("completed_at") or completed_at.isoformat()
-                    variant_result["duration_seconds"] = variant_result.get("duration_seconds") or round(
-                        (completed_at - started_at).total_seconds(), 3
+                    variant_result["started_at"] = (
+                        variant_result.get("started_at") or started_at.isoformat()
                     )
+                    variant_result["completed_at"] = (
+                        variant_result.get("completed_at") or completed_at.isoformat()
+                    )
+                    variant_result["duration_seconds"] = variant_result.get(
+                        "duration_seconds"
+                    ) or round((completed_at - started_at).total_seconds(), 3)
                     variant_result["activity_cliff_variant_id"] = variant_id
                     variant_result["removed_tiers"] = variant.get("removed_tiers") or []
                     variant_result["removed_count"] = variant.get("removed_count", 0)
@@ -933,7 +970,9 @@ class LightGBMToolkit(Toolkit):
                     json.dumps(activity_cliffs, indent=2) + "\n"
                 )
             except Exception:
-                logger.warning("Could not update activity-cliff summary with loop training results.")
+                logger.warning(
+                    "Could not update activity-cliff summary with loop training results."
+                )
 
         final_split_results = split_results
         final_primary_run = primary_run
@@ -968,32 +1007,41 @@ class LightGBMToolkit(Toolkit):
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
-        plot_artifacts = build_training_plots_if_possible(
-            train_csv=train_csv,
-            split_results=final_split_results,
-            primary_run=final_primary_run,
-            root_artifacts=root_artifacts,
-            root_output_dir=root_output_path,
-            target_column=target_column,
-        )
+        if str(task.task_type).strip().lower() == "regression":
+            plot_artifacts = build_training_plots_if_possible(
+                train_csv=train_csv,
+                split_results=final_split_results,
+                primary_run=final_primary_run,
+                root_artifacts=root_artifacts,
+                root_output_dir=root_output_path,
+                target_column=target_column,
+            )
 
         validation_assessment = assess_protocol_results(final_split_results)
         total_completed_at = project_now()
         result = dict(final_primary_run)
         result["output_dir"] = resolved_output_dir
-        result["model_path"] = root_artifacts.get("best_model_path") or final_primary_run.get("model_path")
-        result["summary_path"] = str(root_output_path / "cs_copilot_training_summary.json")
-        result["config_path"] = root_artifacts.get("config_path") or final_primary_run.get("config_path")
-        result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get("splits_path")
-        result["test_predictions_path"] = root_artifacts.get("test_predictions_path") or final_primary_run.get(
-            "test_predictions_path"
+        result["model_path"] = root_artifacts.get("best_model_path") or final_primary_run.get(
+            "model_path"
         )
+        result["summary_path"] = str(root_output_path / "cs_copilot_training_summary.json")
+        result["config_path"] = root_artifacts.get("config_path") or final_primary_run.get(
+            "config_path"
+        )
+        result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get(
+            "splits_path"
+        )
+        result["test_predictions_path"] = root_artifacts.get(
+            "test_predictions_path"
+        ) or final_primary_run.get("test_predictions_path")
         result["selected_activity_cliff_variant"] = recommended_variant or "baseline_loop_0"
         result["validation_protocol"] = protocol_policy["protocol"]
         result["validation_protocol_reason"] = protocol_policy["reason"]
         result["seed_policy"] = protocol_policy["seed_policy"]
         result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
-        result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
+        result["reproducibility"] = seed_policy_reproducibility_metadata(
+            protocol_policy["seed_policy"]
+        )
         result["split_results"] = final_split_results
         result["baseline_split_results"] = split_results
         result["validation_assessment"] = validation_assessment
@@ -1001,7 +1049,11 @@ class LightGBMToolkit(Toolkit):
         result["training_profile"] = training_policy["training_profile"]
         result["profile_reason"] = training_policy["profile_reason"]
         result["effective_train_args"] = {
-            **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+            **{
+                key: value
+                for key, value in training_policy["extra_args"].items()
+                if key != "seed_policy"
+            },
             "device_type": final_primary_run.get("effective_train_args", {}).get("device_type"),
         }
         result["training_resources"] = self._summarize_training_resources(
@@ -1103,20 +1155,30 @@ class LightGBMToolkit(Toolkit):
         feature_columns: Optional[List[str] | str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
+        task_type: str = "regression",
     ) -> Dict[str, Any]:
         """Run LightGBM batch prediction from a tabular CSV input file."""
-        normalized_target_columns = self._normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
-        normalized_feature_columns = self._normalize_json_list_argument(
-            feature_columns,
-            argument_name="feature_columns",
-        ) or []
-        normalized_categorical_feature_columns = self._normalize_json_list_argument(
-            categorical_feature_columns,
-            argument_name="categorical_feature_columns",
-        ) or []
+        normalized_target_columns = (
+            self._normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
+        normalized_feature_columns = (
+            self._normalize_json_list_argument(
+                feature_columns,
+                argument_name="feature_columns",
+            )
+            or []
+        )
+        normalized_categorical_feature_columns = (
+            self._normalize_json_list_argument(
+                categorical_feature_columns,
+                argument_name="categorical_feature_columns",
+            )
+            or []
+        )
 
         from .backend import PredictionModelRecord
 
@@ -1125,7 +1187,7 @@ class LightGBMToolkit(Toolkit):
             backend_name=self.backend.backend_name,
             model_path=model_path,
             task=PredictionTaskSpec(
-                task_type="regression",
+                task_type=task_type,
                 smiles_columns=["smiles"],
                 target_columns=list(normalized_target_columns),
             ),

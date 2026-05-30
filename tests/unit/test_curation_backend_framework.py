@@ -6,10 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-
-_IDENTITY_PATH = (
-    Path(__file__).resolve().parents[2] / "src/cs_copilot/tools/curation/identity.py"
-)
+_IDENTITY_PATH = Path(__file__).resolve().parents[2] / "src/cs_copilot/tools/curation/identity.py"
 _IDENTITY_SPEC = importlib.util.spec_from_file_location(
     "curation_identity_for_tests", _IDENTITY_PATH
 )
@@ -75,11 +72,11 @@ def test_stereo_strip_identity_collapses_enantiomeric_smiles() -> None:
     )
 
 
-def test_chembl_backend_stereo_identity_aggregates_close_duplicates(
-    tmp_path, monkeypatch
-) -> None:
+def test_chembl_backend_stereo_identity_aggregates_close_duplicates(tmp_path, monkeypatch) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "stereo.csv"
     output = tmp_path / "curated.csv"
     pd.DataFrame(
@@ -101,7 +98,10 @@ def test_chembl_backend_stereo_identity_aggregates_close_duplicates(
     assert result["duplicate_groups_aggregated"] == 1
     assert result["duplicate_conflicting_groups"] == 0
     assert len(curated) == 2
-    assert round(float(curated.loc[curated["curation_identity_key"] != "CCO", "pEC50"].iloc[0]), 2) == 5.1
+    assert (
+        round(float(curated.loc[curated["curation_identity_key"] != "CCO", "pEC50"].iloc[0]), 2)
+        == 5.1
+    )
     assert result["curation_artifacts"]["standardization_map_csv"].endswith(
         "curation_standardization_map.csv"
     )
@@ -111,7 +111,9 @@ def test_chembl_backend_stereo_identity_removes_conflicting_duplicates(
     tmp_path, monkeypatch
 ) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "stereo_conflict.csv"
     output = tmp_path / "curated_conflict.csv"
     pd.DataFrame(
@@ -134,3 +136,61 @@ def test_chembl_backend_stereo_identity_removes_conflicting_duplicates(
     assert result["duplicate_conflicting_groups"] == 1
     assert len(curated) == 1
     assert curated["smiles"].iloc[0] == "CCO"
+
+
+def test_identify_qsar_columns_detects_classification_labels(tmp_path) -> None:
+    _, DatasetCurationToolkit = _load_curation_toolkit()
+    source = tmp_path / "classification_discovery.csv"
+    pd.DataFrame(
+        {
+            "SMILES": ["CCO", "CCC", "CCN", "CCCl"],
+            "activity": ["active", "inactive", "active", "inactive"],
+            "batch": ["A", "A", "B", "B"],
+        }
+    ).to_csv(source, index=False)
+
+    result = DatasetCurationToolkit().identify_qsar_columns(
+        dataset_path=str(source),
+        task_type="classification",
+    )
+
+    assert result["smiles_column"] == "SMILES"
+    assert result["target_columns"] == ["activity"]
+    assert result["ready"] is True
+
+
+def test_classification_curation_preserves_labels_and_removes_conflicting_duplicates(
+    tmp_path, monkeypatch
+) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
+    source = tmp_path / "classification.csv"
+    output = tmp_path / "classification_curated.csv"
+    pd.DataFrame(
+        {
+            "SMILES": ["CCO", "CCO", "CCC", "CCN"],
+            "activity": ["active", "inactive", "inactive", "active"],
+        }
+    ).to_csv(source, index=False)
+
+    result = DatasetCurationToolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="classification",
+        smiles_column="SMILES",
+        target_columns=["activity"],
+        output_csv=str(output),
+    )
+
+    curated = pd.read_csv(output)
+    assert result["ready_for_qsar"] is True
+    assert result["duplicate_conflicting_groups"] == 1
+    assert result["duplicate_conflicting_rows_removed"] == 2
+    assert result["target_data_quality"]["classification_targets_allowed"] is True
+    assert (
+        result["target_data_quality"]["classification_target_summary"]["activity"]["class_count"]
+        == 2
+    )
+    assert set(curated["activity"]) == {"active", "inactive"}
+    assert len(curated) == 2

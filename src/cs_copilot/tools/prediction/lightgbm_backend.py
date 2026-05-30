@@ -16,6 +16,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from cs_copilot.storage import S3
@@ -44,7 +45,9 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
     if len(split_sizes) != 3:
-        raise InvalidPredictionInputError("split_sizes must contain exactly 3 values: train, val, test.")
+        raise InvalidPredictionInputError(
+            "split_sizes must contain exactly 3 values: train, val, test."
+        )
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
@@ -65,8 +68,34 @@ def _normalize_category_value(value: Any) -> Any:
     return value
 
 
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
+
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _safe_class_token(value: Any, fallback: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value).strip()).strip("_")
+    return token or fallback
+
+
+def _json_safe_label(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
+
+
 class LightGBMBackend(PredictionBackend):
-    """Prediction backend built around LightGBM regressors."""
+    """Prediction backend built around LightGBM regressors and classifiers."""
 
     backend_name = "lightgbm"
     MODEL_EXTENSIONS = (".pkl",)
@@ -152,6 +181,11 @@ class LightGBMBackend(PredictionBackend):
             "boosting_type",
             "objective",
             "metric",
+            "class_weight",
+            "is_unbalance",
+            "scale_pos_weight",
+            "positive_class_label",
+            "classification_threshold",
             "force_col_wise",
             "force_row_wise",
             "zero_as_missing",
@@ -221,7 +255,9 @@ class LightGBMBackend(PredictionBackend):
             )
             missing = [column for column in feature_columns if column not in df.columns]
             if missing:
-                raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
+                raise InvalidPredictionInputError(
+                    f"Requested feature columns are missing: {missing}"
+                )
             invalid = []
             for column in feature_columns:
                 if column in categorical_feature_columns:
@@ -244,7 +280,8 @@ class LightGBMBackend(PredictionBackend):
         ]
         categorical_feature_columns = self._resolve_categorical_feature_columns(
             df,
-            feature_columns=numeric_columns + list(extra_args.get("categorical_feature_columns") or []),
+            feature_columns=numeric_columns
+            + list(extra_args.get("categorical_feature_columns") or []),
             extra_args=extra_args,
         )
         feature_columns = list(numeric_columns)
@@ -286,7 +323,7 @@ class LightGBMBackend(PredictionBackend):
                     mapping[normalized] = len(mapping)
             encoded[column] = (
                 encoded[column]
-                .map(lambda raw: mapping.get(_normalize_category_value(raw), -1))
+                .map(lambda raw, mapping=mapping: mapping.get(_normalize_category_value(raw), -1))
                 .astype("int32")
             )
             resolved_mappings[column] = mapping
@@ -309,9 +346,278 @@ class LightGBMBackend(PredictionBackend):
             "n": int(len(y_true)),
         }
 
-    def _default_model_params(self, extra_args: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _label_key(value: Any) -> str:
+        return json.dumps(_json_safe_label(value), sort_keys=True, default=str)
+
+    @staticmethod
+    def _labels_match(left: Any, right: Any) -> bool:
+        return left == right or str(left).strip().lower() == str(right).strip().lower()
+
+    def _sort_class_labels(self, labels: List[Any]) -> List[Any]:
+        try:
+            return sorted(labels)
+        except TypeError:
+            return sorted(labels, key=lambda value: str(value).lower())
+
+    def _resolve_class_labels(
+        self,
+        series: pd.Series,
+        extra_args: Dict[str, Any],
+    ) -> List[Any]:
+        labels: List[Any] = []
+        seen: set[str] = set()
+        for raw_value in series.tolist():
+            normalized = _normalize_category_value(raw_value)
+            if normalized is None:
+                continue
+            normalized = _json_safe_label(normalized)
+            key = self._label_key(normalized)
+            if key in seen:
+                continue
+            seen.add(key)
+            labels.append(normalized)
+
+        if len(labels) < 2:
+            raise InvalidPredictionInputError(
+                "LightGBM classification requires at least two target classes after cleanup."
+            )
+
+        explicit_positive = extra_args.get("positive_class_label")
+        if len(labels) == 2 and explicit_positive is not None:
+            positive_matches = [
+                label for label in labels if self._labels_match(label, explicit_positive)
+            ]
+            if not positive_matches:
+                raise InvalidPredictionInputError(
+                    f"positive_class_label={explicit_positive!r} was not found in target classes {labels}."
+                )
+            positive = positive_matches[0]
+            negative = next(label for label in labels if label != positive)
+            return [negative, positive]
+
+        if len(labels) == 2:
+            positive_tokens = {"1", "true", "active", "actif", "positive", "pos", "yes", "y"}
+            negative_tokens = {"0", "false", "inactive", "inactif", "negative", "neg", "no", "n"}
+            positives = [label for label in labels if str(label).strip().lower() in positive_tokens]
+            negatives = [label for label in labels if str(label).strip().lower() in negative_tokens]
+            if len(positives) == 1 and len(negatives) == 1:
+                return [negatives[0], positives[0]]
+
+        return self._sort_class_labels(labels)
+
+    def _encode_classification_target(
+        self,
+        series: pd.Series,
+        extra_args: Dict[str, Any],
+    ) -> Tuple[pd.Series, List[Any], Dict[str, int]]:
+        if series.isna().any():
+            raise InvalidPredictionInputError(
+                "LightGBM classification target contains missing values."
+            )
+        class_labels = self._resolve_class_labels(series, extra_args)
+        class_mapping = {self._label_key(label): index for index, label in enumerate(class_labels)}
+        encoded_values: List[int] = []
+        for raw_value in series.tolist():
+            normalized = _normalize_category_value(raw_value)
+            key = self._label_key(normalized)
+            if key not in class_mapping:
+                raise InvalidPredictionInputError(
+                    f"Could not encode classification target value {raw_value!r}."
+                )
+            encoded_values.append(class_mapping[key])
+        encoded = pd.Series(encoded_values, index=series.index, dtype="int64")
+        return (
+            encoded,
+            class_labels,
+            {str(_json_safe_label(label)): index for index, label in enumerate(class_labels)},
+        )
+
+    @staticmethod
+    def _mean_or_none(values: List[Optional[float]]) -> Optional[float]:
+        numeric = [value for value in values if value is not None]
+        if not numeric:
+            return None
+        return float(sum(numeric) / len(numeric))
+
+    @staticmethod
+    def _binary_roc_auc(y_true: pd.Series, scores: pd.Series) -> Optional[float]:
+        positive = y_true.astype(int) == 1
+        n_pos = int(positive.sum())
+        n_neg = int((~positive).sum())
+        if n_pos == 0 or n_neg == 0:
+            return None
+        ranks = scores.astype(float).rank(method="average")
+        rank_sum_pos = float(ranks[positive].sum())
+        auc = (rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)) / float(n_pos * n_neg)
+        return float(auc)
+
+    def _compute_classification_metrics(
+        self,
+        y_true: pd.Series,
+        y_pred: pd.Series,
+        y_proba: Optional[Any],
+        class_labels: List[Any],
+    ) -> Dict[str, Any]:
+        true_codes = pd.Series(y_true).astype(int).reset_index(drop=True)
+        pred_codes = pd.Series(y_pred).astype(int).reset_index(drop=True)
+        classes = list(range(len(class_labels)))
+        n = int(len(true_codes))
+        accuracy = float((true_codes == pred_codes).mean()) if n else None
+
+        per_class: Dict[str, Dict[str, Any]] = {}
+        recalls: List[Optional[float]] = []
+        precisions: List[Optional[float]] = []
+        f1_values: List[Optional[float]] = []
+        for class_index, class_label in enumerate(class_labels):
+            true_positive = int(((true_codes == class_index) & (pred_codes == class_index)).sum())
+            false_positive = int(((true_codes != class_index) & (pred_codes == class_index)).sum())
+            false_negative = int(((true_codes == class_index) & (pred_codes != class_index)).sum())
+            true_negative = int(((true_codes != class_index) & (pred_codes != class_index)).sum())
+            precision = (
+                float(true_positive / (true_positive + false_positive))
+                if true_positive + false_positive > 0
+                else 0.0
+            )
+            recall = (
+                float(true_positive / (true_positive + false_negative))
+                if true_positive + false_negative > 0
+                else None
+            )
+            f1 = (
+                float(2.0 * precision * recall / (precision + recall))
+                if recall is not None and precision + recall > 0
+                else 0.0
+            )
+            label_token = _safe_class_token(class_label, f"class_{class_index}")
+            per_class[label_token] = {
+                "class_label": _json_safe_label(class_label),
+                "class_index": class_index,
+                "support": int((true_codes == class_index).sum()),
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "true_negative": true_negative,
+            }
+            if recall is not None:
+                recalls.append(recall)
+            precisions.append(precision)
+            f1_values.append(f1)
+
+        confusion_matrix = [
+            [
+                int(((true_codes == row_class) & (pred_codes == col_class)).sum())
+                for col_class in classes
+            ]
+            for row_class in classes
+        ]
+        metrics: Dict[str, Any] = {
+            "accuracy": accuracy,
+            "balanced_accuracy": self._mean_or_none(recalls),
+            "precision_macro": self._mean_or_none(precisions),
+            "recall_macro": self._mean_or_none(recalls),
+            "f1_macro": self._mean_or_none(f1_values),
+            "n": n,
+            "num_classes": len(class_labels),
+            "class_labels": [_json_safe_label(label) for label in class_labels],
+            "class_counts": {
+                str(_json_safe_label(class_labels[class_index])): int(
+                    (true_codes == class_index).sum()
+                )
+                for class_index in classes
+            },
+            "confusion_matrix": confusion_matrix,
+            "per_class": per_class,
+        }
+
+        proba_frame: Optional[pd.DataFrame] = None
+        if y_proba is not None:
+            probabilities = np.asarray(y_proba, dtype=float)
+            if probabilities.ndim == 1 and len(class_labels) == 2:
+                probabilities = np.vstack([1.0 - probabilities, probabilities]).T
+            if probabilities.ndim == 2 and probabilities.shape[1] >= len(class_labels):
+                proba_frame = pd.DataFrame(probabilities[:, : len(class_labels)])
+                eps = 1e-15
+                true_probabilities = []
+                for row_index, true_class in enumerate(true_codes.tolist()):
+                    if true_class < proba_frame.shape[1]:
+                        true_probabilities.append(float(proba_frame.iloc[row_index, true_class]))
+                if true_probabilities:
+                    clipped = [min(max(value, eps), 1.0 - eps) for value in true_probabilities]
+                    metrics["log_loss"] = float(
+                        -sum(math.log(value) for value in clipped) / len(clipped)
+                    )
+
+        if len(class_labels) == 2:
+            positive_scores = proba_frame.iloc[:, 1] if proba_frame is not None else None
+            positive_mask = true_codes == 1
+            negative_mask = true_codes == 0
+            true_positive = int(((true_codes == 1) & (pred_codes == 1)).sum())
+            false_positive = int(((true_codes == 0) & (pred_codes == 1)).sum())
+            false_negative = int(((true_codes == 1) & (pred_codes == 0)).sum())
+            true_negative = int(((true_codes == 0) & (pred_codes == 0)).sum())
+            precision = (
+                float(true_positive / (true_positive + false_positive))
+                if true_positive + false_positive > 0
+                else 0.0
+            )
+            recall = (
+                float(true_positive / (true_positive + false_negative))
+                if true_positive + false_negative > 0
+                else None
+            )
+            specificity = (
+                float(true_negative / (true_negative + false_positive))
+                if true_negative + false_positive > 0
+                else None
+            )
+            metrics.update(
+                {
+                    "positive_class": _json_safe_label(class_labels[1]),
+                    "negative_class": _json_safe_label(class_labels[0]),
+                    "precision": precision,
+                    "recall": recall,
+                    "sensitivity": recall,
+                    "specificity": specificity,
+                    "f1": (
+                        float(2.0 * precision * recall / (precision + recall))
+                        if recall is not None and precision + recall > 0
+                        else 0.0
+                    ),
+                    "true_positive": true_positive,
+                    "false_positive": false_positive,
+                    "false_negative": false_negative,
+                    "true_negative": true_negative,
+                    "positive_count": int(positive_mask.sum()),
+                    "negative_count": int(negative_mask.sum()),
+                }
+            )
+            if positive_scores is not None:
+                metrics["roc_auc"] = self._binary_roc_auc(true_codes, positive_scores)
+                metrics["brier_score"] = float(
+                    ((positive_scores.astype(float) - positive_mask.astype(float)) ** 2).mean()
+                )
+
+        return metrics
+
+    def _default_model_params(
+        self,
+        extra_args: Dict[str, Any],
+        *,
+        task_kind: str = "regression",
+        num_classes: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if task_kind == "classification":
+            default_objective = "multiclass" if (num_classes or 0) > 2 else "binary"
+            default_metric = "multi_logloss" if (num_classes or 0) > 2 else "binary_logloss"
+        else:
+            default_objective = "regression"
+            default_metric = None
         params = {
-            "objective": str(extra_args.get("objective") or "regression"),
+            "objective": str(extra_args.get("objective") or default_objective),
             "boosting_type": str(extra_args.get("boosting_type") or "gbdt"),
             "learning_rate": float(extra_args.get("learning_rate", 0.05)),
             "num_leaves": int(extra_args.get("num_leaves", 63)),
@@ -323,6 +629,18 @@ class LightGBMBackend(PredictionBackend):
             "n_jobs": int(extra_args.get("n_jobs", 1)),
             "verbosity": int(extra_args.get("verbosity", -1)),
         }
+        if default_metric and not extra_args.get("metric"):
+            params["metric"] = default_metric
+        elif extra_args.get("metric"):
+            params["metric"] = extra_args["metric"]
+        if task_kind == "classification" and (num_classes or 0) > 2:
+            params["num_class"] = int(num_classes or 0)
+        if "class_weight" in extra_args:
+            params["class_weight"] = extra_args["class_weight"]
+        if "is_unbalance" in extra_args:
+            params["is_unbalance"] = bool(extra_args["is_unbalance"])
+        if "scale_pos_weight" in extra_args:
+            params["scale_pos_weight"] = float(extra_args["scale_pos_weight"])
         if "max_depth" in extra_args:
             params["max_depth"] = int(extra_args["max_depth"])
         if "reg_alpha" in extra_args:
@@ -384,6 +702,102 @@ class LightGBMBackend(PredictionBackend):
         regressor.fit(X_train, y_train, **fit_kwargs)
         return regressor
 
+    def _fit_classifier(
+        self,
+        *,
+        model_params: Dict[str, Any],
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+        categorical_feature_columns: List[str],
+        early_stopping_rounds: int,
+    ):
+        lgb = self._import_lightgbm()
+        classifier = lgb.LGBMClassifier(**model_params)
+        callbacks: List[Any] = [lgb.log_evaluation(period=0)]
+        if early_stopping_rounds > 0:
+            callbacks.append(
+                lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False)
+            )
+        fit_kwargs: Dict[str, Any] = {
+            "eval_set": [(X_val, y_val)],
+            "callbacks": callbacks,
+        }
+        if categorical_feature_columns:
+            fit_kwargs["categorical_feature"] = list(categorical_feature_columns)
+        classifier.fit(X_train, y_train, **fit_kwargs)
+        return classifier
+
+    def _predict_class_codes(
+        self,
+        estimator: Any,
+        features: pd.DataFrame,
+        probabilities: Optional[Any],
+        extra_args: Optional[Dict[str, Any]],
+        *,
+        num_classes: int,
+    ) -> pd.Series:
+        if probabilities is not None and num_classes == 2:
+            threshold = float((extra_args or {}).get("classification_threshold", 0.5))
+            probabilities_array = np.asarray(probabilities, dtype=float)
+            if probabilities_array.ndim == 2 and probabilities_array.shape[1] >= 2:
+                return pd.Series(
+                    (probabilities_array[:, 1] >= threshold).astype(int), index=features.index
+                )
+        return pd.Series(estimator.predict(features), index=features.index).astype(int)
+
+    def _classification_output_frame(
+        self,
+        *,
+        predicted_codes: pd.Series,
+        probabilities: Optional[Any],
+        class_labels: List[Any],
+        target_column: Optional[str] = None,
+        true_codes: Optional[pd.Series] = None,
+        true_labels: Optional[pd.Series] = None,
+    ) -> pd.DataFrame:
+        predicted_labels = pd.Series(
+            [_json_safe_label(class_labels[int(code)]) for code in predicted_codes.tolist()],
+            index=predicted_codes.index,
+        ).reset_index(drop=True)
+        output = pd.DataFrame(
+            {
+                "prediction": predicted_labels,
+                "predicted_class": predicted_labels,
+                "predicted_class_index": predicted_codes.reset_index(drop=True).astype(int),
+            }
+        )
+        if target_column:
+            output[target_column] = predicted_labels
+        if true_codes is not None:
+            output["y_true_encoded"] = true_codes.reset_index(drop=True).astype(int)
+        if true_labels is not None:
+            safe_true = true_labels.map(_json_safe_label).reset_index(drop=True)
+            output["y_true"] = safe_true
+            if target_column:
+                output[f"{target_column}_true"] = safe_true
+        output["y_pred"] = predicted_labels
+        output["y_pred_encoded"] = output["predicted_class_index"]
+
+        if probabilities is not None:
+            probabilities_array = np.asarray(probabilities, dtype=float)
+            if probabilities_array.ndim == 1 and len(class_labels) == 2:
+                probabilities_array = np.vstack([1.0 - probabilities_array, probabilities_array]).T
+            if probabilities_array.ndim == 2:
+                used_tokens: set[str] = set()
+                for class_index, class_label in enumerate(class_labels):
+                    if class_index >= probabilities_array.shape[1]:
+                        continue
+                    token = _safe_class_token(class_label, f"class_{class_index}")
+                    if token in used_tokens:
+                        token = f"{token}_{class_index}"
+                    used_tokens.add(token)
+                    output[f"probability_{token}"] = probabilities_array[:, class_index]
+                if len(class_labels) == 2 and probabilities_array.shape[1] >= 2:
+                    output["positive_class_probability"] = probabilities_array[:, 1]
+        return output
+
     def _is_gpu_runtime_unavailable(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "no opencl device found" in message or "opencl" in message
@@ -398,7 +812,9 @@ class LightGBMBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
-            raise InvalidPredictionInputError("LightGBM V1 does not support predictive uncertainty export.")
+            raise InvalidPredictionInputError(
+                "LightGBM V1 does not support predictive uncertainty export."
+            )
 
         model_path = self.validate_model_path(model_record.model_path)
         try:
@@ -413,11 +829,11 @@ class LightGBMBackend(PredictionBackend):
             df = _strip_unnamed_columns(pd.read_csv(fh))
 
         feature_columns = list((payload or {}).get("feature_columns") or [])
-        categorical_feature_columns = list(
-            (payload or {}).get("categorical_feature_columns") or []
-        )
+        categorical_feature_columns = list((payload or {}).get("categorical_feature_columns") or [])
         category_mappings = dict((payload or {}).get("categorical_mappings") or {})
         target_columns = list(model_record.task.target_columns)
+        task_type = str((payload or {}).get("task_type") or model_record.task.task_type)
+        task_kind = "classification" if _is_classification_task(task_type) else "regression"
 
         missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:
@@ -431,23 +847,66 @@ class LightGBMBackend(PredictionBackend):
             categorical_feature_columns,
             category_mappings=category_mappings,
         )
+        resolved_class_labels: List[Any] = []
         try:
-            y_pred = payload["model"].predict(features)
+            estimator = payload["model"]
+            if task_kind == "classification":
+                class_labels = list((payload or {}).get("class_labels") or [])
+                if not class_labels:
+                    class_labels = [
+                        _json_safe_label(label) for label in getattr(estimator, "classes_", [])
+                    ]
+                if not class_labels:
+                    raise InvalidPredictionInputError(
+                        "LightGBM classification artifact is missing class_labels metadata."
+                    )
+                resolved_class_labels = class_labels
+                probabilities = (
+                    estimator.predict_proba(features)
+                    if hasattr(estimator, "predict_proba")
+                    else None
+                )
+                predict_args = {
+                    "classification_threshold": (payload or {}).get(
+                        "classification_threshold", 0.5
+                    ),
+                    **(extra_args or {}),
+                }
+                y_pred = self._predict_class_codes(
+                    estimator,
+                    features,
+                    probabilities,
+                    predict_args,
+                    num_classes=len(class_labels),
+                )
+                output = self._classification_output_frame(
+                    predicted_codes=y_pred,
+                    probabilities=probabilities,
+                    class_labels=class_labels,
+                    target_column=target_columns[0] if len(target_columns) == 1 else None,
+                )
+            else:
+                y_pred = estimator.predict(features)
+                output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
+                if len(target_columns) == 1:
+                    output[target_columns[0]] = output["prediction"]
         except Exception as exc:
             raise PredictionExecutionError(f"LightGBM prediction failed: {exc}") from exc
 
-        output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
-        if len(target_columns) == 1:
-            output[target_columns[0]] = output["prediction"]
         with S3.open(preds_path, "w") as fh:
             output.to_csv(fh, index=False)
 
-        return {
+        result = {
             "preds_path": preds_path,
             "rows": int(len(output)),
             "feature_columns": feature_columns,
             "categorical_feature_columns": categorical_feature_columns,
+            "task_type": task_type,
         }
+        if task_kind == "classification":
+            result["class_labels"] = [_json_safe_label(label) for label in resolved_class_labels]
+            result["prediction_columns"] = list(output.columns)
+        return result
 
     def train_model(
         self,
@@ -458,8 +917,15 @@ class LightGBMBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_available()
-        if task.task_type != "regression":
-            raise InvalidPredictionInputError("LightGBM V1 only supports regression tasks.")
+        normalized_task_type = str(task.task_type or "").strip().lower()
+        if normalized_task_type == "regression":
+            task_kind = "regression"
+        elif _is_classification_task(normalized_task_type):
+            task_kind = "classification"
+        else:
+            raise InvalidPredictionInputError(
+                "LightGBM V1 supports task_type='regression' or task_type='classification'."
+            )
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
@@ -492,12 +958,31 @@ class LightGBMBackend(PredictionBackend):
             sanitized_args,
         )
         working = dataset[
-            feature_columns + [target_column] + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
+            feature_columns
+            + [target_column]
+            + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
         ].copy()
         if len(working) < 10:
             raise InvalidPredictionInputError(
                 "LightGBM V1 requires at least 10 rows after target cleanup."
             )
+
+        encoded_target_column = "__lightgbm_target_encoded"
+        class_labels: List[Any] = []
+        class_mapping: Dict[str, int] = {}
+        if task_kind == "classification":
+            encoded_target, class_labels, class_mapping = self._encode_classification_target(
+                working[target_column],
+                sanitized_args,
+            )
+            working[encoded_target_column] = encoded_target
+        else:
+            target_numeric = pd.to_numeric(working[target_column], errors="coerce")
+            if target_numeric.isna().any():
+                raise InvalidPredictionInputError(
+                    f"LightGBM regression target '{target_column}' contains non-numeric values."
+                )
+            working[target_column] = target_numeric.astype(float)
 
         encoded_features, categorical_mappings = self._encode_categorical_frame(
             working[feature_columns].copy(),
@@ -514,6 +999,7 @@ class LightGBMBackend(PredictionBackend):
                 random_state=random_state,
                 smiles_column=task.smiles_columns[0] if task.smiles_columns else None,
                 feature_columns=feature_columns,
+                stratify_column=target_column if task_kind == "classification" else None,
             )
 
         if not split_payload or "train" not in split_payload[0]:
@@ -540,22 +1026,61 @@ class LightGBMBackend(PredictionBackend):
         ]
 
         X_train = encoded_working.iloc[train_idx][feature_columns].copy()
-        y_train = pd.to_numeric(encoded_working.iloc[train_idx][target_column], errors="coerce").astype(float)
         X_val = encoded_working.iloc[val_idx][feature_columns].copy()
-        y_val = pd.to_numeric(encoded_working.iloc[val_idx][target_column], errors="coerce").astype(float)
         X_test = encoded_working.iloc[test_idx][feature_columns].copy()
-        y_test = pd.to_numeric(encoded_working.iloc[test_idx][target_column], errors="coerce").astype(float)
+        if task_kind == "classification":
+            y_train = encoded_working.iloc[train_idx][encoded_target_column].astype(int)
+            y_val = encoded_working.iloc[val_idx][encoded_target_column].astype(int)
+            y_test = encoded_working.iloc[test_idx][encoded_target_column].astype(int)
+            present_train_classes = {int(value) for value in y_train.tolist()}
+            if len(present_train_classes) < 2:
+                raise InvalidPredictionInputError(
+                    "LightGBM classification training split contains fewer than two classes."
+                )
+            missing_train_classes = sorted(set(range(len(class_labels))) - present_train_classes)
+            if missing_train_classes:
+                missing_labels = [
+                    _json_safe_label(class_labels[index]) for index in missing_train_classes
+                ]
+                raise InvalidPredictionInputError(
+                    "LightGBM classification training split is missing target classes "
+                    f"{missing_labels}. Use a larger dataset or a stratified/random split."
+                )
+        else:
+            y_train = pd.to_numeric(
+                encoded_working.iloc[train_idx][target_column], errors="coerce"
+            ).astype(float)
+            y_val = pd.to_numeric(
+                encoded_working.iloc[val_idx][target_column], errors="coerce"
+            ).astype(float)
+            y_test = pd.to_numeric(
+                encoded_working.iloc[test_idx][target_column], errors="coerce"
+            ).astype(float)
 
         requested_device_type, auto_device, compute_env = self._resolve_device_type(sanitized_args)
         gpu_fallback_to_cpu = bool(sanitized_args.get("gpu_fallback_to_cpu", True))
         early_stopping_rounds = int(sanitized_args.get("early_stopping_rounds", 50))
-        model_params = self._default_model_params(sanitized_args)
+        model_params = self._default_model_params(
+            sanitized_args,
+            task_kind=task_kind,
+            num_classes=len(class_labels) if task_kind == "classification" else None,
+        )
         model_params["device_type"] = requested_device_type
         fit_error: Optional[Exception] = None
 
-        try:
-            regressor = self._fit_regressor(
-                model_params=model_params,
+        def fit_once(params: Dict[str, Any]):
+            if task_kind == "classification":
+                return self._fit_classifier(
+                    model_params=params,
+                    X_train=X_train,
+                    y_train=y_train,
+                    X_val=X_val,
+                    y_val=y_val,
+                    categorical_feature_columns=categorical_feature_columns,
+                    early_stopping_rounds=early_stopping_rounds,
+                )
+            return self._fit_regressor(
+                model_params=params,
                 X_train=X_train,
                 y_train=y_train,
                 X_val=X_val,
@@ -563,6 +1088,9 @@ class LightGBMBackend(PredictionBackend):
                 categorical_feature_columns=categorical_feature_columns,
                 early_stopping_rounds=early_stopping_rounds,
             )
+
+        try:
+            estimator = fit_once(model_params)
             actual_device_type = requested_device_type
         except Exception as exc:
             fit_error = exc
@@ -575,25 +1103,38 @@ class LightGBMBackend(PredictionBackend):
                     exc,
                 )
                 model_params["device_type"] = "cpu"
-                regressor = self._fit_regressor(
-                    model_params=model_params,
-                    X_train=X_train,
-                    y_train=y_train,
-                    X_val=X_val,
-                    y_val=y_val,
-                    categorical_feature_columns=categorical_feature_columns,
-                    early_stopping_rounds=early_stopping_rounds,
-                )
+                estimator = fit_once(model_params)
                 actual_device_type = "cpu"
             else:
                 raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
         try:
-            y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
+            if task_kind == "classification":
+                probabilities = (
+                    estimator.predict_proba(X_test) if hasattr(estimator, "predict_proba") else None
+                )
+                y_pred = self._predict_class_codes(
+                    estimator,
+                    X_test,
+                    probabilities,
+                    sanitized_args,
+                    num_classes=len(class_labels),
+                )
+                metrics = {
+                    "test": self._compute_classification_metrics(
+                        y_test,
+                        y_pred,
+                        probabilities,
+                        class_labels,
+                    )
+                }
+            else:
+                probabilities = None
+                y_pred = pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
+                metrics = {"test": self._compute_regression_metrics(y_test, y_pred)}
         except Exception as exc:
             raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
-        metrics = {"test": self._compute_regression_metrics(y_test, y_pred)}
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
@@ -602,30 +1143,55 @@ class LightGBMBackend(PredictionBackend):
         model_payload = {
             "backend_name": self.backend_name,
             "task_type": task.task_type,
+            "task_kind": task_kind,
             "target_columns": [target_column],
             "feature_columns": feature_columns,
             "categorical_feature_columns": categorical_feature_columns,
             "categorical_mappings": categorical_mappings,
             "categorical_unknown_policy": "map_to_missing",
-            "model": regressor,
+            "model": estimator,
             "train_csv": train_csv,
             "trained_at": started_at.isoformat(),
             "actual_device_type": actual_device_type,
         }
+        if task_kind == "classification":
+            model_payload.update(
+                {
+                    "class_labels": [_json_safe_label(label) for label in class_labels],
+                    "class_mapping": class_mapping,
+                    "positive_class_label": (
+                        _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                    ),
+                    "classification_threshold": float(
+                        sanitized_args.get("classification_threshold", 0.5)
+                    ),
+                }
+            )
 
         model_path = model_dir / "best.pkl"
         with model_path.open("wb") as fh:
             pickle.dump(model_payload, fh)
 
         test_predictions_path = model_dir / "test_predictions.csv"
-        predictions_df = pd.DataFrame(
-            {
-                target_column: y_pred.reset_index(drop=True),
-                "prediction": y_pred.reset_index(drop=True),
-                "y_true": y_test.reset_index(drop=True),
-                "y_pred": y_pred.reset_index(drop=True),
-            }
-        )
+        if task_kind == "classification":
+            true_labels = working.iloc[test_idx][target_column].reset_index(drop=True)
+            predictions_df = self._classification_output_frame(
+                predicted_codes=y_pred,
+                probabilities=probabilities,
+                class_labels=class_labels,
+                target_column=target_column,
+                true_codes=y_test.reset_index(drop=True),
+                true_labels=true_labels,
+            )
+        else:
+            predictions_df = pd.DataFrame(
+                {
+                    target_column: y_pred.reset_index(drop=True),
+                    "prediction": y_pred.reset_index(drop=True),
+                    "y_true": y_test.reset_index(drop=True),
+                    "y_pred": y_pred.reset_index(drop=True),
+                }
+            )
         with S3.open(str(test_predictions_path), "w") as fh:
             predictions_df.to_csv(fh, index=False)
 
@@ -648,7 +1214,7 @@ class LightGBMBackend(PredictionBackend):
         )
 
         completed_at = project_now()
-        return {
+        result = {
             "model_path": str(model_path),
             "best_model_path": str(model_path),
             "test_predictions_path": str(test_predictions_path),
@@ -660,6 +1226,7 @@ class LightGBMBackend(PredictionBackend):
             "categorical_feature_columns": categorical_feature_columns,
             "categorical_mappings": categorical_mappings,
             "target_column": target_column,
+            "task_type": task.task_type,
             "split_payload": split_payload,
             "effective_split_payload": effective_split_payload,
             "excluded_train_indices": sorted(excluded_train_indices),
@@ -685,3 +1252,18 @@ class LightGBMBackend(PredictionBackend):
             "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
             "fit_error": str(fit_error) if fit_error and actual_device_type == "cpu" else None,
         }
+        if task_kind == "classification":
+            result.update(
+                {
+                    "class_labels": [_json_safe_label(label) for label in class_labels],
+                    "class_count": len(class_labels),
+                    "class_mapping": class_mapping,
+                    "positive_class_label": (
+                        _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                    ),
+                    "classification_threshold": float(
+                        sanitized_args.get("classification_threshold", 0.5)
+                    ),
+                }
+            )
+        return result

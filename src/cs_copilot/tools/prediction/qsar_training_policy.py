@@ -21,6 +21,9 @@ QSAR_HARDEST_SPLIT_R2_MIN = 0.70
 QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
 QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
 QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
+QSAR_CLASSIFICATION_HARDEST_BALANCED_ACCURACY_MIN = 0.70
+QSAR_CLASSIFICATION_ROBUSTNESS_DELTA_BALANCED_ACCURACY_MIN = -0.10
+QSAR_CLASSIFICATION_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX = 0.05
 PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
 SEED_MIN = 1
 SEED_MAX = 2_147_483_647
@@ -121,7 +124,9 @@ def resolve_seed_policy(
     if seed_policy and seed_policy.get("split_runs"):
         replay = dict(seed_policy)
         replay.setdefault("mode", "user_provided_or_replay")
-        replay.setdefault("shared_across_candidates", replay.get("mode") == "generated_per_benchmark_campaign")
+        replay.setdefault(
+            "shared_across_candidates", replay.get("mode") == "generated_per_benchmark_campaign"
+        )
         replay.setdefault(
             "reproducibility_note",
             "Seeds were supplied from an existing policy and preserved for replay.",
@@ -146,7 +151,7 @@ def resolve_seed_policy(
     split_seeds = run_seeds[: len(templates)]
     model_seed = run_seeds[-1]
     split_runs: List[Dict[str, Any]] = []
-    for template, seed in zip(templates, split_seeds):
+    for template, seed in zip(templates, split_seeds, strict=True):
         split_runs.append(
             {
                 "label": _label_split(template, seed),
@@ -179,9 +184,11 @@ def resolve_seed_policy(
         "reproducibility_note": (
             "Seeds were generated once for this benchmark campaign and shared across all candidates."
             if resolved_mode == "generated_per_benchmark_campaign"
-            else "Seeds were generated for this run and persisted for replay."
-            if resolved_mode == "generated_per_run"
-            else "Seeds were supplied by the user or replayed from persisted artifacts."
+            else (
+                "Seeds were generated for this run and persisted for replay."
+                if resolved_mode == "generated_per_run"
+                else "Seeds were supplied by the user or replayed from persisted artifacts."
+            )
         ),
     }
     if resolved_mode == "generated_per_benchmark_campaign":
@@ -326,9 +333,7 @@ def describe_compute_environment() -> Dict[str, Any]:
         "memory_source": (
             "cgroup_limit"
             if memory_limit_bytes
-            else "physical_host"
-            if physical_memory_bytes
-            else None
+            else "physical_host" if physical_memory_bytes else None
         ),
         "gpu_available": gpu_available,
         "gpu_count": gpu_count,
@@ -493,13 +498,33 @@ def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, A
     families: Dict[str, List[Dict[str, Any]]] = {}
     for item in split_results:
         family = item.get("strategy_family") or item.get("strategy")
-        metrics = ((item.get("metrics") or {}).get("test") or {})
+        metrics = (item.get("metrics") or {}).get("test") or {}
         if not family or not metrics:
             continue
         families.setdefault(family, []).append(item)
 
     aggregated: Dict[str, Any] = {}
-    metric_names = ("mse", "mae", "rae", "rmse", "r2", "spearman", "kendall")
+    metric_names = (
+        "mse",
+        "mae",
+        "rae",
+        "rmse",
+        "r2",
+        "spearman",
+        "kendall",
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
+        "precision_macro",
+        "recall_macro",
+        "f1_macro",
+        "roc_auc",
+        "log_loss",
+        "brier_score",
+    )
     for family, items in families.items():
         entry: Dict[str, Any] = {
             "family": family,
@@ -509,7 +534,7 @@ def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, A
             "test_n_values": [],
         }
         for item in items:
-            metrics = ((item.get("metrics") or {}).get("test") or {})
+            metrics = (item.get("metrics") or {}).get("test") or {}
             entry["runs"].append(
                 {"label": item.get("strategy_label"), "seed": item.get("seed"), "metrics": metrics}
             )
@@ -564,19 +589,213 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
     if not random_family:
         return assessment
 
-    random_r2 = random_family.get("r2_mean")
-    random_rmse = random_family.get("rmse_mean")
+    def family_metric(family: Dict[str, Any], metric_name: str) -> Optional[float]:
+        value = family.get(f"{metric_name}_mean", family.get(metric_name))
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def protocol_name() -> Optional[str]:
+        resolved = None
+        for item in split_results:
+            resolved = item.get("validation_protocol") or resolved
+        return resolved
+
+    def finish_status(
+        *,
+        governance: Dict[str, Any],
+        hardest_pass: bool,
+        robustness_pass: bool,
+        random_stability_pass: bool,
+    ) -> None:
+        current_protocol = protocol_name()
+        if not governance.get("passes_dataset_gate", True):
+            governance["recommended_status"] = "experimental"
+        elif not hardest_pass or not robustness_pass:
+            governance["recommended_status"] = "workflow_demo"
+        elif current_protocol == "robust_qsar":
+            governance["recommended_status"] = (
+                "robust_validated" if random_stability_pass else "workflow_demo"
+            )
+        elif current_protocol in {"standard_qsar", "challenging_qsar"}:
+            governance["recommended_status"] = "validated"
+        else:
+            governance["recommended_status"] = "experimental"
+
+    classification_metric = None
+    for candidate_metric in ("balanced_accuracy", "roc_auc", "accuracy"):
+        if family_metric(random_family, candidate_metric) is not None:
+            classification_metric = candidate_metric
+            break
+
+    if classification_metric is not None and family_metric(random_family, "r2") is None:
+        random_score = family_metric(random_family, classification_metric)
+        if random_score is None:
+            return assessment
+
+        hardest_name = None
+        hardest_score = None
+        for strategy_name, family_result in aggregated.items():
+            if strategy_name == "random":
+                continue
+            split_score = family_metric(family_result, classification_metric)
+            if split_score is None:
+                continue
+            deltas: Dict[str, Any] = {classification_metric: split_score - random_score}
+            for secondary_metric in ("balanced_accuracy", "roc_auc", "accuracy", "f1_macro"):
+                random_secondary = family_metric(random_family, secondary_metric)
+                split_secondary = family_metric(family_result, secondary_metric)
+                if random_secondary is not None and split_secondary is not None:
+                    deltas[secondary_metric] = split_secondary - random_secondary
+            assessment["delta_vs_random"][strategy_name] = deltas
+            if hardest_score is None or split_score < hardest_score:
+                hardest_name = strategy_name
+                hardest_score = split_score
+
+        if hardest_name is not None:
+            assessment["hardest_split"] = hardest_name
+
+        warning_reasons: List[str] = []
+        for strategy_name, deltas in assessment["delta_vs_random"].items():
+            delta_score = deltas.get(classification_metric)
+            if (
+                delta_score is not None
+                and delta_score < QSAR_CLASSIFICATION_ROBUSTNESS_DELTA_BALANCED_ACCURACY_MIN
+            ):
+                warning_reasons.append(
+                    f"{strategy_name} split lowers {classification_metric} by {abs(delta_score):.3f} vs random"
+                )
+
+        if warning_reasons:
+            assessment["robustness_warning"] = (
+                "Harder validation splits reveal a non-trivial classification performance drop: "
+                + "; ".join(warning_reasons)
+                + "."
+            )
+
+        governance = assessment["governance"]
+        hardest_result = (
+            aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+        )
+        hardest_metrics = {
+            "accuracy": family_metric(hardest_result or {}, "accuracy"),
+            "balanced_accuracy": family_metric(hardest_result or {}, "balanced_accuracy"),
+            "roc_auc": family_metric(hardest_result or {}, "roc_auc"),
+            "f1_macro": family_metric(hardest_result or {}, "f1_macro"),
+            "precision_macro": family_metric(hardest_result or {}, "precision_macro"),
+            "recall_macro": family_metric(hardest_result or {}, "recall_macro"),
+            "n": (hardest_result or {}).get("test_n_mean"),
+        }
+        governance["hardest_split_metrics"] = hardest_metrics
+        governance["primary_metric"] = classification_metric
+
+        gate_score = hardest_metrics.get(classification_metric)
+        hardest_pass = (
+            gate_score is not None
+            and gate_score >= QSAR_CLASSIFICATION_HARDEST_BALANCED_ACCURACY_MIN
+        )
+        robustness_pass = not bool(warning_reasons)
+        random_stability_pass = True
+        random_score_std = random_family.get(f"{classification_metric}_std")
+        if (
+            random_family.get("num_runs", 0) > 1
+            and random_score_std is not None
+            and float(random_score_std)
+            > QSAR_CLASSIFICATION_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX
+        ):
+            random_stability_pass = False
+
+        governance["passes_hardest_split_gate"] = hardest_pass
+        governance["passes_robustness_gate"] = robustness_pass
+        governance["passes_random_stability_gate"] = random_stability_pass
+        governance["passes_dataset_gate"] = True
+
+        summary: List[str] = []
+        if random_family.get("num_runs", 0) > 1:
+            summary.append(
+                f"Random stability: {classification_metric} mean={family_metric(random_family, classification_metric):.3f} "
+                f"± {float(random_family.get(f'{classification_metric}_std', 0)):.3f}"
+            )
+        if assessment["hardest_split"]:
+            summary.append(f"Hardest split: {assessment['hardest_split']}")
+        if gate_score is not None:
+            summary.append(f"Hardest split {classification_metric}={gate_score:.3f}")
+        if hardest_metrics.get("roc_auc") is not None:
+            summary.append(f"Hardest split ROC-AUC={hardest_metrics['roc_auc']:.3f}")
+        summary.append("Hardest Split Gate: PASS" if hardest_pass else "Hardest Split Gate: FAIL")
+        summary.append(
+            "Robustness Gap Gate: PASS" if robustness_pass else "Robustness Gap Gate: FAIL"
+        )
+        if random_family.get("num_runs", 0) > 1:
+            summary.append(
+                "Random Stability Gate: PASS"
+                if random_stability_pass
+                else "Random Stability Gate: FAIL"
+            )
+        governance["gating_summary"] = summary
+        governance["gates"] = {
+            "dataset_gate": {
+                "name": "Dataset Gate",
+                "pass": True,
+                "criteria": [
+                    "real dataset source",
+                    "completed curation",
+                    "real split artifacts",
+                    "checkpoint exists",
+                    "real test metrics",
+                    "applicability domain built",
+                ],
+            },
+            "hardest_split_gate": {
+                "name": "Hardest Split Gate",
+                "pass": hardest_pass,
+                "thresholds": {
+                    f"{classification_metric}_min": QSAR_CLASSIFICATION_HARDEST_BALANCED_ACCURACY_MIN
+                },
+            },
+            "robustness_gap_gate": {
+                "name": "Robustness Gap Gate",
+                "pass": robustness_pass,
+                "thresholds": {
+                    f"delta_{classification_metric}_min": (
+                        QSAR_CLASSIFICATION_ROBUSTNESS_DELTA_BALANCED_ACCURACY_MIN
+                    )
+                },
+            },
+            "random_stability_gate": {
+                "name": "Random Stability Gate",
+                "pass": random_stability_pass,
+                "active": random_family.get("num_runs", 0) > 1,
+                "thresholds": {
+                    f"{classification_metric}_std_max": (
+                        QSAR_CLASSIFICATION_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX
+                    )
+                },
+            },
+        }
+        finish_status(
+            governance=governance,
+            hardest_pass=hardest_pass,
+            robustness_pass=robustness_pass,
+            random_stability_pass=random_stability_pass,
+        )
+        return assessment
+
+    random_r2 = family_metric(random_family, "r2")
+    random_rmse = family_metric(random_family, "rmse")
     if random_r2 is None or random_rmse is None:
         return assessment
     hardest_name = None
     hardest_r2 = None
-    hardest_rmse = None
 
     for strategy_name, family_result in aggregated.items():
         if strategy_name == "random":
             continue
-        split_r2 = family_result.get("r2_mean")
-        split_rmse = family_result.get("rmse_mean")
+        split_r2 = family_metric(family_result, "r2")
+        split_rmse = family_metric(family_result, "rmse")
         if split_r2 is None and split_rmse is None:
             continue
 
@@ -591,7 +810,6 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
             if hardest_r2 is None or split_r2 < hardest_r2:
                 hardest_name = strategy_name
                 hardest_r2 = split_r2
-                hardest_rmse = split_rmse
 
     if hardest_name is not None:
         assessment["hardest_split"] = hardest_name
@@ -601,9 +819,13 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         delta_r2 = deltas.get("r2")
         delta_rmse = deltas.get("rmse")
         if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
-            warning_reasons.append(f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random")
+            warning_reasons.append(
+                f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random"
+            )
         if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
-            warning_reasons.append(f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random")
+            warning_reasons.append(
+                f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random"
+            )
 
     if warning_reasons:
         assessment["robustness_warning"] = (
@@ -613,12 +835,14 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         )
 
     governance = assessment["governance"]
-    hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+    hardest_result = (
+        aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+    )
     hardest_metrics = {
-        "r2": (hardest_result or {}).get("r2_mean"),
-        "rmse": (hardest_result or {}).get("rmse_mean"),
-        "mae": (hardest_result or {}).get("mae_mean"),
-        "mse": (hardest_result or {}).get("mse_mean"),
+        "r2": family_metric(hardest_result or {}, "r2"),
+        "rmse": family_metric(hardest_result or {}, "rmse"),
+        "mae": family_metric(hardest_result or {}, "mae"),
+        "mse": family_metric(hardest_result or {}, "mse"),
         "n": (hardest_result or {}).get("test_n_mean"),
     }
     governance["hardest_split_metrics"] = hardest_metrics
@@ -651,22 +875,25 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
 
     random_stability_pass = True
     random_r2_std = random_family.get("r2_std")
-    if random_family.get("num_runs", 0) > 1 and random_r2_std is not None and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX:
+    if (
+        random_family.get("num_runs", 0) > 1
+        and random_r2_std is not None
+        and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX
+    ):
         random_stability_pass = False
     governance["passes_random_stability_gate"] = random_stability_pass
     if random_family.get("num_runs", 0) > 1:
-        summary.append("Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL")
+        summary.append(
+            "Random Stability Gate: PASS"
+            if random_stability_pass
+            else "Random Stability Gate: FAIL"
+        )
 
-    protocol_name = None
-    for item in split_results:
-        protocol_name = item.get("validation_protocol") or protocol_name
-
-    dataset_gate_pass = True
-    governance["passes_dataset_gate"] = dataset_gate_pass
+    governance["passes_dataset_gate"] = True
     governance["gates"] = {
         "dataset_gate": {
             "name": "Dataset Gate",
-            "pass": dataset_gate_pass,
+            "pass": True,
             "criteria": [
                 "real dataset source",
                 "completed curation",
@@ -697,14 +924,10 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         },
     }
 
-    if not dataset_gate_pass:
-        governance["recommended_status"] = "experimental"
-    elif not hardest_pass or not robustness_pass:
-        governance["recommended_status"] = "workflow_demo"
-    elif protocol_name == "robust_qsar":
-        governance["recommended_status"] = "robust_validated" if random_stability_pass else "workflow_demo"
-    elif protocol_name in {"standard_qsar", "challenging_qsar"}:
-        governance["recommended_status"] = "validated"
-    else:
-        governance["recommended_status"] = "experimental"
+    finish_status(
+        governance=governance,
+        hardest_pass=hardest_pass,
+        robustness_pass=robustness_pass,
+        random_stability_pass=random_stability_pass,
+    )
     return assessment

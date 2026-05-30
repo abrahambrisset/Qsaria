@@ -40,7 +40,9 @@ def _write_fake_training_outputs(
     model_path.write_text("fake-model")
 
     test_predictions_path = model_dir / "test_predictions.csv"
-    pd.DataFrame({"y_true": [1.0, 2.0], "y_pred": [1.1, 1.9]}).to_csv(test_predictions_path, index=False)
+    pd.DataFrame({"y_true": [1.0, 2.0], "y_pred": [1.1, 1.9]}).to_csv(
+        test_predictions_path, index=False
+    )
 
     config_path = root / "config.toml"
     config_path.write_text('backend_name = "fake"\n')
@@ -71,7 +73,9 @@ def test_tool_list_argument_coercion_accepts_scalar_strings():
     ) == [0.8, 0.1, 0.1]
 
 
-def _fake_validation_assessment(protocol: str, random_r2: float, hardest_name: str, hardest_r2: float) -> dict:
+def _fake_validation_assessment(
+    protocol: str, random_r2: float, hardest_name: str, hardest_r2: float
+) -> dict:
     aggregated = {
         "random": {"r2_mean": random_r2, "r2_std": 0.01 if protocol == "robust_qsar" else 0.0},
         hardest_name: {"r2_mean": hardest_r2},
@@ -153,6 +157,31 @@ def test_rank_summary_rows_prefers_hardest_split_then_gap():
                 "delta_r2": -0.20,
                 "random_r2": 0.90,
                 "train_time_s": 50.0,
+            },
+        ]
+    )
+    assert ranked[0]["candidate_id"] == "b"
+
+
+def test_rank_summary_rows_uses_classification_primary_score():
+    toolkit = BenchmarkToolkit()
+    ranked = toolkit._rank_summary_rows(
+        [
+            {
+                "candidate_id": "a",
+                "primary_metric": "balanced_accuracy",
+                "primary_score": 0.62,
+                "delta_primary_score": -0.08,
+                "random_primary_score": 0.70,
+                "train_time_s": 10.0,
+            },
+            {
+                "candidate_id": "b",
+                "primary_metric": "balanced_accuracy",
+                "primary_score": 0.71,
+                "delta_primary_score": -0.05,
+                "random_primary_score": 0.76,
+                "train_time_s": 20.0,
             },
         ]
     )
@@ -364,7 +393,9 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert Path(result["report_path"]).exists()
     assert result["campaign_seed_policy"]["mode"] == "generated_per_benchmark_campaign"
     assert result["campaign_seed_policy"]["shared_across_candidates"] is True
-    assert result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
+    assert (
+        result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
+    )
     assert result["feature_cache"]["feature_cache_dir"].endswith("feature_cache")
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
@@ -387,17 +418,25 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         metadata = json.loads((model_root / "metadata.json").read_text())
         persisted_seed_policy = metadata["training_data_summary"]["seed_policy"]
         assert persisted_seed_policy["split_runs"] == result["campaign_seed_policy"]["split_runs"]
-        assert persisted_seed_policy["campaign_seed"] == result["campaign_seed_policy"]["campaign_seed"]
+        assert (
+            persisted_seed_policy["campaign_seed"]
+            == result["campaign_seed_policy"]["campaign_seed"]
+        )
         assert metadata["reproducibility"]["seed_policy_mode"] == "generated_per_benchmark_campaign"
-        assert metadata["training_data_summary"]["seed_policy_report"] == result["seed_policy_report"]
+        assert (
+            metadata["training_data_summary"]["seed_policy_report"] == result["seed_policy_report"]
+        )
 
     benchmark_summary = json.loads(Path(result["summary_path"]).read_text())
-    assert benchmark_summary["campaign_seed_policy"]["split_runs"] == result["campaign_seed_policy"]["split_runs"]
+    assert (
+        benchmark_summary["campaign_seed_policy"]["split_runs"]
+        == result["campaign_seed_policy"]["split_runs"]
+    )
     assert benchmark_summary["seed_policy_report"] == result["seed_policy_report"]
     assert benchmark_summary["feature_cache"]["feature_cache_dir"].endswith("feature_cache")
 
     leaderboard = pd.read_csv(result["leaderboard_path"])
-    assert set(["candidate_id", "model_id", "backend", "representation", "hardest_split_r2"]).issubset(
+    assert {"candidate_id", "model_id", "backend", "representation", "hardest_split_r2"}.issubset(
         set(leaderboard.columns)
     )
     chemprop_row = leaderboard.loc[leaderboard["candidate_id"] == "chemprop_default"].iloc[0]
