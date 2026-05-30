@@ -15,18 +15,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 from scipy.stats import kendalltau, spearmanr
 
-from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+from cs_copilot.tools.activity_cliffs import (
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
 from .backend import PredictionTaskSpec
 from .chemprop_backend import ChempropBackend
 from .qsar_training_policy import (
-    QSAR_HARDEST_SPLIT_R2_MIN,
-    QSAR_RANDOM_STABILITY_R2_STD_MAX,
     assess_protocol_results,
     describe_compute_environment,
     project_now,
@@ -64,6 +64,283 @@ def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
         except Exception:
             continue
     return None
+
+
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
+
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _json_safe_label(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _normalize_classification_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return _json_safe_label(value)
+
+
+def _label_key(value: Any) -> str:
+    return json.dumps(_json_safe_label(value), sort_keys=True, default=str)
+
+
+def _labels_match(left: Any, right: Any) -> bool:
+    return left == right or str(left).strip().lower() == str(right).strip().lower()
+
+
+def _safe_class_token(value: Any, fallback: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value).strip()).strip("_")
+    return token or fallback
+
+
+def _sort_class_labels(labels: List[Any]) -> List[Any]:
+    try:
+        return sorted(labels)
+    except TypeError:
+        return sorted(labels, key=lambda value: str(value).lower())
+
+
+def _resolve_class_labels(series: pd.Series) -> List[Any]:
+    labels: List[Any] = []
+    seen: set[str] = set()
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            continue
+        key = _label_key(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(normalized)
+
+    if len(labels) == 2:
+        positive_tokens = {"1", "true", "active", "actif", "positive", "pos", "yes", "y"}
+        negative_tokens = {"0", "false", "inactive", "inactif", "negative", "neg", "no", "n"}
+        positives = [label for label in labels if str(label).strip().lower() in positive_tokens]
+        negatives = [label for label in labels if str(label).strip().lower() in negative_tokens]
+        if len(positives) == 1 and len(negatives) == 1:
+            return [negatives[0], positives[0]]
+
+    return _sort_class_labels(labels)
+
+
+def _encode_classification_labels(series: pd.Series, class_labels: List[Any]) -> pd.Series:
+    mapping = {_label_key(label): index for index, label in enumerate(class_labels)}
+    encoded: List[Optional[int]] = []
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            encoded.append(None)
+            continue
+        encoded.append(mapping.get(_label_key(normalized)))
+    return pd.Series(encoded, index=series.index, dtype="object")
+
+
+def _labels_from_codes(codes: pd.Series, class_labels: List[Any]) -> pd.Series:
+    values: List[Any] = []
+    for raw_code in codes.tolist():
+        if raw_code is None or pd.isna(raw_code):
+            values.append(None)
+            continue
+        code = int(raw_code)
+        values.append(
+            _json_safe_label(class_labels[code]) if 0 <= code < len(class_labels) else None
+        )
+    return pd.Series(values, index=codes.index, dtype="object")
+
+
+def _mean_or_none(values: List[Optional[float]]) -> Optional[float]:
+    numeric = [value for value in values if value is not None]
+    if not numeric:
+        return None
+    return float(sum(numeric) / len(numeric))
+
+
+def _binary_roc_auc(y_true: pd.Series, scores: pd.Series) -> Optional[float]:
+    positive = y_true.astype(int) == 1
+    n_pos = int(positive.sum())
+    n_neg = int((~positive).sum())
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = scores.astype(float).rank(method="average")
+    rank_sum_pos = float(ranks[positive].sum())
+    auc = (rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)) / float(n_pos * n_neg)
+    return float(auc)
+
+
+def _compute_classification_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    class_labels: List[Any],
+    positive_scores: Optional[pd.Series] = None,
+) -> Dict[str, Any]:
+    true_codes = pd.Series(y_true).reset_index(drop=True)
+    pred_codes = pd.Series(y_pred).reset_index(drop=True)
+    valid_mask = true_codes.notna() & pred_codes.notna()
+    true_codes = true_codes[valid_mask].astype(int).reset_index(drop=True)
+    pred_codes = pred_codes[valid_mask].astype(int).reset_index(drop=True)
+    scores = None
+    if positive_scores is not None:
+        scores = pd.to_numeric(
+            pd.Series(positive_scores).reset_index(drop=True)[valid_mask], errors="coerce"
+        )
+
+    classes = list(range(len(class_labels)))
+    n = int(len(true_codes))
+    accuracy = float((true_codes == pred_codes).mean()) if n else None
+    recalls: List[Optional[float]] = []
+    precisions: List[Optional[float]] = []
+    f1_values: List[Optional[float]] = []
+    per_class: Dict[str, Dict[str, Any]] = {}
+    for class_index, class_label in enumerate(class_labels):
+        true_positive = int(((true_codes == class_index) & (pred_codes == class_index)).sum())
+        false_positive = int(((true_codes != class_index) & (pred_codes == class_index)).sum())
+        false_negative = int(((true_codes == class_index) & (pred_codes != class_index)).sum())
+        true_negative = int(((true_codes != class_index) & (pred_codes != class_index)).sum())
+        precision = (
+            float(true_positive / (true_positive + false_positive))
+            if true_positive + false_positive > 0
+            else 0.0
+        )
+        recall = (
+            float(true_positive / (true_positive + false_negative))
+            if true_positive + false_negative > 0
+            else None
+        )
+        f1 = (
+            float(2.0 * precision * recall / (precision + recall))
+            if recall is not None and precision + recall > 0
+            else 0.0
+        )
+        if recall is not None:
+            recalls.append(recall)
+        precisions.append(precision)
+        f1_values.append(f1)
+        token = _safe_class_token(class_label, f"class_{class_index}")
+        per_class[token] = {
+            "class_label": _json_safe_label(class_label),
+            "class_index": class_index,
+            "support": int((true_codes == class_index).sum()),
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "true_positive": true_positive,
+            "false_positive": false_positive,
+            "false_negative": false_negative,
+            "true_negative": true_negative,
+        }
+
+    confusion_matrix = [
+        [
+            int(((true_codes == row_class) & (pred_codes == col_class)).sum())
+            for col_class in classes
+        ]
+        for row_class in classes
+    ]
+    metrics: Dict[str, Any] = {
+        "accuracy": accuracy,
+        "balanced_accuracy": _mean_or_none(recalls),
+        "precision_macro": _mean_or_none(precisions),
+        "recall_macro": _mean_or_none(recalls),
+        "f1_macro": _mean_or_none(f1_values),
+        "n": n,
+        "num_classes": len(class_labels),
+        "class_labels": [_json_safe_label(label) for label in class_labels],
+        "class_counts": {
+            str(_json_safe_label(class_labels[class_index])): int((true_codes == class_index).sum())
+            for class_index in classes
+        },
+        "confusion_matrix": confusion_matrix,
+        "per_class": per_class,
+    }
+    if len(class_labels) == 2:
+        positive_mask = true_codes == 1
+        negative_mask = true_codes == 0
+        true_positive = int(((true_codes == 1) & (pred_codes == 1)).sum())
+        false_positive = int(((true_codes == 0) & (pred_codes == 1)).sum())
+        false_negative = int(((true_codes == 1) & (pred_codes == 0)).sum())
+        true_negative = int(((true_codes == 0) & (pred_codes == 0)).sum())
+        precision = (
+            float(true_positive / (true_positive + false_positive))
+            if true_positive + false_positive > 0
+            else 0.0
+        )
+        recall = (
+            float(true_positive / (true_positive + false_negative))
+            if true_positive + false_negative > 0
+            else None
+        )
+        specificity = (
+            float(true_negative / (true_negative + false_positive))
+            if true_negative + false_positive > 0
+            else None
+        )
+        metrics.update(
+            {
+                "positive_class": _json_safe_label(class_labels[1]),
+                "negative_class": _json_safe_label(class_labels[0]),
+                "precision": precision,
+                "recall": recall,
+                "sensitivity": recall,
+                "specificity": specificity,
+                "f1": (
+                    float(2.0 * precision * recall / (precision + recall))
+                    if recall is not None and precision + recall > 0
+                    else 0.0
+                ),
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "true_negative": true_negative,
+                "positive_count": int(positive_mask.sum()),
+                "negative_count": int(negative_mask.sum()),
+            }
+        )
+        if scores is not None and scores.notna().any():
+            valid_scores = scores.notna()
+            if valid_scores.any():
+                aligned_true = true_codes[valid_scores].reset_index(drop=True)
+                aligned_scores = scores[valid_scores].astype(float).reset_index(drop=True)
+                metrics["roc_auc"] = _binary_roc_auc(aligned_true, aligned_scores)
+                metrics["brier_score"] = float(
+                    ((aligned_scores - (aligned_true == 1).astype(float)) ** 2).mean()
+                )
+    return metrics
+
+
+def _majority_vote(values: List[Any]) -> Any:
+    counts: Dict[str, tuple[Any, int]] = {}
+    for value in values:
+        normalized = _normalize_classification_label(value)
+        if normalized is None:
+            continue
+        key = _label_key(normalized)
+        label, count = counts.get(key, (normalized, 0))
+        counts[key] = (label, count + 1)
+    if not counts:
+        return None
+    return max(counts.values(), key=lambda item: item[1])[0]
 
 
 class ChempropToolkit(Toolkit):
@@ -132,7 +409,9 @@ class ChempropToolkit(Toolkit):
         output_path = output_dir.expanduser().resolve()
         replicate_dirs = sorted(
             output_path.glob("replicate_*"),
-            key=lambda path: int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0,
+            key=lambda path: (
+                int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0
+            ),
         )
         artifacts: List[Dict[str, Any]] = []
         for replicate_dir in replicate_dirs:
@@ -144,7 +423,9 @@ class ChempropToolkit(Toolkit):
                 {
                     "replicate_index": replicate_index,
                     "model_path": str(model_path) if model_path.exists() else None,
-                    "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                    "raw_test_predictions_path": (
+                        str(predictions_path) if predictions_path.exists() else None
+                    ),
                 }
             )
 
@@ -156,7 +437,9 @@ class ChempropToolkit(Toolkit):
                     {
                         "replicate_index": 0,
                         "model_path": str(model_path) if model_path.exists() else None,
-                        "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                        "raw_test_predictions_path": (
+                            str(predictions_path) if predictions_path.exists() else None
+                        ),
                     }
                 )
         return artifacts
@@ -172,8 +455,10 @@ class ChempropToolkit(Toolkit):
 
         Chemprop writes prediction CSVs with the target column name reused for
         predictions.  For validation artifacts we keep that compatibility
-        column but add explicit truth/prediction/error columns and aggregate
-        replicate predictions when multiple replicate outputs are present.
+        column but add explicit truth/prediction columns and aggregate replicate
+        outputs. Regression replicates are averaged. Binary classification
+        probability replicates are averaged and thresholded at 0.5; class-label
+        outputs are combined by majority vote.
         """
         target_column = task.target_columns[0] if task.target_columns else None
         if not target_column:
@@ -203,6 +488,7 @@ class ChempropToolkit(Toolkit):
             if smiles_column in actual.columns
             else None
         )
+        is_classification = _is_classification_task(task.task_type)
         prediction_series: List[pd.Series] = []
         prediction_source_paths: List[str] = []
         included_replicate_indices: List[int] = []
@@ -245,12 +531,143 @@ class ChempropToolkit(Toolkit):
             artifact["aligned_for_validation"] = True
             artifact["exclusion_reason"] = None
             normalized_replicate_artifacts.append(artifact)
-            prediction_series.append(pd.to_numeric(predictions[target_column], errors="coerce"))
+            raw_prediction = predictions[target_column].reset_index(drop=True)
+            if is_classification:
+                prediction_series.append(raw_prediction)
+            else:
+                prediction_series.append(pd.to_numeric(raw_prediction, errors="coerce"))
             prediction_source_paths.append(str(prediction_path))
             included_replicate_indices.append(replicate_index)
 
         if not prediction_series:
             return {}
+
+        smiles_values = (
+            actual[smiles_column].reset_index(drop=True)
+            if smiles_column in actual.columns
+            else pd.Series([None] * len(actual))
+        )
+        normalized_path = output_path / "model_0" / "test_predictions.csv"
+        normalized_path.parent.mkdir(parents=True, exist_ok=True)
+        aggregation = (
+            "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
+        )
+
+        if is_classification:
+            true_labels = (
+                actual[target_column].map(_normalize_classification_label).reset_index(drop=True)
+            )
+            class_labels = _resolve_class_labels(true_labels)
+            if len(class_labels) < 2:
+                return {}
+            numeric_series = [
+                pd.to_numeric(series, errors="coerce") for series in prediction_series
+            ]
+            numeric_probability_output = (
+                len(class_labels) == 2
+                and all(series.notna().any() for series in numeric_series)
+                and all(series.dropna().between(0.0, 1.0).all() for series in numeric_series)
+            )
+            true_codes = _encode_classification_labels(true_labels, class_labels)
+            if numeric_probability_output:
+                probability_frame = pd.concat(numeric_series, axis=1)
+                probability_frame.columns = [
+                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+                ]
+                positive_probability = probability_frame.mean(axis=1, skipna=True)
+                prediction_std = (
+                    probability_frame.std(axis=1, ddof=0).fillna(0.0)
+                    if len(prediction_series) > 1
+                    else pd.Series([0.0] * len(probability_frame))
+                )
+                pred_codes = pd.Series(
+                    [
+                        1 if value >= 0.5 else 0 if pd.notna(value) else None
+                        for value in positive_probability
+                    ],
+                    dtype="object",
+                )
+                predicted_labels = _labels_from_codes(pred_codes, class_labels)
+                negative_probability = 1.0 - positive_probability
+                normalized = pd.DataFrame(
+                    {
+                        "source_row_index": test_indices,
+                        "smiles": smiles_values,
+                        f"{target_column}_true": true_labels,
+                        "y_true": true_labels,
+                        "y_true_encoded": true_codes,
+                        f"{target_column}_prediction": predicted_labels,
+                        "prediction": predicted_labels,
+                        target_column: predicted_labels,
+                        "predicted_class": predicted_labels,
+                        "predicted_class_index": pred_codes,
+                        "y_pred": predicted_labels,
+                        "y_pred_encoded": pred_codes,
+                        "prediction_std": prediction_std,
+                        "positive_class_probability": positive_probability,
+                        f"probability_{_safe_class_token(class_labels[0], 'class_0')}": negative_probability,
+                        f"probability_{_safe_class_token(class_labels[1], 'class_1')}": positive_probability,
+                        "replicate_count": len(prediction_series),
+                        "detected_replicate_count": len(replicate_artifacts),
+                    }
+                )
+                normalized = pd.concat([normalized, probability_frame], axis=1)
+                prediction_kind = "binary_probability"
+            else:
+                label_frame = pd.concat(
+                    [series.map(_normalize_classification_label) for series in prediction_series],
+                    axis=1,
+                )
+                label_frame.columns = [
+                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+                ]
+                predicted_labels = label_frame.apply(
+                    lambda row: _majority_vote(row.tolist()), axis=1
+                )
+                pred_codes = _encode_classification_labels(predicted_labels, class_labels)
+                normalized = pd.DataFrame(
+                    {
+                        "source_row_index": test_indices,
+                        "smiles": smiles_values,
+                        f"{target_column}_true": true_labels,
+                        "y_true": true_labels,
+                        "y_true_encoded": true_codes,
+                        f"{target_column}_prediction": predicted_labels,
+                        "prediction": predicted_labels,
+                        target_column: predicted_labels,
+                        "predicted_class": predicted_labels,
+                        "predicted_class_index": pred_codes,
+                        "y_pred": predicted_labels,
+                        "y_pred_encoded": pred_codes,
+                        "replicate_count": len(prediction_series),
+                        "detected_replicate_count": len(replicate_artifacts),
+                    }
+                )
+                normalized = pd.concat([normalized, label_frame], axis=1)
+                prediction_kind = "class_label_majority_vote"
+
+            normalized.to_csv(normalized_path, index=False)
+            return {
+                "test_predictions_path": str(normalized_path),
+                "raw_test_prediction_paths": prediction_source_paths,
+                "replicate_artifacts": normalized_replicate_artifacts,
+                "replicate_count": len(prediction_series),
+                "detected_replicate_count": len(replicate_artifacts),
+                "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+                "prediction_aggregation": aggregation,
+                "replicate_alignment_policy": (
+                    "Only replicate prediction files whose SMILES exactly match the split test rows "
+                    "are aggregated for validation metrics."
+                ),
+                "prediction_kind": prediction_kind,
+                "prediction_column": "prediction",
+                "target_true_column": f"{target_column}_true",
+                "target_prediction_column": f"{target_column}_prediction",
+                "class_labels": [_json_safe_label(label) for label in class_labels],
+                "positive_class_label": (
+                    _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                ),
+            }
 
         prediction_frame = pd.concat(prediction_series, axis=1)
         prediction_frame.columns = [
@@ -262,11 +679,6 @@ class ChempropToolkit(Toolkit):
             prediction_frame.std(axis=1, ddof=0).fillna(0.0)
             if len(prediction_series) > 1
             else pd.Series([0.0] * len(prediction_frame))
-        )
-        smiles_values = (
-            actual[smiles_column].reset_index(drop=True)
-            if smiles_column in actual.columns
-            else pd.Series([None] * len(actual))
         )
         normalized = pd.DataFrame(
             {
@@ -284,11 +696,7 @@ class ChempropToolkit(Toolkit):
             }
         )
         normalized = pd.concat([normalized, prediction_frame], axis=1)
-
-        normalized_path = output_path / "model_0" / "test_predictions.csv"
-        normalized_path.parent.mkdir(parents=True, exist_ok=True)
         normalized.to_csv(normalized_path, index=False)
-        aggregation = "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
         return {
             "test_predictions_path": str(normalized_path),
             "raw_test_prediction_paths": prediction_source_paths,
@@ -310,7 +718,12 @@ class ChempropToolkit(Toolkit):
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
             page_count = os.sysconf("SC_PHYS_PAGES")
-            if isinstance(page_size, int) and isinstance(page_count, int) and page_size > 0 and page_count > 0:
+            if (
+                isinstance(page_size, int)
+                and isinstance(page_count, int)
+                and page_size > 0
+                and page_count > 0
+            ):
                 return page_size * page_count
         except Exception:
             return None
@@ -402,7 +815,9 @@ class ChempropToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+        def _limit(
+            profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
+        ) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
                     # On high-compute GPU runs, treat the profile values as floor values:
@@ -545,7 +960,7 @@ class ChempropToolkit(Toolkit):
         families: Dict[str, List[Dict[str, Any]]] = {}
         for item in split_results:
             family = item.get("strategy_family") or item.get("strategy")
-            metrics = ((item.get("metrics") or {}).get("test") or {})
+            metrics = (item.get("metrics") or {}).get("test") or {}
             if not family or not metrics:
                 continue
             families.setdefault(family, []).append(item)
@@ -561,7 +976,7 @@ class ChempropToolkit(Toolkit):
                 "test_n_values": [],
             }
             for item in items:
-                metrics = ((item.get("metrics") or {}).get("test") or {})
+                metrics = (item.get("metrics") or {}).get("test") or {}
                 entry["runs"].append(
                     {
                         "label": item.get("strategy_label"),
@@ -689,9 +1104,19 @@ class ChempropToolkit(Toolkit):
         )
         resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
         splits_path = resolved_artifacts["splits_path"]
-        preds_path = Path(str(normalized_predictions.get("test_predictions_path") or resolved_artifacts["test_predictions_path"]))
+        preds_path = Path(
+            str(
+                normalized_predictions.get("test_predictions_path")
+                or resolved_artifacts["test_predictions_path"]
+            )
+        )
 
-        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
+        if (
+            splits_path is None
+            or preds_path is None
+            or not splits_path.exists()
+            or not preds_path.exists()
+        ):
             return {}
 
         dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
@@ -702,6 +1127,89 @@ class ChempropToolkit(Toolkit):
             return {}
 
         test_indices = split_payload[0]["test"]
+        is_classification = _is_classification_task(task.task_type)
+        if is_classification:
+            true_column = f"{target_column}_true"
+            if true_column in predictions.columns:
+                true_labels = predictions[true_column].map(_normalize_classification_label)
+            else:
+                actual = dataset.iloc[test_indices].reset_index(drop=True)
+                if target_column not in actual.columns:
+                    return {}
+                true_labels = actual[target_column].map(_normalize_classification_label)
+            if "predicted_class" in predictions.columns:
+                predicted_labels = predictions["predicted_class"].map(
+                    _normalize_classification_label
+                )
+            elif "prediction" in predictions.columns:
+                predicted_labels = predictions["prediction"].map(_normalize_classification_label)
+            elif target_column in predictions.columns:
+                predicted_labels = predictions[target_column].map(_normalize_classification_label)
+            else:
+                return {}
+            class_labels = _resolve_class_labels(true_labels)
+            if len(class_labels) < 2:
+                return {}
+            if "y_true_encoded" in predictions.columns:
+                y_true = pd.to_numeric(predictions["y_true_encoded"], errors="coerce")
+            else:
+                y_true = _encode_classification_labels(true_labels, class_labels)
+            if "y_pred_encoded" in predictions.columns:
+                y_pred = pd.to_numeric(predictions["y_pred_encoded"], errors="coerce")
+            elif "predicted_class_index" in predictions.columns:
+                y_pred = pd.to_numeric(predictions["predicted_class_index"], errors="coerce")
+            else:
+                y_pred = _encode_classification_labels(predicted_labels, class_labels)
+            positive_scores = (
+                pd.to_numeric(predictions["positive_class_probability"], errors="coerce")
+                if "positive_class_probability" in predictions.columns
+                else None
+            )
+            metrics = _compute_classification_metrics(
+                y_true,
+                y_pred,
+                class_labels,
+                positive_scores=positive_scores,
+            )
+            metrics["target_column"] = target_column
+            return {
+                "best_model_path": (
+                    str(resolved_artifacts["best_model_path"])
+                    if resolved_artifacts.get("best_model_path")
+                    else None
+                ),
+                "test_predictions_path": str(preds_path),
+                "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
+                or [],
+                "splits_path": str(splits_path),
+                "train_size": len(split_payload[0].get("train") or []),
+                "val_size": len(
+                    split_payload[0].get("val") or split_payload[0].get("validation") or []
+                ),
+                "test_size": len(test_indices),
+                "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
+                or self._replicate_artifacts(output_path),
+                "replicate_count": normalized_predictions.get("replicate_count") or 1,
+                "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
+                "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
+                "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
+                or "single_replicate",
+                "replicate_alignment_policy": normalized_predictions.get(
+                    "replicate_alignment_policy"
+                ),
+                "prediction_kind": normalized_predictions.get("prediction_kind"),
+                "prediction_column": normalized_predictions.get("prediction_column")
+                or target_column,
+                "target_true_column": normalized_predictions.get("target_true_column")
+                or target_column,
+                "target_prediction_column": normalized_predictions.get("target_prediction_column")
+                or target_column,
+                "class_labels": normalized_predictions.get("class_labels")
+                or [_json_safe_label(label) for label in class_labels],
+                "positive_class_label": normalized_predictions.get("positive_class_label"),
+                "metrics": {"test": metrics},
+            }
+
         true_column = f"{target_column}_true"
         if true_column in predictions.columns and "prediction" in predictions.columns:
             actual_values = pd.to_numeric(predictions[true_column], errors="coerce")
@@ -735,7 +1243,9 @@ class ChempropToolkit(Toolkit):
         kendall = None
         try:
             spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            spearman = float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+            spearman = (
+                float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+            )
         except Exception:
             spearman = None
         try:
@@ -745,22 +1255,32 @@ class ChempropToolkit(Toolkit):
             kendall = None
 
         return {
-            "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
+            "best_model_path": (
+                str(resolved_artifacts["best_model_path"])
+                if resolved_artifacts.get("best_model_path")
+                else None
+            ),
             "test_predictions_path": str(preds_path),
-            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths") or [],
+            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
+            or [],
             "splits_path": str(splits_path),
             "train_size": len(split_payload[0].get("train") or []),
-            "val_size": len(split_payload[0].get("val") or split_payload[0].get("validation") or []),
+            "val_size": len(
+                split_payload[0].get("val") or split_payload[0].get("validation") or []
+            ),
             "test_size": len(test_indices),
-            "replicate_artifacts": normalized_predictions.get("replicate_artifacts") or self._replicate_artifacts(output_path),
+            "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
+            or self._replicate_artifacts(output_path),
             "replicate_count": normalized_predictions.get("replicate_count") or 1,
             "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
             "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
-            "prediction_aggregation": normalized_predictions.get("prediction_aggregation") or "single_replicate",
+            "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
+            or "single_replicate",
             "replicate_alignment_policy": normalized_predictions.get("replicate_alignment_policy"),
             "prediction_column": normalized_predictions.get("prediction_column") or target_column,
             "target_true_column": normalized_predictions.get("target_true_column") or target_column,
-            "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
+            "target_prediction_column": normalized_predictions.get("target_prediction_column")
+            or target_column,
             "metrics": {
                 "test": {
                     "mse": mse,
@@ -822,6 +1342,9 @@ class ChempropToolkit(Toolkit):
             **extra_activity_args,
         }
         training_policy = self._apply_training_profile(cleaned_extra_args)
+        normalized_task_type = str(task_type or "").strip().lower()
+        if _is_classification_task(normalized_task_type) and "metric" not in cleaned_extra_args:
+            training_policy["extra_args"].pop("metric", None)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
@@ -841,7 +1364,7 @@ class ChempropToolkit(Toolkit):
             reaction_columns=reaction_columns or [],
         )
         activity_cliffs: Dict[str, Any] = {}
-        if task.task_type == "regression" and len(task.target_columns) == 1:
+        if str(task.task_type).strip().lower() == "regression" and len(task.target_columns) == 1:
             try:
                 activity_cliffs = prepare_activity_cliff_context(
                     train_csv=train_csv,
@@ -896,7 +1419,11 @@ class ChempropToolkit(Toolkit):
                     else root_output_path
                 )
                 run_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "split_type": split_run["backend_split_type"],
                     "data_seed": split_run["seed"],
                 }
@@ -982,14 +1509,15 @@ class ChempropToolkit(Toolkit):
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
-            plot_artifacts = build_training_plots_if_possible(
-                train_csv=train_csv,
-                split_results=split_results,
-                primary_run=primary_run,
-                root_artifacts=root_artifacts,
-                root_output_dir=root_output_path,
-                target_column=target_column,
-            )
+            if str(task.task_type).strip().lower() == "regression":
+                plot_artifacts = build_training_plots_if_possible(
+                    train_csv=train_csv,
+                    split_results=split_results,
+                    primary_run=primary_run,
+                    root_artifacts=root_artifacts,
+                    root_output_dir=root_output_path,
+                    target_column=target_column,
+                )
 
             result = dict(primary_run)
             result["backend_name"] = self.backend.backend_name
@@ -997,22 +1525,32 @@ class ChempropToolkit(Toolkit):
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
             result["seed_policy"] = protocol_policy["seed_policy"]
-            result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
-            result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
+            result["seed_policy_report"] = seed_policy_reporting_text(
+                protocol_policy["seed_policy"]
+            )
+            result["reproducibility"] = seed_policy_reproducibility_metadata(
+                protocol_policy["seed_policy"]
+            )
             result["split_results"] = split_results
             result["validation_assessment"] = validation_assessment
             result["compute_environment"] = training_policy["compute_environment"]
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = {
-                key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+                key: value
+                for key, value in training_policy["extra_args"].items()
+                if key != "seed_policy"
             }
-            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get("model_seed")
+            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get(
+                "model_seed"
+            )
             if primary_run.get("seed") is not None:
                 result["effective_train_args"]["data_seed"] = primary_run.get("seed")
                 result["effective_train_args"]["data_seed_scope"] = "primary_split"
             result["replicate_policy"] = {
-                "num_replicates_requested": int(result["effective_train_args"].get("num_replicates") or 1),
+                "num_replicates_requested": int(
+                    result["effective_train_args"].get("num_replicates") or 1
+                ),
                 "protocol_override_note": protocol_override_note,
                 "prediction_aggregation": primary_run.get("prediction_aggregation"),
                 "catalog_primary_replicate_index": 0,
@@ -1054,14 +1592,20 @@ class ChempropToolkit(Toolkit):
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
 
-            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
+            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(
+                Path(resolved_output_dir)
+            )
             best_model_path = Path(
                 root_artifacts.get("best_model_path")
                 or resolved_primary_artifacts.get("best_model_path")
                 or (Path(resolved_output_dir) / "model_0" / "best.pt")
             )
-            config_path = Path(root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"])
-            splits_path = Path(root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"])
+            config_path = Path(
+                root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"]
+            )
+            splits_path = Path(
+                root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"]
+            )
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)

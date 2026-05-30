@@ -55,6 +55,7 @@ def test_backend_capabilities_registry_core_contracts():
     assert ensemble.supports_uncertainty == "component_disagreement_std"
     assert lightgbm.supports_activity_cliff_feedback_loops is True
     assert "classification" in lightgbm.supported_task_types
+    assert "classification" in chemprop.supported_task_types
     assert chemprop.supports_activity_cliff_feedback_loops is False
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
@@ -354,6 +355,61 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
     assert normalized["pEC50_prediction"].tolist() == [6.0, 4.0]
     assert normalized["pEC50"].tolist() == [6.0, 4.0]
     assert normalized["prediction_std"].tolist() == [0.5, 0.5]
+
+
+def test_chemprop_toolkit_writes_normalized_classification_predictions(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "classification_train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+            "activity": ["inactive", "active", "inactive", "active"],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_classification_run"
+    output_dir.mkdir()
+    (output_dir / "splits.json").write_text(
+        json.dumps([{"train": [], "val": [], "test": [0, 1, 2, 3]}])
+    )
+    for replicate_index, probabilities in enumerate(([0.2, 0.7, 0.4, 0.8], [0.1, 0.9, 0.6, 0.6])):
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "best.pt").write_text("model")
+        pd.DataFrame(
+            {
+                "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+                "activity": probabilities,
+            }
+        ).to_csv(replicate_dir / "test_predictions.csv", index=False)
+
+    task = PredictionTaskSpec(
+        task_type="classification",
+        smiles_columns=["smiles"],
+        target_columns=["activity"],
+    )
+    result = toolkit._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=task,
+    )
+
+    normalized = pd.read_csv(result["test_predictions_path"])
+    assert result["class_labels"] == ["inactive", "active"]
+    assert result["prediction_kind"] == "binary_probability"
+    assert normalized["prediction"].tolist() == ["inactive", "active", "active", "active"]
+    assert normalized["positive_class_probability"].tolist() == [0.15, 0.8, 0.5, 0.7]
+    assert "probability_inactive" in normalized.columns
+    assert "probability_active" in normalized.columns
+
+    metrics = toolkit._compute_training_metrics(
+        train_csv=str(train_csv),
+        output_dir=str(output_dir),
+        task=task,
+    )
+    assert metrics["metrics"]["test"]["accuracy"] == pytest.approx(0.75)
+    assert metrics["metrics"]["test"]["balanced_accuracy"] == pytest.approx(0.75)
+    assert metrics["metrics"]["test"]["roc_auc"] == pytest.approx(1.0)
+    assert metrics["positive_class_label"] == "active"
 
 
 def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
