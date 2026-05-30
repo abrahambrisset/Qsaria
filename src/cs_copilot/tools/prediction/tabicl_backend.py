@@ -6,6 +6,8 @@ TabICLv2 backend adapter for tabular QSAR workflows.
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import importlib.metadata
 import importlib.util
 import json
@@ -14,11 +16,10 @@ import math
 import pickle
 import shutil
 import threading
-import gc
-import ctypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from cs_copilot.storage import S3
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TABICL_CHECKPOINT_DIR = Path("data/model_assets/checkpoints/tabicl").resolve()
 DEFAULT_TABICL_REGRESSOR_CHECKPOINT = "tabicl-regressor-v2-20260212.ckpt"
+DEFAULT_TABICL_CLASSIFIER_CHECKPOINT = "tabicl-classifier-v2-20260212.ckpt"
 
 
 def _release_process_memory() -> None:
@@ -73,7 +75,9 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
     if len(split_sizes) != 3:
-        raise InvalidPredictionInputError("split_sizes must contain exactly 3 values: train, val, test.")
+        raise InvalidPredictionInputError(
+            "split_sizes must contain exactly 3 values: train, val, test."
+        )
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
@@ -83,8 +87,129 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     return normalized
 
 
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
+
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _json_safe_label(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _normalize_classification_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return _json_safe_label(value)
+
+
+def _label_key(value: Any) -> str:
+    return json.dumps(_json_safe_label(value), sort_keys=True, default=str)
+
+
+def _safe_class_token(value: Any, fallback: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value).strip()).strip("_")
+    return token or fallback
+
+
+def _sort_class_labels(labels: List[Any]) -> List[Any]:
+    try:
+        return sorted(labels)
+    except TypeError:
+        return sorted(labels, key=lambda value: str(value).lower())
+
+
+def _resolve_class_labels(series: pd.Series) -> List[Any]:
+    labels: List[Any] = []
+    seen: set[str] = set()
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            continue
+        key = _label_key(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(normalized)
+    if len(labels) < 2:
+        raise InvalidPredictionInputError(
+            "TabICL classification requires at least two target classes after cleanup."
+        )
+    if len(labels) == 2:
+        positive_tokens = {"1", "true", "active", "actif", "positive", "pos", "yes", "y"}
+        negative_tokens = {"0", "false", "inactive", "inactif", "negative", "neg", "no", "n"}
+        positives = [label for label in labels if str(label).strip().lower() in positive_tokens]
+        negatives = [label for label in labels if str(label).strip().lower() in negative_tokens]
+        if len(positives) == 1 and len(negatives) == 1:
+            return [negatives[0], positives[0]]
+    return _sort_class_labels(labels)
+
+
+def _encode_classification_labels(series: pd.Series, class_labels: List[Any]) -> pd.Series:
+    mapping = {_label_key(label): index for index, label in enumerate(class_labels)}
+    encoded: List[Optional[int]] = []
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            encoded.append(None)
+            continue
+        encoded.append(mapping.get(_label_key(normalized)))
+    return pd.Series(encoded, index=series.index, dtype="object")
+
+
+def _labels_from_codes(codes: pd.Series, class_labels: List[Any]) -> pd.Series:
+    labels: List[Any] = []
+    for raw_code in codes.tolist():
+        if raw_code is None or pd.isna(raw_code):
+            labels.append(None)
+            continue
+        code = int(raw_code)
+        labels.append(
+            _json_safe_label(class_labels[code]) if 0 <= code < len(class_labels) else None
+        )
+    return pd.Series(labels, index=codes.index, dtype="object")
+
+
+def _mean_or_none(values: List[Optional[float]]) -> Optional[float]:
+    numeric = [value for value in values if value is not None]
+    if not numeric:
+        return None
+    return float(sum(numeric) / len(numeric))
+
+
+def _binary_roc_auc(y_true: pd.Series, scores: pd.Series) -> Optional[float]:
+    positive = y_true.astype(int) == 1
+    n_pos = int(positive.sum())
+    n_neg = int((~positive).sum())
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = scores.astype(float).rank(method="average")
+    rank_sum_pos = float(ranks[positive].sum())
+    auc = (rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)) / float(n_pos * n_neg)
+    return float(auc)
+
+
 class TabICLBackend(PredictionBackend):
-    """Prediction backend built around TabICLv2 regressors."""
+    """Prediction backend built around TabICLv2 regressors and classifiers."""
 
     backend_name = "tabicl"
     MODEL_EXTENSIONS = (".pkl",)
@@ -100,6 +225,9 @@ class TabICLBackend(PredictionBackend):
 
     def describe_environment(self) -> Dict[str, Any]:
         checkpoint_path = DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        classifier_checkpoint_path = (
+            DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+        )
         return enrich_backend_environment(
             self.backend_name,
             {
@@ -108,8 +236,11 @@ class TabICLBackend(PredictionBackend):
                 "package_version": self._package_version(),
                 "checkpoint_dir": str(DEFAULT_TABICL_CHECKPOINT_DIR),
                 "default_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+                "default_classifier_checkpoint_version": DEFAULT_TABICL_CLASSIFIER_CHECKPOINT,
                 "default_checkpoint_path": str(checkpoint_path),
+                "default_classifier_checkpoint_path": str(classifier_checkpoint_path),
                 "default_checkpoint_present": checkpoint_path.exists(),
+                "default_classifier_checkpoint_present": classifier_checkpoint_path.exists(),
             },
         )
 
@@ -130,11 +261,19 @@ class TabICLBackend(PredictionBackend):
                 f"Environment snapshot: {self.describe_environment()}"
             )
 
-    def _resolve_checkpoint_config(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _resolve_checkpoint_config(
+        self,
+        extra_args: Optional[Dict[str, Any]],
+        *,
+        task_kind: str = "regression",
+    ) -> Dict[str, Any]:
         extra_args = dict(extra_args or {})
-        checkpoint_version = str(
-            extra_args.get("checkpoint_version") or DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        default_checkpoint = (
+            DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+            if task_kind == "classification"
+            else DEFAULT_TABICL_REGRESSOR_CHECKPOINT
         )
+        checkpoint_version = str(extra_args.get("checkpoint_version") or default_checkpoint)
         checkpoint_dir = Path(
             extra_args.get("checkpoint_dir") or DEFAULT_TABICL_CHECKPOINT_DIR
         ).expanduser()
@@ -153,6 +292,12 @@ class TabICLBackend(PredictionBackend):
         from tabicl import TabICLRegressor
 
         return TabICLRegressor
+
+    def _import_tabicl_classifier(self):
+        self._ensure_available()
+        from tabicl import TabICLClassifier
+
+        return TabICLClassifier
 
     def _sanitize_train_extra_args(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         raw = dict(extra_args or {})
@@ -189,6 +334,11 @@ class TabICLBackend(PredictionBackend):
             "heartbeat_label",
             "heartbeat_run_index",
             "heartbeat_total_runs",
+            "class_shuffle_method",
+            "softmax_temperature",
+            "average_logits",
+            "support_many_classes",
+            "classification_threshold",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -220,7 +370,9 @@ class TabICLBackend(PredictionBackend):
                 explicit = [explicit]
             missing = [column for column in explicit if column not in df.columns]
             if missing:
-                raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
+                raise InvalidPredictionInputError(
+                    f"Requested feature columns are missing: {missing}"
+                )
             leaked = [
                 column
                 for column in explicit
@@ -272,6 +424,210 @@ class TabICLBackend(PredictionBackend):
             "n": int(len(y_true)),
         }
 
+    def _compute_classification_metrics(
+        self,
+        y_true: pd.Series,
+        y_pred: pd.Series,
+        class_labels: List[Any],
+        positive_scores: Optional[pd.Series] = None,
+    ) -> Dict[str, Any]:
+        true_codes = pd.Series(y_true).reset_index(drop=True)
+        pred_codes = pd.Series(y_pred).reset_index(drop=True)
+        valid_mask = true_codes.notna() & pred_codes.notna()
+        true_codes = true_codes[valid_mask].astype(int).reset_index(drop=True)
+        pred_codes = pred_codes[valid_mask].astype(int).reset_index(drop=True)
+        scores = None
+        if positive_scores is not None:
+            scores = pd.to_numeric(
+                pd.Series(positive_scores).reset_index(drop=True)[valid_mask], errors="coerce"
+            )
+        classes = list(range(len(class_labels)))
+        n = int(len(true_codes))
+        accuracy = float((true_codes == pred_codes).mean()) if n else None
+        recalls: List[Optional[float]] = []
+        precisions: List[Optional[float]] = []
+        f1_values: List[Optional[float]] = []
+        per_class: Dict[str, Dict[str, Any]] = {}
+        for class_index, class_label in enumerate(class_labels):
+            true_positive = int(((true_codes == class_index) & (pred_codes == class_index)).sum())
+            false_positive = int(((true_codes != class_index) & (pred_codes == class_index)).sum())
+            false_negative = int(((true_codes == class_index) & (pred_codes != class_index)).sum())
+            true_negative = int(((true_codes != class_index) & (pred_codes != class_index)).sum())
+            precision = (
+                float(true_positive / (true_positive + false_positive))
+                if true_positive + false_positive > 0
+                else 0.0
+            )
+            recall = (
+                float(true_positive / (true_positive + false_negative))
+                if true_positive + false_negative > 0
+                else None
+            )
+            f1 = (
+                float(2.0 * precision * recall / (precision + recall))
+                if recall is not None and precision + recall > 0
+                else 0.0
+            )
+            if recall is not None:
+                recalls.append(recall)
+            precisions.append(precision)
+            f1_values.append(f1)
+            token = _safe_class_token(class_label, f"class_{class_index}")
+            per_class[token] = {
+                "class_label": _json_safe_label(class_label),
+                "class_index": class_index,
+                "support": int((true_codes == class_index).sum()),
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "true_negative": true_negative,
+            }
+        confusion_matrix = [
+            [
+                int(((true_codes == row_class) & (pred_codes == col_class)).sum())
+                for col_class in classes
+            ]
+            for row_class in classes
+        ]
+        metrics: Dict[str, Any] = {
+            "accuracy": accuracy,
+            "balanced_accuracy": _mean_or_none(recalls),
+            "precision_macro": _mean_or_none(precisions),
+            "recall_macro": _mean_or_none(recalls),
+            "f1_macro": _mean_or_none(f1_values),
+            "n": n,
+            "num_classes": len(class_labels),
+            "class_labels": [_json_safe_label(label) for label in class_labels],
+            "class_counts": {
+                str(_json_safe_label(class_labels[class_index])): int(
+                    (true_codes == class_index).sum()
+                )
+                for class_index in classes
+            },
+            "confusion_matrix": confusion_matrix,
+            "per_class": per_class,
+        }
+        if len(class_labels) == 2:
+            positive_mask = true_codes == 1
+            negative_mask = true_codes == 0
+            true_positive = int(((true_codes == 1) & (pred_codes == 1)).sum())
+            false_positive = int(((true_codes == 0) & (pred_codes == 1)).sum())
+            false_negative = int(((true_codes == 1) & (pred_codes == 0)).sum())
+            true_negative = int(((true_codes == 0) & (pred_codes == 0)).sum())
+            precision = (
+                float(true_positive / (true_positive + false_positive))
+                if true_positive + false_positive > 0
+                else 0.0
+            )
+            recall = (
+                float(true_positive / (true_positive + false_negative))
+                if true_positive + false_negative > 0
+                else None
+            )
+            specificity = (
+                float(true_negative / (true_negative + false_positive))
+                if true_negative + false_positive > 0
+                else None
+            )
+            metrics.update(
+                {
+                    "positive_class": _json_safe_label(class_labels[1]),
+                    "negative_class": _json_safe_label(class_labels[0]),
+                    "precision": precision,
+                    "recall": recall,
+                    "sensitivity": recall,
+                    "specificity": specificity,
+                    "f1": (
+                        float(2.0 * precision * recall / (precision + recall))
+                        if recall is not None and precision + recall > 0
+                        else 0.0
+                    ),
+                    "true_positive": true_positive,
+                    "false_positive": false_positive,
+                    "false_negative": false_negative,
+                    "true_negative": true_negative,
+                    "positive_count": int(positive_mask.sum()),
+                    "negative_count": int(negative_mask.sum()),
+                }
+            )
+            if scores is not None and scores.notna().any():
+                valid_scores = scores.notna()
+                aligned_true = true_codes[valid_scores].reset_index(drop=True)
+                aligned_scores = scores[valid_scores].astype(float).reset_index(drop=True)
+                metrics["roc_auc"] = _binary_roc_auc(aligned_true, aligned_scores)
+                metrics["brier_score"] = float(
+                    ((aligned_scores - (aligned_true == 1).astype(float)) ** 2).mean()
+                )
+        return metrics
+
+    def _predict_class_codes(
+        self,
+        estimator: Any,
+        features: pd.DataFrame,
+        probabilities: Optional[Any],
+        extra_args: Optional[Dict[str, Any]],
+        *,
+        num_classes: int,
+    ) -> pd.Series:
+        if probabilities is not None and num_classes == 2:
+            threshold = float((extra_args or {}).get("classification_threshold", 0.5))
+            probabilities_array = np.asarray(probabilities, dtype=float)
+            if probabilities_array.ndim == 2 and probabilities_array.shape[1] >= 2:
+                return pd.Series(
+                    (probabilities_array[:, 1] >= threshold).astype(int), index=features.index
+                )
+        return pd.Series(estimator.predict(features), index=features.index).astype(int)
+
+    def _classification_output_frame(
+        self,
+        *,
+        predicted_codes: pd.Series,
+        probabilities: Optional[Any],
+        class_labels: List[Any],
+        target_column: Optional[str] = None,
+        true_codes: Optional[pd.Series] = None,
+        true_labels: Optional[pd.Series] = None,
+    ) -> pd.DataFrame:
+        predicted_labels = _labels_from_codes(predicted_codes.reset_index(drop=True), class_labels)
+        output = pd.DataFrame(
+            {
+                "prediction": predicted_labels,
+                "predicted_class": predicted_labels,
+                "predicted_class_index": predicted_codes.reset_index(drop=True).astype(int),
+            }
+        )
+        if target_column:
+            output[target_column] = predicted_labels
+        if true_codes is not None:
+            output["y_true_encoded"] = true_codes.reset_index(drop=True).astype(int)
+        if true_labels is not None:
+            safe_true = true_labels.map(_json_safe_label).reset_index(drop=True)
+            output["y_true"] = safe_true
+            if target_column:
+                output[f"{target_column}_true"] = safe_true
+        output["y_pred"] = predicted_labels
+        output["y_pred_encoded"] = output["predicted_class_index"]
+        if probabilities is not None:
+            probabilities_array = np.asarray(probabilities, dtype=float)
+            if probabilities_array.ndim == 1 and len(class_labels) == 2:
+                probabilities_array = np.vstack([1.0 - probabilities_array, probabilities_array]).T
+            if probabilities_array.ndim == 2:
+                used_tokens: set[str] = set()
+                for class_index, class_label in enumerate(class_labels):
+                    if class_index >= probabilities_array.shape[1]:
+                        continue
+                    token = _safe_class_token(class_label, f"class_{class_index}")
+                    if token in used_tokens:
+                        token = f"{token}_{class_index}"
+                    used_tokens.add(token)
+                    output[f"probability_{token}"] = probabilities_array[:, class_index]
+                if len(class_labels) == 2 and probabilities_array.shape[1] >= 2:
+                    output["positive_class_probability"] = probabilities_array[:, 1]
+        return output
+
     def _persist_checkpoint_if_possible(self, estimator: Any, destination: Path) -> Optional[str]:
         if destination.exists():
             return str(destination)
@@ -293,7 +649,9 @@ class TabICLBackend(PredictionBackend):
                     shutil.copy2(candidate_path, destination)
                     return str(destination)
                 except Exception as exc:
-                    logger.warning("Could not persist TabICL checkpoint to %s: %s", destination, exc)
+                    logger.warning(
+                        "Could not persist TabICL checkpoint to %s: %s", destination, exc
+                    )
                     return None
         return None
 
@@ -307,44 +665,102 @@ class TabICLBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
-            raise InvalidPredictionInputError("TabICL V1 does not support predictive uncertainty export.")
+            raise InvalidPredictionInputError(
+                "TabICL V1 does not support predictive uncertainty export."
+            )
 
         model_path = self.validate_model_path(model_record.model_path)
         try:
             with model_path.open("rb") as fh:
-                estimator = pickle.load(fh)
+                payload = pickle.load(fh)
         except Exception as exc:
-            raise PredictionExecutionError(f"Could not load TabICL model artifact {model_path}: {exc}") from exc
+            raise PredictionExecutionError(
+                f"Could not load TabICL model artifact {model_path}: {exc}"
+            ) from exc
+
+        estimator = payload.get("model") if isinstance(payload, dict) else payload
+        artifact_metadata = dict(payload.get("metadata") or {}) if isinstance(payload, dict) else {}
+        metadata_path = model_path.with_suffix(".metadata.json")
+        if metadata_path.exists():
+            try:
+                artifact_metadata.update(json.loads(metadata_path.read_text()))
+            except Exception:
+                pass
 
         with S3.open(input_csv, "r") as fh:
             df = _strip_unnamed_columns(pd.read_csv(fh))
 
         target_columns = list(model_record.task.target_columns)
-        feature_columns = list((model_record.inference_profile or {}).get("feature_columns", []))
+        task_type = str(artifact_metadata.get("task_type") or model_record.task.task_type)
+        task_kind = "classification" if _is_classification_task(task_type) else "regression"
+        feature_columns = list(
+            (model_record.inference_profile or {}).get("feature_columns")
+            or artifact_metadata.get("feature_columns")
+            or []
+        )
         if not feature_columns:
             feature_columns = self._select_feature_columns(df, target_columns, {})
 
         missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:
-            raise InvalidPredictionInputError(f"Prediction input is missing feature columns: {missing_features}")
+            raise InvalidPredictionInputError(
+                f"Prediction input is missing feature columns: {missing_features}"
+            )
 
         X = df[feature_columns].copy()
         try:
-            y_pred = estimator.predict(X)
+            if task_kind == "classification":
+                class_labels = list(artifact_metadata.get("class_labels") or [])
+                if not class_labels:
+                    class_labels = [
+                        _json_safe_label(label) for label in getattr(estimator, "classes_", [])
+                    ]
+                if not class_labels:
+                    raise InvalidPredictionInputError(
+                        "TabICL classification artifact is missing class_labels metadata."
+                    )
+                probabilities = (
+                    estimator.predict_proba(X) if hasattr(estimator, "predict_proba") else None
+                )
+                predicted_codes = self._predict_class_codes(
+                    estimator,
+                    X,
+                    probabilities,
+                    {
+                        "classification_threshold": artifact_metadata.get(
+                            "classification_threshold", 0.5
+                        ),
+                        **(extra_args or {}),
+                    },
+                    num_classes=len(class_labels),
+                )
+                output = self._classification_output_frame(
+                    predicted_codes=predicted_codes,
+                    probabilities=probabilities,
+                    class_labels=class_labels,
+                    target_column=target_columns[0] if len(target_columns) == 1 else None,
+                )
+            else:
+                y_pred = estimator.predict(X)
+                output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
+                if len(target_columns) == 1:
+                    output[target_columns[0]] = output["prediction"]
         except Exception as exc:
             raise PredictionExecutionError(f"TabICL prediction failed: {exc}") from exc
 
-        output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
-        if len(target_columns) == 1:
-            output[target_columns[0]] = output["prediction"]
         with S3.open(preds_path, "w") as fh:
             output.to_csv(fh, index=False)
 
-        return {
+        result = {
             "preds_path": preds_path,
             "rows": int(len(output)),
             "feature_columns": feature_columns,
+            "task_type": task_type,
         }
+        if task_kind == "classification":
+            result["class_labels"] = [_json_safe_label(label) for label in class_labels]
+            result["prediction_columns"] = list(output.columns)
+        return result
 
     def train_model(
         self,
@@ -355,13 +771,20 @@ class TabICLBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_available()
-        if task.task_type != "regression":
-            raise InvalidPredictionInputError("TabICL V1 only supports regression tasks.")
+        normalized_task_type = str(task.task_type or "").strip().lower()
+        if normalized_task_type == "regression":
+            task_kind = "regression"
+        elif _is_classification_task(normalized_task_type):
+            task_kind = "classification"
+        else:
+            raise InvalidPredictionInputError(
+                "TabICL V1 supports task_type='regression' or task_type='classification'."
+            )
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("TabICL V1 requires exactly one target column.")
 
         sanitized_args = self._sanitize_train_extra_args(extra_args)
-        checkpoint_cfg = self._resolve_checkpoint_config(sanitized_args)
+        checkpoint_cfg = self._resolve_checkpoint_config(sanitized_args, task_kind=task_kind)
         if not checkpoint_cfg["checkpoint_path"].exists():
             raise InvalidPredictionInputError(
                 "TabICL checkpoint not found at the expected persistent path: "
@@ -382,11 +805,30 @@ class TabICLBackend(PredictionBackend):
             raise InvalidPredictionInputError(f"Missing target column: {target_column}")
 
         feature_columns = self._select_feature_columns(dataset, [target_column], sanitized_args)
-        working = dataset[feature_columns + [target_column] + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]].copy()
-        working[target_column] = pd.to_numeric(working[target_column], errors="coerce")
-        working = working.dropna(subset=[target_column]).reset_index(drop=True)
+        working = dataset[
+            feature_columns
+            + [target_column]
+            + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
+        ].copy()
+        class_labels: List[Any] = []
+        encoded_target_column = "__tabicl_target_encoded"
+        if task_kind == "classification":
+            normalized_labels = working[target_column].map(_normalize_classification_label)
+            missing_mask = normalized_labels.isna()
+            working = working.loc[~missing_mask].copy()
+            working[target_column] = normalized_labels.loc[working.index]
+            class_labels = _resolve_class_labels(working[target_column])
+            working[encoded_target_column] = _encode_classification_labels(
+                working[target_column], class_labels
+            ).astype(int)
+        else:
+            working[target_column] = pd.to_numeric(working[target_column], errors="coerce")
+            working = working.dropna(subset=[target_column]).reset_index(drop=True)
+        working = working.reset_index(drop=True)
         if len(working) < 10:
-            raise InvalidPredictionInputError("TabICL V1 requires at least 10 rows after target cleanup.")
+            raise InvalidPredictionInputError(
+                "TabICL V1 requires at least 10 rows after target cleanup."
+            )
 
         if split_payload is None:
             split_payload = build_tabular_split_payload(
@@ -396,8 +838,13 @@ class TabICLBackend(PredictionBackend):
                 random_state=random_state,
                 smiles_column="smiles" if "smiles" in working.columns else None,
                 feature_columns=feature_columns,
+                stratify_column=target_column if task_kind == "classification" else None,
             )
-        if not isinstance(split_payload, list) or not split_payload or not isinstance(split_payload[0], dict):
+        if (
+            not isinstance(split_payload, list)
+            or not split_payload
+            or not isinstance(split_payload[0], dict)
+        ):
             raise InvalidPredictionInputError(
                 "TabICL split_payload must be a non-empty list with train/val/test index mappings."
             )
@@ -407,17 +854,41 @@ class TabICLBackend(PredictionBackend):
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
         if not train_indices or not val_indices or not test_indices:
-            raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/val/test indices.")
+            raise InvalidPredictionInputError(
+                "TabICL split payload must provide non-empty train/val/test indices."
+            )
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
         test_df = working.iloc[test_indices].reset_index(drop=True)
 
         X_train = train_df[feature_columns].copy()
-        y_train = train_df[target_column].astype(float).copy()
         X_test = test_df[feature_columns].copy()
-        y_test = test_df[target_column].astype(float).copy()
+        if task_kind == "classification":
+            y_train = train_df[encoded_target_column].astype(int).copy()
+            y_test = test_df[encoded_target_column].astype(int).copy()
+            present_train_classes = {int(value) for value in y_train.tolist()}
+            if len(present_train_classes) < 2:
+                raise InvalidPredictionInputError(
+                    "TabICL classification training split contains fewer than two classes."
+                )
+            missing_train_classes = sorted(set(range(len(class_labels))) - present_train_classes)
+            if missing_train_classes:
+                missing_labels = [
+                    _json_safe_label(class_labels[index]) for index in missing_train_classes
+                ]
+                raise InvalidPredictionInputError(
+                    "TabICL classification training split is missing target classes "
+                    f"{missing_labels}. Use a larger dataset or a stratified/random split."
+                )
+        else:
+            y_train = train_df[target_column].astype(float).copy()
+            y_test = test_df[target_column].astype(float).copy()
 
-        TabICLRegressor = self._import_tabicl_regressor()
+        EstimatorClass = (
+            self._import_tabicl_classifier()
+            if task_kind == "classification"
+            else self._import_tabicl_regressor()
+        )
         model_path_arg = str(checkpoint_cfg["checkpoint_path"])
         init_kwargs = {
             "model_path": model_path_arg,
@@ -441,26 +912,36 @@ class TabICLBackend(PredictionBackend):
             "n_jobs",
             "inference_config",
         )
+        if task_kind == "classification":
+            optional_keys = optional_keys + (
+                "class_shuffle_method",
+                "softmax_temperature",
+                "average_logits",
+                "support_many_classes",
+            )
         for key in optional_keys:
             if key in sanitized_args:
                 init_kwargs[key] = sanitized_args[key]
 
-        estimator = TabICLRegressor(**init_kwargs)
+        estimator = EstimatorClass(**init_kwargs)
+        heartbeat_train_rows = int(len(train_df))
+        heartbeat_val_rows = int(len(val_df))
+        heartbeat_test_rows = int(len(test_df))
         heartbeat_seconds = float(sanitized_args.get("heartbeat_seconds", 120.0))
         heartbeat_path_raw = sanitized_args.get("heartbeat_path")
         heartbeat_label = str(sanitized_args.get("heartbeat_label") or split_type)
         heartbeat_run_index = sanitized_args.get("heartbeat_run_index")
         heartbeat_total_runs = sanitized_args.get("heartbeat_total_runs")
-        heartbeat_path = Path(str(heartbeat_path_raw)).expanduser().resolve() if heartbeat_path_raw else None
+        heartbeat_path = (
+            Path(str(heartbeat_path_raw)).expanduser().resolve() if heartbeat_path_raw else None
+        )
         heartbeat_stop = threading.Event()
         heartbeat_thread: Optional[threading.Thread] = None
 
         def _emit_heartbeat() -> None:
             progress_message = None
             if heartbeat_run_index and heartbeat_total_runs:
-                progress_message = (
-                    f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
-                )
+                progress_message = f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
             payload = {
                 "status": "running",
                 "phase": "fit",
@@ -478,9 +959,9 @@ class TabICLBackend(PredictionBackend):
                 "elapsed_seconds": round((project_now() - started_at).total_seconds(), 3),
                 "target_column": target_column,
                 "feature_count": len(feature_columns),
-                "train_rows": int(len(train_df)),
-                "val_rows": int(len(val_df)),
-                "test_rows": int(len(test_df)),
+                "train_rows": heartbeat_train_rows,
+                "val_rows": heartbeat_val_rows,
+                "test_rows": heartbeat_test_rows,
             }
             if heartbeat_path is not None:
                 heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
@@ -513,7 +994,20 @@ class TabICLBackend(PredictionBackend):
             heartbeat_thread.start()
         try:
             estimator.fit(X_train, y_train)
-            y_pred = pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
+            if task_kind == "classification":
+                probabilities = (
+                    estimator.predict_proba(X_test) if hasattr(estimator, "predict_proba") else None
+                )
+                y_pred = self._predict_class_codes(
+                    estimator,
+                    X_test,
+                    probabilities,
+                    sanitized_args,
+                    num_classes=len(class_labels),
+                )
+            else:
+                probabilities = None
+                y_pred = pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
         except Exception as exc:
             raise PredictionExecutionError(f"TabICL training failed: {exc}") from exc
         finally:
@@ -527,6 +1021,7 @@ class TabICLBackend(PredictionBackend):
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_artifact_path = output_path / "tabicl_model.pkl"
+        model_metadata_path = model_artifact_path.with_suffix(".metadata.json")
         test_predictions_path = output_path / "test_predictions.csv"
         summary_path = output_path / "tabicl_training_summary.json"
         canonical_summary_path = output_path / "cs_copilot_training_summary.json"
@@ -536,6 +1031,18 @@ class TabICLBackend(PredictionBackend):
         save_model_weights = bool(sanitized_args.get("save_model_weights", True))
         save_training_data = bool(sanitized_args.get("save_training_data", True))
         save_kv_cache = bool(sanitized_args.get("save_kv_cache", False))
+        metadata = {
+            "backend_name": self.backend_name,
+            "task_type": task.task_type,
+            "task_kind": task_kind,
+            "target_columns": [target_column],
+            "feature_columns": feature_columns,
+            "class_labels": [_json_safe_label(label) for label in class_labels],
+            "positive_class_label": (
+                _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+            ),
+            "classification_threshold": float(sanitized_args.get("classification_threshold", 0.5)),
+        }
         try:
             estimator.save(
                 str(model_artifact_path),
@@ -545,26 +1052,66 @@ class TabICLBackend(PredictionBackend):
             )
         except Exception:
             with model_artifact_path.open("wb") as fh:
-                pickle.dump(estimator, fh)
+                pickle.dump({"model": estimator, "metadata": metadata}, fh)
+        model_metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
-        predictions_df = pd.DataFrame(
-            {
-                **(
-                    {column: test_df[column].reset_index(drop=True) for column in ("Drug_ID", "smiles") if column in test_df.columns}
-                ),
-                f"{target_column}_true": y_test.reset_index(drop=True),
-                target_column: y_pred.reset_index(drop=True),
-                "y_true": y_test.reset_index(drop=True),
-                "y_pred": y_pred.reset_index(drop=True),
-            }
-        )
+        if task_kind == "classification":
+            true_labels = test_df[target_column].reset_index(drop=True)
+            predictions_df = pd.DataFrame(
+                {
+                    **{
+                        column: test_df[column].reset_index(drop=True)
+                        for column in ("Drug_ID", "smiles")
+                        if column in test_df.columns
+                    }
+                }
+            )
+            predictions_df = pd.concat(
+                [
+                    predictions_df,
+                    self._classification_output_frame(
+                        predicted_codes=y_pred,
+                        probabilities=probabilities,
+                        class_labels=class_labels,
+                        target_column=target_column,
+                        true_codes=y_test.reset_index(drop=True),
+                        true_labels=true_labels,
+                    ),
+                ],
+                axis=1,
+            )
+            positive_scores = (
+                pd.Series(np.asarray(probabilities, dtype=float)[:, 1])
+                if probabilities is not None and len(class_labels) == 2
+                else None
+            )
+            metrics = self._compute_classification_metrics(
+                y_test.reset_index(drop=True),
+                y_pred.reset_index(drop=True),
+                class_labels,
+                positive_scores=positive_scores,
+            )
+        else:
+            predictions_df = pd.DataFrame(
+                {
+                    **{
+                        column: test_df[column].reset_index(drop=True)
+                        for column in ("Drug_ID", "smiles")
+                        if column in test_df.columns
+                    },
+                    f"{target_column}_true": y_test.reset_index(drop=True),
+                    target_column: y_pred.reset_index(drop=True),
+                    "y_true": y_test.reset_index(drop=True),
+                    "y_pred": y_pred.reset_index(drop=True),
+                }
+            )
+            metrics = self._compute_regression_metrics(
+                predictions_df["y_true"].astype(float),
+                predictions_df["y_pred"].astype(float),
+            )
+
         with S3.open(str(test_predictions_path), "w") as fh:
             predictions_df.to_csv(fh, index=False)
-
-        metrics = self._compute_regression_metrics(
-            predictions_df["y_true"].astype(float),
-            predictions_df["y_pred"].astype(float),
-        )
 
         train_rows = int(len(train_df))
         val_rows = int(len(val_df))
@@ -574,6 +1121,7 @@ class TabICLBackend(PredictionBackend):
             "backend_name": self.backend_name,
             "train_csv": train_csv,
             "task_type": task.task_type,
+            "task_kind": task_kind,
             "target_column": target_column,
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
@@ -589,17 +1137,31 @@ class TabICLBackend(PredictionBackend):
             "checkpoint_present_after_run": checkpoint_path.exists(),
             "metrics": {"test": metrics},
             "model_artifact_path": str(model_artifact_path),
+            "model_metadata_path": str(model_metadata_path),
             "test_predictions_path": str(test_predictions_path),
             "config_path": str(config_path),
             "splits_path": str(splits_path),
             "output_dir": str(output_path),
             "started_at": started_at.isoformat(),
         }
+        if task_kind == "classification":
+            summary.update(
+                {
+                    "class_labels": [_json_safe_label(label) for label in class_labels],
+                    "class_count": len(class_labels),
+                    "positive_class_label": (
+                        _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                    ),
+                    "classification_threshold": float(
+                        sanitized_args.get("classification_threshold", 0.5)
+                    ),
+                }
+            )
         config_payload = [
             'backend_name = "tabicl"',
-            'task_type = "regression"',
+            f'task_type = "{task.task_type}"',
             f'target_column = "{target_column}"',
-            f'random_state = {random_state}',
+            f"random_state = {random_state}",
             f'split_type = "{split_type}"',
             f'validation_protocol = "{validation_protocol}"',
             f'checkpoint_version = "{checkpoint_cfg["checkpoint_version"]}"',
@@ -616,6 +1178,7 @@ class TabICLBackend(PredictionBackend):
         result = {
             "backend_name": self.backend_name,
             "model_path": str(model_artifact_path),
+            "model_metadata_path": str(model_metadata_path),
             "output_dir": str(output_path),
             "train_csv": train_csv,
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
@@ -624,6 +1187,8 @@ class TabICLBackend(PredictionBackend):
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
             "target_column": target_column,
+            "task_type": task.task_type,
+            "task_kind": task_kind,
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
@@ -642,6 +1207,19 @@ class TabICLBackend(PredictionBackend):
             "completed_at": completed_at.isoformat(),
             "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
         }
+        if task_kind == "classification":
+            result.update(
+                {
+                    "class_labels": [_json_safe_label(label) for label in class_labels],
+                    "class_count": len(class_labels),
+                    "positive_class_label": (
+                        _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                    ),
+                    "classification_threshold": float(
+                        sanitized_args.get("classification_threshold", 0.5)
+                    ),
+                }
+            )
 
         # TabICL can leave large CPU/GPU buffers resident in the Python process
         # after a run. Clear the heaviest objects explicitly before returning.

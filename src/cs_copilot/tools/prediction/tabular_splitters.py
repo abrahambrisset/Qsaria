@@ -86,6 +86,22 @@ def _group_balanced_split_payload(
     if remainder:
         assigned["train"].extend(remainder)
 
+    for split_name in ("train", "val", "test"):
+        if assigned[split_name]:
+            continue
+        donor = max(
+            (name for name, indices in assigned.items() if name != split_name and len(indices) > 1),
+            key=lambda name: (len(assigned[name]), name),
+            default=None,
+        )
+        if donor is None:
+            raise InvalidPredictionInputError(
+                "Could not build non-empty train/val/test splits from grouped assignments."
+            )
+        moved_index = sorted(assigned[donor])[-1]
+        assigned[donor].remove(moved_index)
+        assigned[split_name].append(moved_index)
+
     for split_name in assigned:
         assigned[split_name] = sorted({int(i) for i in assigned[split_name]})
 

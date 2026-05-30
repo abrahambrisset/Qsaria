@@ -57,7 +57,9 @@ def normalize_json_list_argument(
             elif allow_scalar:
                 items = [stripped]
             else:
-                raise ValueError(f"{argument_name} must be a list or a JSON-encoded list.") from None
+                raise ValueError(
+                    f"{argument_name} must be a list or a JSON-encoded list."
+                ) from None
         else:
             if isinstance(parsed, list):
                 items = parsed
@@ -129,7 +131,8 @@ def materialize_primary_protocol_artifacts(
     root_model_dir.mkdir(parents=True, exist_ok=True)
 
     file_map = {
-        primary_run.get("model_path") or primary_run.get("best_model_path"): root_model_dir / model_filename,
+        primary_run.get("model_path")
+        or primary_run.get("best_model_path"): root_model_dir / model_filename,
         primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
         primary_run.get("config_path"): root_output_dir / "config.toml",
         primary_run.get("splits_path"): root_output_dir / "splits.json",
@@ -152,6 +155,11 @@ def materialize_primary_protocol_artifacts(
             shutil.copy2(source_path, target_path)
         if target_path == root_model_dir / model_filename:
             copied["best_model_path"] = str(target_path)
+            source_metadata_path = source_path.with_suffix(".metadata.json")
+            target_metadata_path = target_path.with_suffix(".metadata.json")
+            if source_metadata_path.exists():
+                if source_metadata_path.resolve() != target_metadata_path.resolve():
+                    shutil.copy2(source_metadata_path, target_metadata_path)
         elif target_path.name == "test_predictions.csv":
             copied["test_predictions_path"] = str(target_path)
         elif target_path.name == "config.toml":
@@ -201,7 +209,11 @@ def build_training_plots_if_possible(
     target_column: Optional[str],
 ) -> Dict[str, str]:
     """Build standard QSAR plots when the required split artifacts are present."""
-    if not target_column or not root_artifacts.get("splits_path") or not root_artifacts.get("test_predictions_path"):
+    if (
+        not target_column
+        or not root_artifacts.get("splits_path")
+        or not root_artifacts.get("test_predictions_path")
+    ):
         return {}
 
     plots_output_dir = root_output_dir / "artifacts" / "plots"
@@ -212,7 +224,9 @@ def build_training_plots_if_possible(
                 {
                     **item,
                     "splits_path": (
-                        root_artifacts["splits_path"] if item is primary_run else item.get("splits_path")
+                        root_artifacts["splits_path"]
+                        if item is primary_run
+                        else item.get("splits_path")
                     ),
                     "test_predictions_path": (
                         root_artifacts["test_predictions_path"]
@@ -256,11 +270,23 @@ def collect_training_bundle_files(
 ) -> List[Path]:
     """Collect common training artifacts for a downloadable bundle."""
     files: List[Path] = [Path(train_csv).expanduser(), summary_path]
-    for key in ("model_path", "best_model_path", "config_path", "splits_path", "test_predictions_path"):
+    for key in (
+        "model_path",
+        "best_model_path",
+        "config_path",
+        "splits_path",
+        "test_predictions_path",
+    ):
         if result.get(key):
             files.append(Path(str(result[key])).expanduser())
     for split_result in split_results:
-        for key in ("summary_path", "model_path", "best_model_path", "test_predictions_path", "splits_path"):
+        for key in (
+            "summary_path",
+            "model_path",
+            "best_model_path",
+            "test_predictions_path",
+            "splits_path",
+        ):
             if split_result.get(key):
                 files.append(Path(str(split_result[key])).expanduser())
     for key in ("reference_store_path", "reference_manifest_path", "applicability_domain_path"):

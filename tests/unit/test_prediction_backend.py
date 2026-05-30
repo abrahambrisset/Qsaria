@@ -1,8 +1,10 @@
 import json
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -32,6 +34,7 @@ from cs_copilot.tools.prediction.session_state import (
     latest_curation_artifacts,
     write_active_training_marker,
 )
+from cs_copilot.tools.prediction.tabicl_backend import TabICLBackend
 from cs_copilot.tools.prediction.training_orchestration import (
     apply_training_profile,
     collect_training_bundle_files,
@@ -56,6 +59,7 @@ def test_backend_capabilities_registry_core_contracts():
     assert lightgbm.supports_activity_cliff_feedback_loops is True
     assert "classification" in lightgbm.supported_task_types
     assert "classification" in chemprop.supported_task_types
+    assert "classification" in tabicl.supported_task_types
     assert chemprop.supports_activity_cliff_feedback_loops is False
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
@@ -234,6 +238,9 @@ def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path)
     model.parent.mkdir(parents=True)
     for path in (model, preds, config, splits):
         path.write_text(path.name)
+    model.with_suffix(".metadata.json").write_text(
+        json.dumps({"class_labels": ["inactive", "active"]})
+    )
 
     root = tmp_path / "root"
     artifacts = materialize_primary_protocol_artifacts(
@@ -256,7 +263,11 @@ def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path)
         plot_artifacts={},
     )
 
-    assert Path(artifacts["best_model_path"]).exists()
+    best_model_path = Path(artifacts["best_model_path"])
+    assert best_model_path.exists()
+    assert json.loads(best_model_path.with_suffix(".metadata.json").read_text()) == {
+        "class_labels": ["inactive", "active"]
+    }
     assert json.loads(summary.read_text())["ok"] is True
     assert Path(artifacts["best_model_path"]) in files
 
@@ -465,6 +476,144 @@ def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
     assert normalized["prediction"].tolist() == [5.5, 4.5]
     assert normalized["prediction_replicate_0"].tolist() == [5.5, 4.5]
     assert "prediction_replicate_1" not in normalized.columns
+
+
+class _FakeTabICLClassifier:
+    classes_ = np.array([0, 1])
+
+    def __init__(self, **kwargs):
+        self.init_kwargs = kwargs
+
+    def fit(self, features, target):
+        self.classes_ = np.array(sorted({int(value) for value in target}))
+        return self
+
+    def predict_proba(self, features):
+        probabilities = np.array([0.2, 0.7, 0.8], dtype=float)[: len(features)]
+        return np.column_stack([1.0 - probabilities, probabilities])
+
+    def predict(self, features):
+        return (self.predict_proba(features)[:, 1] >= 0.5).astype(int)
+
+    def save(self, *args, **kwargs):
+        raise RuntimeError("fake native save is unavailable")
+
+
+def test_tabicl_backend_predicts_classification_from_pickled_artifact(tmp_path):
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "feature_a": [0.1, 0.2, 0.3],
+            "feature_b": [1.0, 0.0, 1.0],
+        }
+    ).to_csv(input_csv, index=False)
+    model_path = tmp_path / "tabicl_model.pkl"
+    with model_path.open("wb") as fh:
+        pickle.dump(
+            {
+                "model": _FakeTabICLClassifier(),
+                "metadata": {
+                    "task_type": "classification",
+                    "class_labels": ["inactive", "active"],
+                    "feature_columns": ["feature_a", "feature_b"],
+                    "classification_threshold": 0.5,
+                },
+            },
+            fh,
+        )
+
+    preds_path = tmp_path / "predictions.csv"
+    backend = TabICLBackend()
+    result = backend.predict_from_csv(
+        input_csv=str(input_csv),
+        model_record=PredictionModelRecord(
+            model_id="tabicl_classification",
+            backend_name="tabicl",
+            model_path=str(model_path),
+            task=PredictionTaskSpec(
+                task_type="classification",
+                smiles_columns=["smiles"],
+                target_columns=["activity"],
+            ),
+            inference_profile={"feature_columns": ["feature_a", "feature_b"]},
+        ),
+        preds_path=str(preds_path),
+    )
+
+    predictions = pd.read_csv(preds_path)
+    assert result["task_type"] == "classification"
+    assert result["class_labels"] == ["inactive", "active"]
+    assert result["prediction_columns"] == list(predictions.columns)
+    assert predictions["prediction"].tolist() == ["inactive", "active", "active"]
+    assert predictions["activity"].tolist() == ["inactive", "active", "active"]
+    assert predictions["positive_class_probability"].tolist() == pytest.approx([0.2, 0.7, 0.8])
+    assert "probability_inactive" in predictions.columns
+    assert "probability_active" in predictions.columns
+
+
+def test_tabicl_backend_trains_classification_with_injected_estimator(tmp_path, monkeypatch):
+    train_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "smiles": [f"CC{index}" for index in range(12)],
+            "activity": ["inactive", "active"] * 6,
+            "feature_a": [float(index) for index in range(12)],
+            "feature_b": [float(index % 3) for index in range(12)],
+        }
+    ).to_csv(train_csv, index=False)
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "classifier.ckpt").write_text("checkpoint")
+
+    backend = TabICLBackend()
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_import_tabicl_classifier", lambda: _FakeTabICLClassifier)
+
+    result = backend.train_model(
+        train_csv=str(train_csv),
+        output_dir=str(tmp_path / "out"),
+        task=PredictionTaskSpec(
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["activity"],
+        ),
+        extra_args={
+            "checkpoint_dir": str(checkpoint_dir),
+            "checkpoint_version": "classifier.ckpt",
+            "feature_columns": ["feature_a", "feature_b"],
+            "split_payload": [{"train": list(range(8)), "val": [8, 9], "test": [10, 11]}],
+            "heartbeat_seconds": 0,
+        },
+    )
+
+    predictions = pd.read_csv(result["test_predictions_path"])
+    metadata = json.loads(Path(result["model_metadata_path"]).read_text())
+    assert result["task_kind"] == "classification"
+    assert result["class_labels"] == ["inactive", "active"]
+    assert result["positive_class_label"] == "active"
+    assert result["metrics"]["test"]["accuracy"] == pytest.approx(1.0)
+    assert predictions["prediction"].tolist() == ["inactive", "active"]
+    assert predictions["positive_class_probability"].tolist() == pytest.approx([0.2, 0.7])
+    assert metadata["class_labels"] == ["inactive", "active"]
+    assert Path(result["model_path"]).exists()
+
+
+def test_tabicl_backend_classification_metrics_include_binary_scores():
+    backend = TabICLBackend()
+
+    metrics = backend._compute_classification_metrics(
+        y_true=pd.Series([0, 1, 0, 1]),
+        y_pred=pd.Series([0, 1, 1, 1]),
+        class_labels=["inactive", "active"],
+        positive_scores=pd.Series([0.1, 0.8, 0.6, 0.9]),
+    )
+
+    assert metrics["accuracy"] == pytest.approx(0.75)
+    assert metrics["balanced_accuracy"] == pytest.approx(0.75)
+    assert metrics["roc_auc"] == pytest.approx(1.0)
+    assert metrics["positive_class"] == "active"
+    assert metrics["confusion_matrix"] == [[1, 1], [0, 2]]
 
 
 def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_path):
