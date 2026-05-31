@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from agno.tools.toolkit import Toolkit
 from rdkit import Chem
@@ -37,6 +38,12 @@ def _ensure_parent_dir(path: str) -> None:
 
 def _feature_column_names(prefix: str, n_bits: int) -> List[str]:
     return [f"{prefix}{index:04d}" for index in range(n_bits)]
+
+
+def _load_chemeleon_fingerprint_class():
+    from cs_copilot.tools.features.chemeleon import CheMeleonFingerprint
+
+    return CheMeleonFingerprint
 
 
 def _normalize_fingerprint_kind(fingerprint_kind: str) -> str:
@@ -68,10 +75,7 @@ _BASIC_RDKIT_DESCRIPTOR_FUNCS = {
     "FractionCSP3": Descriptors.FractionCSP3,
 }
 
-_ALL_RDKIT_DESCRIPTOR_FUNCS = {
-    name: func
-    for name, func in Descriptors._descList
-}
+_ALL_RDKIT_DESCRIPTOR_FUNCS = {name: func for name, func in Descriptors._descList}
 
 
 def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
@@ -80,9 +84,7 @@ def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
         return _BASIC_RDKIT_DESCRIPTOR_FUNCS
     if normalized == "all":
         return _ALL_RDKIT_DESCRIPTOR_FUNCS
-    raise ValueError(
-        "Unsupported descriptor_set. Supported values are 'basic' and 'all'."
-    )
+    raise ValueError("Unsupported descriptor_set. Supported values are 'basic' and 'all'.")
 
 
 def _build_base_output_dataframe(
@@ -134,9 +136,7 @@ def _normalize_input_columns_to_keep(
     }
     for column in input_columns_to_keep:
         replacement = (
-            "smiles"
-            if str(column) in smiles_aliases or str(column).lower() == "smiles"
-            else column
+            "smiles" if str(column) in smiles_aliases or str(column).lower() == "smiles" else column
         )
         if replacement not in normalized:
             normalized.append(replacement)
@@ -200,6 +200,7 @@ class MolecularFeatureToolkit(Toolkit):
     def __init__(self):
         super().__init__("molecular_features")
         self.register(self.smiles_to_morgan_fingerprints)
+        self.register(self.smiles_to_chemeleon_fingerprints)
         self.register(self.smiles_to_rdkit_descriptors)
         self.register(self.build_tabular_qsar_dataset)
 
@@ -278,7 +279,9 @@ class MolecularFeatureToolkit(Toolkit):
             required_columns=["smiles"],
         )
 
-        output_df = pd.concat([base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1)
+        output_df = pd.concat(
+            [base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1
+        )
 
         resolved_output_csv = _resolve_output_csv(output_csv, input_csv, "_morgan_fp.csv")
         with S3.open(resolved_output_csv, "w") as fh:
@@ -298,6 +301,99 @@ class MolecularFeatureToolkit(Toolkit):
             "feature_prefix": feature_prefix,
             "feature_columns_sample": feature_columns[:5],
             "input_columns_kept": kept_columns,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+        }
+
+    def smiles_to_chemeleon_fingerprints(
+        self,
+        input_csv: str,
+        smiles_column: str = "smiles",
+        output_csv: Optional[str] = None,
+        include_input_columns: bool = False,
+        input_columns_to_keep: Optional[List[str]] = None,
+        feature_prefix: str = "chem_",
+        device: Optional[str] = None,
+        checkpoint_path: Optional[str] = None,
+        checkpoint_dir: Optional[str] = None,
+        allow_auto_download: bool = True,
+    ) -> Dict[str, Any]:
+        """Transform a SMILES column into CheMeleon learned molecular embeddings.
+
+        CheMeleon is loaded lazily because it depends on the optional Chemprop
+        runtime and a pretrained checkpoint. The output is a tabular CSV whose
+        embedding columns can be joined with RDKit descriptors for TabICL.
+        """
+        started_at = time.monotonic()
+        if not feature_prefix:
+            raise ValueError("feature_prefix cannot be empty.")
+
+        with S3.open(input_csv, "r") as fh:
+            df = pd.read_csv(fh)
+
+        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
+        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        if resolved_smiles_column != "smiles":
+            working["smiles"] = working[resolved_smiles_column]
+            working = working.drop(columns=[resolved_smiles_column])
+        normalized_columns_to_keep = _normalize_input_columns_to_keep(
+            input_columns_to_keep,
+            requested_smiles_column=smiles_column,
+            resolved_smiles_column=resolved_smiles_column,
+        )
+
+        invalid_mask = working["smiles"].isna()
+        if invalid_mask.any():
+            invalid_rows = int(invalid_mask.sum())
+            raise ValueError(
+                f"Cannot generate CheMeleon fingerprints: {invalid_rows} row(s) "
+                "have invalid or missing standardized SMILES."
+            )
+
+        encoder_class = _load_chemeleon_fingerprint_class()
+        encoder = encoder_class(
+            device=device,
+            checkpoint_path=checkpoint_path,
+            checkpoint_dir=checkpoint_dir,
+            allow_auto_download=allow_auto_download,
+        )
+        fingerprint_matrix = np.asarray(encoder(working["smiles"].tolist()), dtype=float)
+        if fingerprint_matrix.ndim != 2 or fingerprint_matrix.shape[0] != len(working):
+            raise ValueError(
+                "CheMeleon encoder returned an invalid fingerprint matrix with shape "
+                f"{fingerprint_matrix.shape}; expected ({len(working)}, n_features)."
+            )
+
+        feature_columns = _feature_column_names(feature_prefix, int(fingerprint_matrix.shape[1]))
+        feature_df = pd.DataFrame(fingerprint_matrix, columns=feature_columns)
+        base_df = _build_base_output_dataframe(
+            working,
+            include_input_columns=include_input_columns,
+            input_columns_to_keep=normalized_columns_to_keep,
+            required_columns=["smiles"],
+        )
+        output_df = pd.concat(
+            [base_df.reset_index(drop=True), feature_df.reset_index(drop=True)],
+            axis=1,
+        )
+
+        resolved_output_csv = _resolve_output_csv(output_csv, input_csv, "_chemeleon_fp.csv")
+        with S3.open(resolved_output_csv, "w") as fh:
+            output_df.to_csv(fh, index=False)
+
+        kept_columns = list(base_df.columns)
+        return {
+            "output_csv": resolved_output_csv,
+            "rows_in": int(len(df)),
+            "rows_out": int(len(output_df)),
+            "smiles_column": "smiles",
+            "source_smiles_column": resolved_smiles_column,
+            "num_features": int(fingerprint_matrix.shape[1]),
+            "feature_prefix": feature_prefix,
+            "feature_columns_sample": feature_columns[:5],
+            "input_columns_kept": kept_columns,
+            "checkpoint_path": checkpoint_path,
+            "checkpoint_dir": checkpoint_dir,
+            "allow_auto_download": allow_auto_download,
             "duration_seconds": round(time.monotonic() - started_at, 3),
         }
 
@@ -352,10 +448,7 @@ class MolecularFeatureToolkit(Toolkit):
                     f"Could not compute RDKit descriptors for standardized SMILES: {smiles}"
                 )
             descriptor_rows.append(
-                {
-                    f"desc_{name}": float(func(mol))
-                    for name, func in descriptor_funcs.items()
-                }
+                {f"desc_{name}": float(func(mol)) for name, func in descriptor_funcs.items()}
             )
 
         descriptor_df = pd.DataFrame(descriptor_rows, columns=descriptor_columns)
@@ -421,7 +514,9 @@ class MolecularFeatureToolkit(Toolkit):
         _validate_unique_keys(base_df, join_columns, df_name="base_csv")
 
         if base_columns_to_keep is not None:
-            missing_columns = [column for column in base_columns_to_keep if column not in base_df.columns]
+            missing_columns = [
+                column for column in base_columns_to_keep if column not in base_df.columns
+            ]
             if missing_columns:
                 raise ValueError(f"base_csv is missing requested base columns: {missing_columns}")
             assembled_df = base_df[base_columns_to_keep].copy()
@@ -447,14 +542,22 @@ class MolecularFeatureToolkit(Toolkit):
             _validate_join_columns(feature_df, join_columns, df_name=source_name)
             _validate_unique_keys(feature_df, join_columns, df_name=source_name)
 
-            non_join_columns = [column for column in feature_df.columns if column not in join_columns]
+            non_join_columns = [
+                column for column in feature_df.columns if column not in join_columns
+            ]
             if not non_join_columns:
-                raise ValueError(f"{source_name} does not contain any feature columns beyond join keys {join_columns}.")
+                raise ValueError(
+                    f"{source_name} does not contain any feature columns beyond join keys {join_columns}."
+                )
 
-            colliding_columns = [column for column in non_join_columns if column in assembled_df.columns]
+            colliding_columns = [
+                column for column in non_join_columns if column in assembled_df.columns
+            ]
             if colliding_columns:
                 if drop_duplicate_feature_columns:
-                    non_join_columns = [column for column in non_join_columns if column not in colliding_columns]
+                    non_join_columns = [
+                        column for column in non_join_columns if column not in colliding_columns
+                    ]
                 else:
                     raise ValueError(
                         f"{source_name} has feature columns that already exist in the assembled dataset: {colliding_columns}"

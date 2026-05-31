@@ -33,9 +33,11 @@ from .session_state import (
 from .tabicl_toolkit import TabICLToolkit
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
+    TABICL_AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     default_tabular_representation_for_protocol,
     describe_tabular_representations,
     get_tabular_representation,
+    validate_tabular_representation_for_backend,
 )
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
@@ -114,11 +116,31 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 def _feature_step_name(component_name: str) -> str:
     return {
+        "chemeleon": "chemeleon_fingerprints",
         "morgan_binary": "morgan_binary_fingerprints",
         "morgan_count": "morgan_count_fingerprints",
         "rdkit_all": "rdkit_all_descriptors",
         "rdkit_basic": "rdkit_basic_descriptors",
     }.get(component_name, component_name)
+
+
+def _validate_tabicl_precomputed_feature_columns(feature_columns: Optional[List[str]]) -> None:
+    columns = [str(column) for column in feature_columns or []]
+    if not columns:
+        return
+
+    lower_columns = [column.lower() for column in columns]
+    morgan_like = [
+        column
+        for column in lower_columns
+        if column.startswith(("fp_", "cfp_")) or "morgan" in column or "ecfp" in column
+    ]
+    if len(columns) > 1024 or len(morgan_like) >= 256:
+        raise ValueError(
+            "TabICL should not be used with high-dimensional precomputed features "
+            "such as Morgan/ECFP fingerprint columns. Use representation_name="
+            "'chemeleon_rdkit_all' or 'rdkit_all' instead."
+        )
 
 
 def _feature_columns_summary(
@@ -298,6 +320,10 @@ class QSARTrainingToolkit(Toolkit):
             },
             "tabular_representations": describe_tabular_representations(),
             "automatic_tabular_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+            "tabicl_automatic_tabular_representations": list(
+                TABICL_AUTOMATIC_TABULAR_REPRESENTATION_NAMES
+            ),
+            "tabicl_preferred_tabular_representation": "chemeleon_rdkit_all",
             "toolkit": "QSARTrainingToolkit",
         }
 
@@ -361,8 +387,10 @@ class QSARTrainingToolkit(Toolkit):
         target_columns: List[str],
         representation_name: str,
         feature_cache_dir: Optional[str] = None,
+        feature_generation_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         spec = get_tabular_representation(representation_name)
+        generation_args = dict(feature_generation_args or {})
 
         total_started_at = time.monotonic()
         duration_steps: List[Dict[str, Any]] = []
@@ -453,6 +481,62 @@ class QSARTrainingToolkit(Toolkit):
 
         feature_csvs: List[str] = []
         component_records: List[Dict[str, Any]] = []
+
+        if spec.use_chemeleon:
+            chemeleon_checkpoint_path = generation_args.get("chemeleon_checkpoint_path")
+            chemeleon_checkpoint_dir = generation_args.get("chemeleon_checkpoint_dir")
+            chemeleon_allow_auto_download = bool(
+                generation_args.get("chemeleon_allow_auto_download", True)
+            )
+            component = component_from_cache(
+                component_name="chemeleon",
+                generator_payload={
+                    "checkpoint_path": (
+                        str(chemeleon_checkpoint_path) if chemeleon_checkpoint_path else None
+                    ),
+                    "checkpoint_dir": (
+                        str(chemeleon_checkpoint_dir) if chemeleon_checkpoint_dir else None
+                    ),
+                    "feature_prefix": "chem_",
+                },
+            )
+            if component["cache_status"] == "generated":
+                step_started_at = time.monotonic()
+                result = self.molecular_feature_toolkit.smiles_to_chemeleon_fingerprints(
+                    input_csv=base_csv_for_features,
+                    smiles_column=feature_smiles_column,
+                    output_csv=component["output_csv"],
+                    include_input_columns=True,
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN],
+                    feature_prefix="chem_",
+                    device=generation_args.get("chemeleon_device"),
+                    checkpoint_path=chemeleon_checkpoint_path,
+                    checkpoint_dir=chemeleon_checkpoint_dir,
+                    allow_auto_download=chemeleon_allow_auto_download,
+                )
+                persist_component_cache(component, result)
+                duration_seconds = float(
+                    result.get("duration_seconds") or round(time.monotonic() - step_started_at, 3)
+                )
+            else:
+                result = component["result"]
+                duration_seconds = 0.0
+            feature_csvs.append(component["output_csv"])
+            component_records.append(component)
+            duration_steps.append(
+                {
+                    "step": _feature_step_name("chemeleon"),
+                    "cache_status": component["cache_status"],
+                    "cache_hit": component["cache_status"] == "reused_from_cache",
+                    "cache_key": component["cache_key"],
+                    "duration_seconds": duration_seconds,
+                    "output_csv": component["output_csv"],
+                    "num_features": result.get("num_features"),
+                    "feature_prefix": result.get("feature_prefix", "chem_"),
+                    "checkpoint_path": result.get("checkpoint_path"),
+                    "checkpoint_dir": result.get("checkpoint_dir"),
+                }
+            )
 
         if spec.use_morgan_binary:
             component = component_from_cache(
@@ -815,7 +899,13 @@ class QSARTrainingToolkit(Toolkit):
         )
         candidate_results: List[Dict[str, Any]] = []
 
-        for representation_name in AUTOMATIC_TABULAR_REPRESENTATION_NAMES:
+        automatic_representation_names = (
+            TABICL_AUTOMATIC_TABULAR_REPRESENTATION_NAMES
+            if backend_name == "tabicl"
+            else AUTOMATIC_TABULAR_REPRESENTATION_NAMES
+        )
+
+        for representation_name in automatic_representation_names:
             candidate_dir = campaign_root / f"{backend_name}_{representation_name}"
             candidate_extra_args = dict(extra_args)
             candidate_extra_args["feature_cache_dir"] = feature_cache_dir
@@ -874,7 +964,7 @@ class QSARTrainingToolkit(Toolkit):
             "backend_name": backend_name,
             "task_type": task_type,
             "validation_protocol": validation_protocol,
-            "representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+            "representations": list(automatic_representation_names),
             "feature_cache_dir": feature_cache_dir,
             "campaign_duration_seconds": round(time.monotonic() - campaign_started_at, 3),
             "feature_cache": {
@@ -989,6 +1079,15 @@ class QSARTrainingToolkit(Toolkit):
             result.setdefault("representation_name", "molecular_graph")
             result["candidate_train_csv"] = train_csv
         elif normalized_backend in {"lightgbm", "tabicl"}:
+            if normalized_backend == "tabicl":
+                if representation_name:
+                    validate_tabular_representation_for_backend(
+                        normalized_backend,
+                        representation_name,
+                    )
+                if normalized_feature_columns:
+                    _validate_tabicl_precomputed_feature_columns(normalized_feature_columns)
+
             if (
                 not representation_name
                 and not normalized_feature_columns
@@ -1019,8 +1118,15 @@ class QSARTrainingToolkit(Toolkit):
                     or default_tabular_representation_for_protocol(
                         validation_protocol,
                         training_profile=requested_extra_args.get("training_profile"),
+                        backend_name=normalized_backend,
                     )
                 )
+                if normalized_backend == "tabicl":
+                    validate_tabular_representation_for_backend(
+                        normalized_backend,
+                        resolved_representation,
+                    )
+
                 prepared = self._prepare_tabular_training_dataset(
                     train_csv=train_csv,
                     output_dir=output_dir,
@@ -1028,6 +1134,7 @@ class QSARTrainingToolkit(Toolkit):
                     target_columns=list(normalized_target_columns),
                     representation_name=resolved_representation,
                     feature_cache_dir=requested_extra_args.get("feature_cache_dir"),
+                    feature_generation_args=requested_extra_args,
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
