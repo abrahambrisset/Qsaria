@@ -21,7 +21,7 @@ services:
       - CHAINLIT_DEV=true
       # Disable S3 for faster local development (optional)
       # - USE_S3=false
-    command: ["uv", "run", "chainlit", "run", "chainlit_app.py", "-w", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/.venv/bin/chainlit", "run", "chainlit_app.py", "-w", "--host", "0.0.0.0", "--port", "8000"]
     stdin_open: true
     tty: true
 

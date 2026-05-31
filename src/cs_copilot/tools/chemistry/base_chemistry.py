@@ -321,6 +321,25 @@ def calc_morgan_fp(smiles: str, nbits: int) -> np.ndarray:
     return fp_generator.GetCountFingerprintAsNumPy(mol)
 
 
+def calc_morgan_bit_fp(smiles: str, nbits: int) -> np.ndarray:
+    """
+    Calculate a binary Morgan fingerprint for a given SMILES string.
+
+    Args:
+        smiles (str): SMILES string of the molecule.
+        nbits (int): Number of bits for the fingerprint.
+
+    Returns:
+        np.ndarray: Binary Morgan fingerprint as a numpy array, or None if
+            molecule creation fails.
+    """
+    mol = _smiles_to_mol_or_none(smiles)
+    if mol is None:
+        return None
+    fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=nbits)
+    return fp_generator.GetFingerprintAsNumPy(mol)
+
+
 def calc_fp(smiles: str, fp_generator) -> np.ndarray:
     """
     Calculate a fingerprint for a given SMILES string using the provided fingerprint generator.

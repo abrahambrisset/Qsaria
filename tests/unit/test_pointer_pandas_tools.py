@@ -218,6 +218,40 @@ class TestPointerPandasTools:
             assert result["length"] == 3
             assert result["name"] == "canonical_smiles"
 
+    def test_llm_friendly_dataframe_aliases(self, tools, sample_df):
+        """Test common LLM-generated aliases for dataframe operations."""
+        tools.dataframes["test_df"] = sample_df
+
+        column = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="get_column",
+            operation_parameters={"column": "standard_value"},
+        )
+        assert column["name"] == "standard_value"
+        assert column["sample"][0] == 100
+
+        identity = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="to_pandas",
+        )
+        assert identity["dataframe_name"] == "test_df"
+        assert "preview" in identity
+
+        as_list = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="to_list",
+        )
+        assert as_list["columns"][0] == "molecule_chembl_id"
+        assert as_list["sample"][0][0] == "CHEMBL1"
+
+        renamed = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="rename_columns",
+            operation_parameters={"columns": {"standard_value": "value"}},
+        )
+        renamed_df = tools.dataframes[renamed["dataframe_name"]]
+        assert "value" in renamed_df.columns
+
     def test_describe_with_comma_separated_columns(self, tools, sample_df):
         """Test describe operation with comma-separated columns."""
         tools.dataframes["test_df"] = sample_df
@@ -269,3 +303,47 @@ class TestPointerPandasTools:
         assert isinstance(result, dict)
         assert result["IC50"] == 2
         assert result["Ki"] == 1
+
+    def test_agg_accepts_llm_agg_dict_alias(self, tools, sample_df):
+        """Test agg_dict alias emitted by LLM tool calls."""
+        tools.dataframes["test_df"] = sample_df
+
+        result = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="agg",
+            operation_parameters={"agg_dict": {"standard_value": ["min", "max", "mean"]}},
+        )
+
+        assert "dataframe_name" in result
+        result_df = tools.dataframes[result["dataframe_name"]]
+        assert result_df.loc["min", "standard_value"] == 100
+        assert result_df.loc["max", "standard_value"] == 300
+
+    def test_prediction_report_dataframe_pseudo_ops(self, tools, sample_df):
+        """Accept harmless LLM pseudo-ops seen in QSAR prediction reports."""
+        tools.dataframes["test_df"] = sample_df
+
+        described = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="df['standard_value'].describe()",
+        )
+        assert described["name"] == "standard_value"
+        assert described["sample"]["count"] == 3.0
+
+        numeric = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="describe_numeric",
+        )
+        assert "dataframe_name" in numeric
+
+        aggregated = tools.run_dataframe_operation(
+            dataframe_name="test_df",
+            operation="aggregate",
+            operation_parameters={
+                "column": "standard_value",
+                "aggfunc": ["min", "max", "mean", "std"],
+            },
+        )
+        result_df = tools.dataframes[aggregated["dataframe_name"]]
+        assert result_df.loc["min", "standard_value"] == 100
+        assert result_df.loc["max", "standard_value"] == 300

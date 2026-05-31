@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 """
-Toolkit for model registration, prediction, and future Chemprop training flows.
+Internal toolkit for Chemprop-specific QSAR training flows.
 """
 
 from __future__ import annotations
@@ -13,154 +13,47 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from zipfile import ZIP_DEFLATED, ZipFile
-from zoneinfo import ZoneInfo
 
 import pandas as pd
-import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 from scipy.stats import kendalltau, spearmanr
 
-from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+from cs_copilot.tools.activity_cliffs import (
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
-from .ad_builder import build_applicability_domain_from_training_data
-from .backend import PredictionModelRecord, PredictionTaskSpec
-from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
+from .backend import PredictionTaskSpec
 from .chemprop_backend import ChempropBackend
-from .qsar_plots import build_qsar_training_plots
-
-QSAR_HARDEST_SPLIT_R2_MIN = 0.70
-QSAR_ROBUSTNESS_DELTA_R2_MIN = -0.10
-QSAR_ROBUSTNESS_DELTA_RMSE_MAX = 0.15
-QSAR_RANDOM_STABILITY_R2_STD_MAX = 0.03
-PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
-
-
-def _project_now() -> datetime:
-    return datetime.now(PROJECT_TIMEZONE)
-
-
-def _coerce_project_timezone(value: Optional[str]) -> datetime:
-    if not value:
-        return _project_now()
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=PROJECT_TIMEZONE)
-    return parsed.astimezone(PROJECT_TIMEZONE)
-
-
-def _get_prediction_state(agent: Agent) -> Dict[str, Any]:
-    state = agent.session_state.setdefault("prediction_models", {})
-    state.setdefault("registered", {})
-    state.setdefault("last_prediction", {})
-    state.setdefault("prediction_history", [])
-    state.setdefault("catalog_recommendations", {})
-    state.setdefault("training_runs", [])
-    state.setdefault("active_training_run", None)
-    return state
-
-
-def _prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> Path:
-    if preds_path:
-        return Path(preds_path).expanduser()
-    return (Path(".files") / "prediction_outputs" / f"{model_id}_predictions.csv").resolve()
+from .qsar_training_policy import (
+    assess_protocol_results,
+    describe_compute_environment,
+    project_now,
+    resolve_training_profile,
+    resolve_validation_protocol,
+    safe_slug,
+    seed_policy_reporting_text,
+    seed_policy_reproducibility_metadata,
+    summarize_training_durations,
+)
+from .session_state import (
+    bundle_artifacts,
+    get_prediction_state,
+    write_active_training_marker,
+)
+from .training_orchestration import (
+    apply_training_profile,
+    build_applicability_domain_for_training,
+    build_training_plots_if_possible,
+    collect_training_bundle_files,
+    normalize_json_list_argument,
+    write_training_summary,
+)
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
-
-
-def _bundle_artifacts(bundle_path: Path, files: List[Path]) -> Path:
-    bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    with ZipFile(bundle_path, "w", compression=ZIP_DEFLATED) as zf:
-        for file_path in files:
-            if file_path.exists():
-                zf.write(file_path, arcname=file_path.name)
-    return bundle_path
-
-
-def _relative_posix(path: Path, start: Path) -> str:
-    return path.relative_to(start).as_posix()
-
-
-def _safe_slug(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
-
-
-def _safe_display_token(value: str) -> str:
-    token = value.replace("_", " ").strip()
-    return " ".join(part.capitalize() for part in token.split())
-
-
-def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
-    source = Path(train_csv or fallback_model_id).stem.lower()
-    for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
-        if source.endswith(suffix):
-            source = source[: -len(suffix)]
-            break
-    parts = [part for part in source.split("_") if part]
-    if len(parts) >= 2:
-        endpoint = parts[0]
-        dataset = "_".join(parts[1:])
-    elif len(parts) == 1:
-        endpoint = parts[0]
-        dataset = "dataset"
-    else:
-        endpoint = _safe_slug(fallback_model_id) or "endpoint"
-        dataset = "dataset"
-    return _safe_slug(endpoint) or "endpoint", _safe_slug(dataset) or "dataset"
-
-
-def _canonical_model_id(
-    *,
-    endpoint: str,
-    dataset: str,
-    protocol: str,
-    backend: str,
-    version: str,
-    trained_at: datetime,
-) -> str:
-    version_token = version if str(version).startswith("v") else f"v{version}"
-    date_token = trained_at.strftime("%d%m%Y")
-    time_token = trained_at.strftime("%H%M%S")
-    return "_".join(
-        [
-            _safe_slug(endpoint),
-            _safe_slug(dataset),
-            _safe_slug(protocol),
-            _safe_slug(backend),
-            _safe_slug(version_token),
-            date_token,
-            time_token,
-        ]
-    )
-
-
-def _canonical_display_name(
-    *,
-    endpoint: str,
-    dataset: str,
-    protocol: str,
-    backend: str,
-    version: str,
-) -> str:
-    version_token = version if str(version).startswith("v") else f"v{version}"
-    return " ".join(
-        [
-            _safe_display_token(endpoint),
-            _safe_display_token(dataset),
-            _safe_display_token(protocol),
-            _safe_display_token(backend),
-            version_token,
-        ]
-    ).strip()
-
-
-def _write_active_training_marker(marker_path: Path, payload: Dict[str, Any]) -> None:
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(json.dumps(payload, indent=2))
 
 
 def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
@@ -173,34 +66,300 @@ def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
     return None
 
 
-class ChempropToolkit(Toolkit):
-    """Toolkit exposing Chemprop-backed property prediction workflows."""
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
 
-    def __init__(self, backend: Optional[ChempropBackend] = None):
-        super().__init__("chemprop_prediction")
-        primary_backend = backend or ChempropBackend()
-        self.backends = {
-            primary_backend.backend_name: primary_backend,
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _json_safe_label(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return value
+
+
+def _normalize_classification_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return _json_safe_label(value)
+
+
+def _label_key(value: Any) -> str:
+    return json.dumps(_json_safe_label(value), sort_keys=True, default=str)
+
+
+def _labels_match(left: Any, right: Any) -> bool:
+    return left == right or str(left).strip().lower() == str(right).strip().lower()
+
+
+def _safe_class_token(value: Any, fallback: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value).strip()).strip("_")
+    return token or fallback
+
+
+def _sort_class_labels(labels: List[Any]) -> List[Any]:
+    try:
+        return sorted(labels)
+    except TypeError:
+        return sorted(labels, key=lambda value: str(value).lower())
+
+
+def _resolve_class_labels(series: pd.Series) -> List[Any]:
+    labels: List[Any] = []
+    seen: set[str] = set()
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            continue
+        key = _label_key(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(normalized)
+
+    if len(labels) == 2:
+        positive_tokens = {"1", "true", "active", "actif", "positive", "pos", "yes", "y"}
+        negative_tokens = {"0", "false", "inactive", "inactif", "negative", "neg", "no", "n"}
+        positives = [label for label in labels if str(label).strip().lower() in positive_tokens]
+        negatives = [label for label in labels if str(label).strip().lower() in negative_tokens]
+        if len(positives) == 1 and len(negatives) == 1:
+            return [negatives[0], positives[0]]
+
+    return _sort_class_labels(labels)
+
+
+def _encode_classification_labels(series: pd.Series, class_labels: List[Any]) -> pd.Series:
+    mapping = {_label_key(label): index for index, label in enumerate(class_labels)}
+    encoded: List[Optional[int]] = []
+    for raw_value in series.tolist():
+        normalized = _normalize_classification_label(raw_value)
+        if normalized is None:
+            encoded.append(None)
+            continue
+        encoded.append(mapping.get(_label_key(normalized)))
+    return pd.Series(encoded, index=series.index, dtype="object")
+
+
+def _labels_from_codes(codes: pd.Series, class_labels: List[Any]) -> pd.Series:
+    values: List[Any] = []
+    for raw_code in codes.tolist():
+        if raw_code is None or pd.isna(raw_code):
+            values.append(None)
+            continue
+        code = int(raw_code)
+        values.append(
+            _json_safe_label(class_labels[code]) if 0 <= code < len(class_labels) else None
+        )
+    return pd.Series(values, index=codes.index, dtype="object")
+
+
+def _mean_or_none(values: List[Optional[float]]) -> Optional[float]:
+    numeric = [value for value in values if value is not None]
+    if not numeric:
+        return None
+    return float(sum(numeric) / len(numeric))
+
+
+def _binary_roc_auc(y_true: pd.Series, scores: pd.Series) -> Optional[float]:
+    positive = y_true.astype(int) == 1
+    n_pos = int(positive.sum())
+    n_neg = int((~positive).sum())
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = scores.astype(float).rank(method="average")
+    rank_sum_pos = float(ranks[positive].sum())
+    auc = (rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)) / float(n_pos * n_neg)
+    return float(auc)
+
+
+def _compute_classification_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    class_labels: List[Any],
+    positive_scores: Optional[pd.Series] = None,
+) -> Dict[str, Any]:
+    true_codes = pd.Series(y_true).reset_index(drop=True)
+    pred_codes = pd.Series(y_pred).reset_index(drop=True)
+    valid_mask = true_codes.notna() & pred_codes.notna()
+    true_codes = true_codes[valid_mask].astype(int).reset_index(drop=True)
+    pred_codes = pred_codes[valid_mask].astype(int).reset_index(drop=True)
+    scores = None
+    if positive_scores is not None:
+        scores = pd.to_numeric(
+            pd.Series(positive_scores).reset_index(drop=True)[valid_mask], errors="coerce"
+        )
+
+    classes = list(range(len(class_labels)))
+    n = int(len(true_codes))
+    accuracy = float((true_codes == pred_codes).mean()) if n else None
+    recalls: List[Optional[float]] = []
+    precisions: List[Optional[float]] = []
+    f1_values: List[Optional[float]] = []
+    per_class: Dict[str, Dict[str, Any]] = {}
+    for class_index, class_label in enumerate(class_labels):
+        true_positive = int(((true_codes == class_index) & (pred_codes == class_index)).sum())
+        false_positive = int(((true_codes != class_index) & (pred_codes == class_index)).sum())
+        false_negative = int(((true_codes == class_index) & (pred_codes != class_index)).sum())
+        true_negative = int(((true_codes != class_index) & (pred_codes != class_index)).sum())
+        precision = (
+            float(true_positive / (true_positive + false_positive))
+            if true_positive + false_positive > 0
+            else 0.0
+        )
+        recall = (
+            float(true_positive / (true_positive + false_negative))
+            if true_positive + false_negative > 0
+            else None
+        )
+        f1 = (
+            float(2.0 * precision * recall / (precision + recall))
+            if recall is not None and precision + recall > 0
+            else 0.0
+        )
+        if recall is not None:
+            recalls.append(recall)
+        precisions.append(precision)
+        f1_values.append(f1)
+        token = _safe_class_token(class_label, f"class_{class_index}")
+        per_class[token] = {
+            "class_label": _json_safe_label(class_label),
+            "class_index": class_index,
+            "support": int((true_codes == class_index).sum()),
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "true_positive": true_positive,
+            "false_positive": false_positive,
+            "false_negative": false_negative,
+            "true_negative": true_negative,
         }
-        self.backend = primary_backend
-        self.catalog = PredictionModelCatalog.load()
-        self.catalog.refresh_from_internal_store(persist=True)
+
+    confusion_matrix = [
+        [
+            int(((true_codes == row_class) & (pred_codes == col_class)).sum())
+            for col_class in classes
+        ]
+        for row_class in classes
+    ]
+    metrics: Dict[str, Any] = {
+        "accuracy": accuracy,
+        "balanced_accuracy": _mean_or_none(recalls),
+        "precision_macro": _mean_or_none(precisions),
+        "recall_macro": _mean_or_none(recalls),
+        "f1_macro": _mean_or_none(f1_values),
+        "n": n,
+        "num_classes": len(class_labels),
+        "class_labels": [_json_safe_label(label) for label in class_labels],
+        "class_counts": {
+            str(_json_safe_label(class_labels[class_index])): int((true_codes == class_index).sum())
+            for class_index in classes
+        },
+        "confusion_matrix": confusion_matrix,
+        "per_class": per_class,
+    }
+    if len(class_labels) == 2:
+        positive_mask = true_codes == 1
+        negative_mask = true_codes == 0
+        true_positive = int(((true_codes == 1) & (pred_codes == 1)).sum())
+        false_positive = int(((true_codes == 0) & (pred_codes == 1)).sum())
+        false_negative = int(((true_codes == 1) & (pred_codes == 0)).sum())
+        true_negative = int(((true_codes == 0) & (pred_codes == 0)).sum())
+        precision = (
+            float(true_positive / (true_positive + false_positive))
+            if true_positive + false_positive > 0
+            else 0.0
+        )
+        recall = (
+            float(true_positive / (true_positive + false_negative))
+            if true_positive + false_negative > 0
+            else None
+        )
+        specificity = (
+            float(true_negative / (true_negative + false_positive))
+            if true_negative + false_positive > 0
+            else None
+        )
+        metrics.update(
+            {
+                "positive_class": _json_safe_label(class_labels[1]),
+                "negative_class": _json_safe_label(class_labels[0]),
+                "precision": precision,
+                "recall": recall,
+                "sensitivity": recall,
+                "specificity": specificity,
+                "f1": (
+                    float(2.0 * precision * recall / (precision + recall))
+                    if recall is not None and precision + recall > 0
+                    else 0.0
+                ),
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
+                "true_negative": true_negative,
+                "positive_count": int(positive_mask.sum()),
+                "negative_count": int(negative_mask.sum()),
+            }
+        )
+        if scores is not None and scores.notna().any():
+            valid_scores = scores.notna()
+            if valid_scores.any():
+                aligned_true = true_codes[valid_scores].reset_index(drop=True)
+                aligned_scores = scores[valid_scores].astype(float).reset_index(drop=True)
+                metrics["roc_auc"] = _binary_roc_auc(aligned_true, aligned_scores)
+                metrics["brier_score"] = float(
+                    ((aligned_scores - (aligned_true == 1).astype(float)) ** 2).mean()
+                )
+    return metrics
+
+
+def _majority_vote(values: List[Any]) -> Any:
+    counts: Dict[str, tuple[Any, int]] = {}
+    for value in values:
+        normalized = _normalize_classification_label(value)
+        if normalized is None:
+            continue
+        key = _label_key(normalized)
+        label, count = counts.get(key, (normalized, 0))
+        counts[key] = (label, count + 1)
+    if not counts:
+        return None
+    return max(counts.values(), key=lambda item: item[1])[0]
+
+
+class ChempropToolkit(Toolkit):
+    """Backend-specific Chemprop training toolkit used behind QSARTrainingToolkit."""
+
+    def __init__(
+        self,
+        backend: Optional[ChempropBackend] = None,
+        *,
+        register_tools: bool = True,
+    ):
+        super().__init__("chemprop_prediction")
+        self.backend = backend or ChempropBackend()
+        if not register_tools:
+            return
+
         self.register(self.describe_backend)
-        self.register(self.describe_backends)
-        self.register(self.describe_catalog)
-        self.register(self.list_catalog_models)
-        self.register(self.summarize_catalog_model)
-        self.register(self.recommend_catalog_model)
-        self.register(self.register_catalog_model)
-        self.register(self.persist_registered_model)
-        self.register(self.register_model)
-        self.register(self.list_registered_models)
-        self.register(self.summarize_model)
-        self.register(self.predict_from_csv)
-        self.register(self.predict_from_smiles)
-        self.register(self.export_prediction_summary)
-        self.register(self.prepare_training_dataset)
         self.register(self.describe_compute_environment)
+        self.register(self.validate_chemprop_model_path)
         self.register(self.train_model)
 
     def _detect_memory_limit_bytes(self) -> Optional[int]:
@@ -245,11 +404,326 @@ class ChempropToolkit(Toolkit):
             "splits_path": output_path / "splits.json",
         }
 
+    def _replicate_artifacts(self, output_dir: Path) -> List[Dict[str, Any]]:
+        """Return Chemprop replicate artifacts present in a split output directory."""
+        output_path = output_dir.expanduser().resolve()
+        replicate_dirs = sorted(
+            output_path.glob("replicate_*"),
+            key=lambda path: (
+                int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0
+            ),
+        )
+        artifacts: List[Dict[str, Any]] = []
+        for replicate_dir in replicate_dirs:
+            raw_index = replicate_dir.name.split("_")[-1]
+            replicate_index = int(raw_index) if raw_index.isdigit() else len(artifacts)
+            model_path = replicate_dir / "model_0" / "best.pt"
+            predictions_path = replicate_dir / "model_0" / "test_predictions.csv"
+            artifacts.append(
+                {
+                    "replicate_index": replicate_index,
+                    "model_path": str(model_path) if model_path.exists() else None,
+                    "raw_test_predictions_path": (
+                        str(predictions_path) if predictions_path.exists() else None
+                    ),
+                }
+            )
+
+        if not artifacts:
+            model_path = output_path / "model_0" / "best.pt"
+            predictions_path = output_path / "model_0" / "test_predictions.csv"
+            if model_path.exists() or predictions_path.exists():
+                artifacts.append(
+                    {
+                        "replicate_index": 0,
+                        "model_path": str(model_path) if model_path.exists() else None,
+                        "raw_test_predictions_path": (
+                            str(predictions_path) if predictions_path.exists() else None
+                        ),
+                    }
+                )
+        return artifacts
+
+    def _write_normalized_test_predictions(
+        self,
+        *,
+        train_csv: str,
+        output_dir: Path,
+        task: PredictionTaskSpec,
+    ) -> Dict[str, Any]:
+        """Create a self-contained Chemprop test-prediction CSV.
+
+        Chemprop writes prediction CSVs with the target column name reused for
+        predictions.  For validation artifacts we keep that compatibility
+        column but add explicit truth/prediction columns and aggregate replicate
+        outputs. Regression replicates are averaged. Binary classification
+        probability replicates are averaged and thresholded at 0.5; class-label
+        outputs are combined by majority vote.
+        """
+        target_column = task.target_columns[0] if task.target_columns else None
+        if not target_column:
+            return {}
+
+        output_path = output_dir.expanduser().resolve()
+        splits_path = output_path / "splits.json"
+        if not splits_path.exists():
+            return {}
+
+        replicate_artifacts = self._replicate_artifacts(output_path)
+        if not any(item.get("raw_test_predictions_path") for item in replicate_artifacts):
+            return {}
+
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        split_payload = json.loads(splits_path.read_text())
+        if not split_payload or "test" not in split_payload[0]:
+            return {}
+        test_indices = split_payload[0].get("test") or []
+        actual = dataset.iloc[test_indices].reset_index(drop=True)
+        if target_column not in actual.columns:
+            return {}
+
+        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+        actual_smiles = (
+            actual[smiles_column].astype(str).reset_index(drop=True)
+            if smiles_column in actual.columns
+            else None
+        )
+        is_classification = _is_classification_task(task.task_type)
+        prediction_series: List[pd.Series] = []
+        prediction_source_paths: List[str] = []
+        included_replicate_indices: List[int] = []
+        normalized_replicate_artifacts: List[Dict[str, Any]] = []
+        for item in replicate_artifacts:
+            artifact = dict(item)
+            raw_predictions_path = item.get("raw_test_predictions_path")
+            if not raw_predictions_path:
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = "missing_test_predictions"
+                normalized_replicate_artifacts.append(artifact)
+                continue
+            prediction_path = Path(str(raw_predictions_path)).expanduser()
+            if not prediction_path.exists():
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = "missing_test_predictions"
+                normalized_replicate_artifacts.append(artifact)
+                continue
+            predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
+            exclusion_reason = None
+            if target_column not in predictions.columns:
+                exclusion_reason = "missing_target_prediction_column"
+            elif len(predictions) != len(actual):
+                exclusion_reason = "row_count_mismatch"
+            elif actual_smiles is not None:
+                if smiles_column not in predictions.columns:
+                    exclusion_reason = "missing_smiles_alignment_column"
+                else:
+                    predicted_smiles = predictions[smiles_column].astype(str).reset_index(drop=True)
+                    if not predicted_smiles.equals(actual_smiles):
+                        exclusion_reason = "smiles_not_aligned_to_split_test_rows"
+            if exclusion_reason:
+                artifact["aligned_for_validation"] = False
+                artifact["exclusion_reason"] = exclusion_reason
+                normalized_replicate_artifacts.append(artifact)
+                continue
+            replicate_index = item.get("replicate_index")
+            if not isinstance(replicate_index, int):
+                replicate_index = len(included_replicate_indices)
+            artifact["aligned_for_validation"] = True
+            artifact["exclusion_reason"] = None
+            normalized_replicate_artifacts.append(artifact)
+            raw_prediction = predictions[target_column].reset_index(drop=True)
+            if is_classification:
+                prediction_series.append(raw_prediction)
+            else:
+                prediction_series.append(pd.to_numeric(raw_prediction, errors="coerce"))
+            prediction_source_paths.append(str(prediction_path))
+            included_replicate_indices.append(replicate_index)
+
+        if not prediction_series:
+            return {}
+
+        smiles_values = (
+            actual[smiles_column].reset_index(drop=True)
+            if smiles_column in actual.columns
+            else pd.Series([None] * len(actual))
+        )
+        normalized_path = output_path / "model_0" / "test_predictions.csv"
+        normalized_path.parent.mkdir(parents=True, exist_ok=True)
+        aggregation = (
+            "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
+        )
+
+        if is_classification:
+            true_labels = (
+                actual[target_column].map(_normalize_classification_label).reset_index(drop=True)
+            )
+            class_labels = _resolve_class_labels(true_labels)
+            if len(class_labels) < 2:
+                return {}
+            numeric_series = [
+                pd.to_numeric(series, errors="coerce") for series in prediction_series
+            ]
+            numeric_probability_output = (
+                len(class_labels) == 2
+                and all(series.notna().any() for series in numeric_series)
+                and all(series.dropna().between(0.0, 1.0).all() for series in numeric_series)
+            )
+            true_codes = _encode_classification_labels(true_labels, class_labels)
+            if numeric_probability_output:
+                probability_frame = pd.concat(numeric_series, axis=1)
+                probability_frame.columns = [
+                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+                ]
+                positive_probability = probability_frame.mean(axis=1, skipna=True)
+                prediction_std = (
+                    probability_frame.std(axis=1, ddof=0).fillna(0.0)
+                    if len(prediction_series) > 1
+                    else pd.Series([0.0] * len(probability_frame))
+                )
+                pred_codes = pd.Series(
+                    [
+                        1 if value >= 0.5 else 0 if pd.notna(value) else None
+                        for value in positive_probability
+                    ],
+                    dtype="object",
+                )
+                predicted_labels = _labels_from_codes(pred_codes, class_labels)
+                negative_probability = 1.0 - positive_probability
+                normalized = pd.DataFrame(
+                    {
+                        "source_row_index": test_indices,
+                        "smiles": smiles_values,
+                        f"{target_column}_true": true_labels,
+                        "y_true": true_labels,
+                        "y_true_encoded": true_codes,
+                        f"{target_column}_prediction": predicted_labels,
+                        "prediction": predicted_labels,
+                        target_column: predicted_labels,
+                        "predicted_class": predicted_labels,
+                        "predicted_class_index": pred_codes,
+                        "y_pred": predicted_labels,
+                        "y_pred_encoded": pred_codes,
+                        "prediction_std": prediction_std,
+                        "positive_class_probability": positive_probability,
+                        f"probability_{_safe_class_token(class_labels[0], 'class_0')}": negative_probability,
+                        f"probability_{_safe_class_token(class_labels[1], 'class_1')}": positive_probability,
+                        "replicate_count": len(prediction_series),
+                        "detected_replicate_count": len(replicate_artifacts),
+                    }
+                )
+                normalized = pd.concat([normalized, probability_frame], axis=1)
+                prediction_kind = "binary_probability"
+            else:
+                label_frame = pd.concat(
+                    [series.map(_normalize_classification_label) for series in prediction_series],
+                    axis=1,
+                )
+                label_frame.columns = [
+                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+                ]
+                predicted_labels = label_frame.apply(
+                    lambda row: _majority_vote(row.tolist()), axis=1
+                )
+                pred_codes = _encode_classification_labels(predicted_labels, class_labels)
+                normalized = pd.DataFrame(
+                    {
+                        "source_row_index": test_indices,
+                        "smiles": smiles_values,
+                        f"{target_column}_true": true_labels,
+                        "y_true": true_labels,
+                        "y_true_encoded": true_codes,
+                        f"{target_column}_prediction": predicted_labels,
+                        "prediction": predicted_labels,
+                        target_column: predicted_labels,
+                        "predicted_class": predicted_labels,
+                        "predicted_class_index": pred_codes,
+                        "y_pred": predicted_labels,
+                        "y_pred_encoded": pred_codes,
+                        "replicate_count": len(prediction_series),
+                        "detected_replicate_count": len(replicate_artifacts),
+                    }
+                )
+                normalized = pd.concat([normalized, label_frame], axis=1)
+                prediction_kind = "class_label_majority_vote"
+
+            normalized.to_csv(normalized_path, index=False)
+            return {
+                "test_predictions_path": str(normalized_path),
+                "raw_test_prediction_paths": prediction_source_paths,
+                "replicate_artifacts": normalized_replicate_artifacts,
+                "replicate_count": len(prediction_series),
+                "detected_replicate_count": len(replicate_artifacts),
+                "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+                "prediction_aggregation": aggregation,
+                "replicate_alignment_policy": (
+                    "Only replicate prediction files whose SMILES exactly match the split test rows "
+                    "are aggregated for validation metrics."
+                ),
+                "prediction_kind": prediction_kind,
+                "prediction_column": "prediction",
+                "target_true_column": f"{target_column}_true",
+                "target_prediction_column": f"{target_column}_prediction",
+                "class_labels": [_json_safe_label(label) for label in class_labels],
+                "positive_class_label": (
+                    _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                ),
+            }
+
+        prediction_frame = pd.concat(prediction_series, axis=1)
+        prediction_frame.columns = [
+            f"prediction_replicate_{idx}" for idx in included_replicate_indices
+        ]
+        y_true = pd.to_numeric(actual[target_column], errors="coerce")
+        y_pred = prediction_frame.mean(axis=1, skipna=True)
+        prediction_std = (
+            prediction_frame.std(axis=1, ddof=0).fillna(0.0)
+            if len(prediction_series) > 1
+            else pd.Series([0.0] * len(prediction_frame))
+        )
+        normalized = pd.DataFrame(
+            {
+                "source_row_index": test_indices,
+                "smiles": smiles_values,
+                f"{target_column}_true": y_true,
+                f"{target_column}_prediction": y_pred,
+                "prediction": y_pred,
+                target_column: y_pred,
+                "prediction_std": prediction_std,
+                "residual": y_true - y_pred,
+                "absolute_error": (y_true - y_pred).abs(),
+                "replicate_count": len(prediction_series),
+                "detected_replicate_count": len(replicate_artifacts),
+            }
+        )
+        normalized = pd.concat([normalized, prediction_frame], axis=1)
+        normalized.to_csv(normalized_path, index=False)
+        return {
+            "test_predictions_path": str(normalized_path),
+            "raw_test_prediction_paths": prediction_source_paths,
+            "replicate_artifacts": normalized_replicate_artifacts,
+            "replicate_count": len(prediction_series),
+            "detected_replicate_count": len(replicate_artifacts),
+            "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+            "prediction_aggregation": aggregation,
+            "replicate_alignment_policy": (
+                "Only replicate prediction files whose SMILES exactly match the split test rows "
+                "are aggregated for validation metrics."
+            ),
+            "prediction_column": "prediction",
+            "target_true_column": f"{target_column}_true",
+            "target_prediction_column": f"{target_column}_prediction",
+        }
+
     def _detect_physical_memory_bytes(self) -> Optional[int]:
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
             page_count = os.sysconf("SC_PHYS_PAGES")
-            if isinstance(page_size, int) and isinstance(page_count, int) and page_size > 0 and page_count > 0:
+            if (
+                isinstance(page_size, int)
+                and isinstance(page_count, int)
+                and page_size > 0
+                and page_count > 0
+            ):
                 return page_size * page_count
         except Exception:
             return None
@@ -277,92 +751,19 @@ class ChempropToolkit(Toolkit):
 
     def describe_compute_environment(self) -> Dict[str, Any]:
         """Describe the local compute budget used to choose safe training defaults."""
-        cpu_count = os.cpu_count() or 1
-        memory_limit_bytes = self._detect_memory_limit_bytes()
-        physical_memory_bytes = self._detect_physical_memory_bytes()
-        memory_bytes_total = memory_limit_bytes or physical_memory_bytes
-        memory_gb_total = round(memory_bytes_total / (1024**3), 2) if memory_bytes_total else None
-        try:
-            gpu_available = bool(torch.cuda.is_available())
-            gpu_count = torch.cuda.device_count() if gpu_available else 0
-            gpu_name = torch.cuda.get_device_name(0) if gpu_available and gpu_count > 0 else None
-        except Exception:
-            gpu_available = bool(
-                os.getenv("CUDA_VISIBLE_DEVICES")
-                and os.getenv("CUDA_VISIBLE_DEVICES", "").strip() not in {"", "-1"}
-            )
-            gpu_count = 0
-            gpu_name = None
+        return describe_compute_environment()
 
-        if Path("/.dockerenv").exists():
-            execution_env = "docker_local"
-        elif Path("/.singularity.d").exists() or os.getenv("APPTAINER_NAME") or os.getenv("SINGULARITY_NAME"):
-            execution_env = "apptainer_local"
-        else:
-            execution_env = "local"
-
-        disk_usage = self._detect_disk_usage()
-
-        profile = self._resolve_training_profile(
-            {
-                "cpu_count": cpu_count,
-                "memory_gb_total": memory_gb_total,
-                "gpu_available": gpu_available,
-                "execution_env": execution_env,
-            }
-        )
+    def validate_chemprop_model_path(self, model_path: str) -> Dict[str, Any]:
+        """Validate a Chemprop model artifact path."""
+        resolved = self.backend.validate_model_path(model_path)
         return {
-            "execution_env": execution_env,
-            "cpu_count": cpu_count,
-            "memory_gb_total": memory_gb_total,
-            "memory_source": (
-                "cgroup_limit"
-                if memory_limit_bytes
-                else "physical_host"
-                if physical_memory_bytes
-                else None
-            ),
-            "gpu_available": gpu_available,
-            "gpu_count": gpu_count,
-            "gpu_name": gpu_name,
-            **disk_usage,
-            "suggested_profile": profile["profile"],
-            "profile_reason": profile["reason"],
+            "valid": True,
+            "model_path": str(resolved),
+            "backend_name": self.backend.backend_name,
         }
 
     def _resolve_training_profile(self, compute_env: Dict[str, Any]) -> Dict[str, Any]:
-        cpu_count = int(compute_env.get("cpu_count") or 1)
-        memory_gb_total = compute_env.get("memory_gb_total")
-        gpu_available = bool(compute_env.get("gpu_available"))
-        execution_env = compute_env.get("execution_env") or "local"
-
-        if not gpu_available and execution_env == "docker_local":
-            if memory_gb_total is None and cpu_count <= 8:
-                return {
-                    "profile": "local_light",
-                    "reason": "CPU-only Docker environment on a modest local machine; defaulting to the safest single-run profile.",
-                }
-            if memory_gb_total is not None and memory_gb_total <= 8.5 and cpu_count <= 8:
-                return {
-                    "profile": "local_light",
-                    "reason": "CPU-only Docker environment with limited RAM; using a conservative single-run configuration.",
-                }
-            if memory_gb_total is not None and memory_gb_total <= 16 and cpu_count <= 12:
-                return {
-                    "profile": "local_standard",
-                    "reason": "CPU-only local environment; using a moderate single-run configuration.",
-                }
-
-        if gpu_available:
-            return {
-                "profile": "heavy_validation",
-                "reason": "GPU detected; heavier validation settings are acceptable.",
-            }
-
-        return {
-            "profile": "local_standard",
-            "reason": "Defaulting to a moderate single-run local profile.",
-        }
+        return resolve_training_profile(compute_env)
 
     def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
         if profile == "local_light":
@@ -414,25 +815,17 @@ class ChempropToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        requested = dict(extra_args or {})
-        requested_profile = requested.pop("training_profile", None)
-        requested_validation_protocol = requested.pop("validation_protocol", None)
-        allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
-
-        compute_env = self.describe_compute_environment()
-        resolved = self._resolve_training_profile(compute_env)
-        profile = requested_profile or resolved["profile"]
-
-        # Protect local machines unless heavy compute was explicitly authorized.
-        if not allow_heavy_compute and profile in {"heavy_validation", "benchmark"}:
-            profile = resolved["profile"]
-
-        merged = {
-            **self._training_defaults_for_profile(profile),
-            **requested,
-        }
-
-        if not allow_heavy_compute:
+        def _limit(
+            profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
+        ) -> Dict[str, Any]:
+            if allow_heavy_compute:
+                if profile == "heavy_validation":
+                    # On high-compute GPU runs, treat the profile values as floor values:
+                    # the agent may request a more aggressive configuration, but not a slower one.
+                    merged["epochs"] = max(int(merged.get("epochs", 100)), 100)
+                    merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
+                    merged["num_workers"] = max(int(merged.get("num_workers", 16)), 16)
+                return merged
             if profile == "local_light":
                 merged["epochs"] = min(int(merged.get("epochs", 30)), 30)
                 merged["batch_size"] = min(int(merged.get("batch_size", 32)), 32)
@@ -445,146 +838,51 @@ class ChempropToolkit(Toolkit):
                 merged["ensemble_size"] = min(int(merged.get("ensemble_size", 1)), 1)
                 merged["num_replicates"] = min(int(merged.get("num_replicates", 1)), 1)
                 merged["num_workers"] = 0
+            return merged
 
-        if profile == "heavy_validation":
-            # On high-compute GPU runs, treat the profile values as floor values:
-            # the agent may request a more aggressive configuration, but not a slower one.
-            merged["epochs"] = max(int(merged.get("epochs", 100)), 100)
-            merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
-            merged["num_workers"] = max(int(merged.get("num_workers", 16)), 16)
+        return apply_training_profile(
+            extra_args,
+            defaults_for_profile=self._training_defaults_for_profile,
+            limit_profile_args=_limit,
+            compute_environment=self.describe_compute_environment(),
+            protected_profiles=("heavy_validation", "benchmark"),
+        )
 
-        return {
-            "compute_environment": compute_env,
-            "training_profile": profile,
-            "profile_reason": resolved["reason"],
-            "validation_protocol": requested_validation_protocol,
-            "extra_args": merged,
-        }
+    def _apply_protocol_training_overrides(
+        self,
+        *,
+        training_policy: Dict[str, Any],
+        protocol_policy: Dict[str, Any],
+    ) -> Optional[str]:
+        """Apply Chemprop-specific training overrides once the QSAR protocol is known."""
+        extra_args = training_policy.setdefault("extra_args", {})
+        protocol = protocol_policy.get("protocol")
+        if protocol in {"fast_local", "standard_qsar", "robust_qsar", "challenging_qsar"}:
+            requested_replicates = int(extra_args.get("num_replicates") or 1)
+            extra_args["num_replicates"] = 1
+            if requested_replicates != 1:
+                return (
+                    "Chemprop QSAR protocols use one replicate per split. "
+                    "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
+                )
+        return None
 
     def _resolve_validation_protocol(
         self,
         *,
         requested_protocol: Optional[str],
         training_profile: str,
+        seed_policy: Optional[Dict[str, Any]] = None,
+        seed_policy_mode: str = "generated_per_run",
+        base_seed: Optional[int] = None,
     ) -> Dict[str, Any]:
-        protocol = (requested_protocol or "").strip().lower()
-        if not protocol:
-            protocol = "standard_qsar"
-
-        if protocol == "fast_local":
-            return {
-                "protocol": "fast_local",
-                "reason": "Single random split optimized for quick local iteration.",
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    }
-                ],
-            }
-
-        if protocol == "standard_qsar":
-            return {
-                "protocol": "standard_qsar",
-                "reason": (
-                    "Trustworthy QSAR default: compare a conventional random split against "
-                    "a scaffold-aware split."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        if protocol == "robust_qsar":
-            return {
-                "protocol": "robust_qsar",
-                "reason": (
-                    "Robust validation protocol using multiple random seeds plus one scaffold split."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random_seed_42",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "random_seed_123",
-                        "backend_split_type": "random",
-                        "seed": 123,
-                        "primary": False,
-                    },
-                    {
-                        "label": "random_seed_314",
-                        "backend_split_type": "random",
-                        "seed": 314,
-                        "primary": False,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        if protocol == "challenging_qsar":
-            return {
-                "protocol": "challenging_qsar",
-                "reason": (
-                    "Challenging validation protocol comparing random, scaffold-aware, and "
-                    "cluster-aware splits to reduce optimistic estimates."
-                ),
-                "split_runs": [
-                    {
-                        "label": "random",
-                        "backend_split_type": "random",
-                        "seed": 42,
-                        "primary": True,
-                    },
-                    {
-                        "label": "scaffold",
-                        "backend_split_type": "scaffold_balanced",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                    {
-                        "label": "cluster_kmeans",
-                        "backend_split_type": "kmeans",
-                        "seed": 42,
-                        "primary": False,
-                    },
-                ],
-            }
-
-        return {
-            "protocol": "fast_local" if training_profile == "local_light" else "standard_qsar",
-            "reason": (
-                f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default."
-            ),
-            "split_runs": [
-                {
-                    "label": "random",
-                    "backend_split_type": "random",
-                    "seed": 42,
-                    "primary": True,
-                }
-            ],
-        }
+        return resolve_validation_protocol(
+            requested_protocol=requested_protocol,
+            training_profile=training_profile,
+            seed_policy=seed_policy,
+            seed_policy_mode=seed_policy_mode,
+            base_seed=base_seed,
+        )
 
     def _train_single_run(
         self,
@@ -652,30 +950,17 @@ class ChempropToolkit(Toolkit):
         total_started_at: datetime,
         total_completed_at: datetime,
     ) -> Dict[str, Any]:
-        split_durations: List[Dict[str, Any]] = []
-        for item in split_results:
-            split_durations.append(
-                {
-                    "label": item.get("strategy_label"),
-                    "strategy_family": item.get("strategy_family"),
-                    "started_at": item.get("started_at"),
-                    "completed_at": item.get("completed_at"),
-                    "duration_seconds": item.get("duration_seconds"),
-                }
-            )
-
-        return {
-            "total_started_at": total_started_at.isoformat(),
-            "total_completed_at": total_completed_at.isoformat(),
-            "total_duration_seconds": round((total_completed_at - total_started_at).total_seconds(), 3),
-            "split_durations": split_durations,
-        }
+        return summarize_training_durations(
+            split_results=split_results,
+            total_started_at=total_started_at,
+            total_completed_at=total_completed_at,
+        )
 
     def _aggregate_split_families(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         families: Dict[str, List[Dict[str, Any]]] = {}
         for item in split_results:
             family = item.get("strategy_family") or item.get("strategy")
-            metrics = ((item.get("metrics") or {}).get("test") or {})
+            metrics = (item.get("metrics") or {}).get("test") or {}
             if not family or not metrics:
                 continue
             families.setdefault(family, []).append(item)
@@ -691,7 +976,7 @@ class ChempropToolkit(Toolkit):
                 "test_n_values": [],
             }
             for item in items:
-                metrics = ((item.get("metrics") or {}).get("test") or {})
+                metrics = (item.get("metrics") or {}).get("test") or {}
                 entry["runs"].append(
                     {
                         "label": item.get("strategy_label"),
@@ -728,189 +1013,7 @@ class ChempropToolkit(Toolkit):
         return aggregated
 
     def _assess_protocol_results(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        assessment: Dict[str, Any] = {
-            "robustness_warning": None,
-            "delta_vs_random": {},
-            "hardest_split": None,
-            "aggregated_split_metrics": {},
-            "governance": {
-                "recommended_status": "experimental",
-                "gates": {},
-                "passes_dataset_gate": True,
-                "passes_hardest_split_gate": False,
-                "passes_robustness_gate": False,
-                "hardest_split_metrics": {},
-                "gating_summary": [],
-            },
-        }
-        aggregated = self._aggregate_split_families(split_results)
-        assessment["aggregated_split_metrics"] = aggregated
-        random_family = aggregated.get("random")
-        if not random_family:
-            return assessment
-
-        random_r2 = random_family.get("r2_mean")
-        random_rmse = random_family.get("rmse_mean")
-        if random_r2 is None or random_rmse is None:
-            return assessment
-        hardest_name = None
-        hardest_r2 = None
-        hardest_rmse = None
-
-        for strategy_name, family_result in aggregated.items():
-            if strategy_name == "random":
-                continue
-            split_r2 = family_result.get("r2_mean")
-            split_rmse = family_result.get("rmse_mean")
-            if split_r2 is None and split_rmse is None:
-                continue
-
-            deltas: Dict[str, Any] = {}
-            if split_r2 is not None:
-                deltas["r2"] = split_r2 - random_r2
-            if split_rmse is not None:
-                deltas["rmse"] = split_rmse - random_rmse
-            assessment["delta_vs_random"][strategy_name] = deltas
-
-            if split_r2 is not None:
-                if hardest_r2 is None or split_r2 < hardest_r2:
-                    hardest_name = strategy_name
-                    hardest_r2 = split_r2
-                    hardest_rmse = split_rmse
-
-        if hardest_name is not None:
-            assessment["hardest_split"] = hardest_name
-
-        warning_reasons: List[str] = []
-        for strategy_name, deltas in assessment["delta_vs_random"].items():
-            delta_r2 = deltas.get("r2")
-            delta_rmse = deltas.get("rmse")
-            if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
-                warning_reasons.append(
-                    f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random"
-                )
-            if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
-                warning_reasons.append(
-                    f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random"
-                )
-
-        if warning_reasons:
-            assessment["robustness_warning"] = (
-                "Harder validation splits reveal a non-trivial performance drop: "
-                + "; ".join(warning_reasons)
-                + "."
-            )
-
-        governance = assessment["governance"]
-        hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
-        hardest_metrics = {
-            "r2": (hardest_result or {}).get("r2_mean"),
-            "rmse": (hardest_result or {}).get("rmse_mean"),
-            "mae": (hardest_result or {}).get("mae_mean"),
-            "mse": (hardest_result or {}).get("mse_mean"),
-            "n": (hardest_result or {}).get("test_n_mean"),
-        }
-        governance["hardest_split_metrics"] = hardest_metrics
-
-        hardest_r2 = hardest_metrics.get("r2")
-        hardest_rmse = hardest_metrics.get("rmse")
-        hardest_pass = (
-            hardest_r2 is not None
-            and hardest_r2 >= QSAR_HARDEST_SPLIT_R2_MIN
-        )
-        governance["passes_hardest_split_gate"] = hardest_pass
-
-        robustness_pass = not bool(warning_reasons)
-        governance["passes_robustness_gate"] = robustness_pass
-
-        summary: List[str] = []
-        if random_family.get("num_runs", 0) > 1:
-            summary.append(
-                f"Random stability: R² mean={random_family.get('r2_mean', 0):.3f} ± {random_family.get('r2_std', 0):.3f}"
-            )
-            summary.append(
-                f"Random stability: RMSE mean={random_family.get('rmse_mean', 0):.3f} ± {random_family.get('rmse_std', 0):.3f}"
-            )
-        if assessment["hardest_split"]:
-            summary.append(f"Hardest split: {assessment['hardest_split']}")
-        if hardest_r2 is not None:
-            summary.append(f"Hardest split R²={hardest_r2:.3f}")
-        if hardest_rmse is not None:
-            summary.append(f"Hardest split RMSE={hardest_rmse:.3f}")
-        summary.append(
-            "Hardest Split Gate: PASS" if hardest_pass else "Hardest Split Gate: FAIL"
-        )
-        summary.append(
-            "Robustness Gap Gate: PASS" if robustness_pass else "Robustness Gap Gate: FAIL"
-        )
-        governance["gating_summary"] = summary
-
-        validation_strategies = set(aggregated.keys())
-        random_stability_pass = True
-        random_r2_std = random_family.get("r2_std")
-        random_rmse_std = random_family.get("rmse_std")
-        if random_family.get("num_runs", 0) > 1:
-            if random_r2_std is not None and random_r2_std > QSAR_RANDOM_STABILITY_R2_STD_MAX:
-                random_stability_pass = False
-        governance["passes_random_stability_gate"] = random_stability_pass
-        if random_family.get("num_runs", 0) > 1:
-            summary.append(
-                "Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL"
-            )
-
-        protocol_name = None
-        for item in split_results:
-            protocol_name = item.get("validation_protocol") or protocol_name
-
-        dataset_gate_pass = True
-        governance["passes_dataset_gate"] = dataset_gate_pass
-        governance["gates"] = {
-            "dataset_gate": {
-                "name": "Dataset Gate",
-                "pass": dataset_gate_pass,
-                "criteria": [
-                    "real dataset source",
-                    "completed curation",
-                    "real split artifacts",
-                    "checkpoint exists",
-                    "real test metrics",
-                    "applicability domain built",
-                ],
-            },
-            "hardest_split_gate": {
-                "name": "Hardest Split Gate",
-                "pass": hardest_pass,
-                "thresholds": {"r2_min": QSAR_HARDEST_SPLIT_R2_MIN},
-            },
-            "robustness_gap_gate": {
-                "name": "Robustness Gap Gate",
-                "pass": robustness_pass,
-                "thresholds": {
-                    "delta_r2_min": QSAR_ROBUSTNESS_DELTA_R2_MIN,
-                    "delta_rmse_max": QSAR_ROBUSTNESS_DELTA_RMSE_MAX,
-                },
-            },
-            "random_stability_gate": {
-                "name": "Random Stability Gate",
-                "pass": random_stability_pass,
-                "active": random_family.get("num_runs", 0) > 1,
-                "thresholds": {"r2_std_max": QSAR_RANDOM_STABILITY_R2_STD_MAX},
-            },
-        }
-
-        if not dataset_gate_pass:
-            governance["recommended_status"] = "experimental"
-        elif not hardest_pass or not robustness_pass:
-            governance["recommended_status"] = "workflow_demo"
-        elif protocol_name == "robust_qsar":
-            governance["recommended_status"] = (
-                "robust_validated" if random_stability_pass else "workflow_demo"
-            )
-        elif protocol_name in {"standard_qsar", "challenging_qsar"}:
-            governance["recommended_status"] = "validated"
-        else:
-            governance["recommended_status"] = "experimental"
-        return assessment
+        return assess_protocol_results(split_results)
 
     def _materialize_primary_protocol_artifacts(
         self,
@@ -961,24 +1064,12 @@ class ChempropToolkit(Toolkit):
         model_id_hint: str,
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
-        splits_path = Path(primary_run.get("splits_path") or primary_output_dir / "splits.json")
-        if not splits_path.exists():
-            return {}
-
-        split_payload = json.loads(splits_path.read_text())
-        if not split_payload or "train" not in split_payload[0]:
-            return {}
-
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-        train_indices = split_payload[0].get("train") or []
-        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
-        ad_output_dir = primary_output_dir / "applicability_domain"
-        return build_applicability_domain_from_training_data(
-            dataset=dataset,
-            train_indices=train_indices,
-            smiles_column=smiles_column,
-            output_dir=str(ad_output_dir),
-            model_id=model_id_hint,
+        return build_applicability_domain_for_training(
+            train_csv=train_csv,
+            primary_run=primary_run,
+            primary_output_dir=primary_output_dir,
+            task=task,
+            model_id_hint=model_id_hint,
         )
 
     def describe_backend(
@@ -994,832 +1085,6 @@ class ChempropToolkit(Toolkit):
         """
         return self.backend.describe_environment()
 
-    def _infer_training_run_dir(self, record: PredictionModelRecord) -> Optional[Path]:
-        model_path = Path(record.model_path).expanduser()
-        if not model_path.exists():
-            return None
-        if model_path.parent.name == "model_0":
-            return model_path.parent.parent
-        return model_path.parent
-
-    def _materialize_internal_model(
-        self,
-        *,
-        record: PredictionModelRecord,
-        train_csv: Optional[str] = None,
-        model_id: Optional[str] = None,
-        source_artifacts: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        run_dir = self._infer_training_run_dir(record)
-        if run_dir is None or not run_dir.exists():
-            return {"materialized": False, "reason": "training_run_not_found"}
-
-        resolved_model_id = model_id or record.model_id
-        model_root = DEFAULT_INTERNAL_MODEL_ROOT / resolved_model_id
-        model_dir = model_root / "model"
-        artifacts_dir = model_root / "artifacts"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-        source_model_path = Path(record.model_path).expanduser()
-        copied_files: Dict[str, str] = {}
-
-        if source_model_path.exists():
-            target_model_path = model_dir / source_model_path.name
-            shutil.copy2(source_model_path, target_model_path)
-            copied_files["model_path"] = _relative_posix(target_model_path, model_root)
-        else:
-            return {"materialized": False, "reason": "model_artifact_missing"}
-
-        optional_artifacts = {
-            "config_path": run_dir / "config.toml",
-            "training_summary_path": run_dir / "cs_copilot_training_summary.json",
-            "splits_path": run_dir / "splits.json",
-            "test_predictions_path": (
-                self._resolve_chemprop_run_artifacts(run_dir).get("test_predictions_path")
-                or run_dir / "model_0" / "test_predictions.csv"
-            ),
-            "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
-            "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
-            "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
-        }
-        plot_sources: Dict[str, Path] = {}
-
-        if source_artifacts:
-            for key in (
-                "config_path",
-                "training_summary_path",
-                "splits_path",
-                "test_predictions_path",
-                "reference_store_path",
-                "reference_manifest_path",
-                "applicability_domain_path",
-            ):
-                raw_path = source_artifacts.get(key)
-                if raw_path:
-                    optional_artifacts[key] = Path(str(raw_path)).expanduser()
-            for plot_name, raw_path in (source_artifacts.get("plot_artifacts") or {}).items():
-                if raw_path:
-                    plot_sources[plot_name] = Path(str(raw_path)).expanduser()
-
-        for key, source_path in optional_artifacts.items():
-            if source_path.exists():
-                target_path = (
-                    model_dir / source_path.name
-                    if key == "config_path"
-                    else artifacts_dir / source_path.name
-                )
-                shutil.copy2(source_path, target_path)
-                copied_files[key] = _relative_posix(target_path, model_root)
-
-        copied_plot_artifacts: Dict[str, str] = {}
-        if plot_sources:
-            plots_dir = artifacts_dir / "plots"
-            plots_dir.mkdir(parents=True, exist_ok=True)
-            for plot_name, source_path in plot_sources.items():
-                if not source_path.exists():
-                    continue
-                target_path = plots_dir / source_path.name
-                shutil.copy2(source_path, target_path)
-                copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
-            if copied_plot_artifacts:
-                copied_files["plot_artifacts"] = copied_plot_artifacts
-
-        if train_csv:
-            source_train_csv = Path(train_csv).expanduser()
-            if source_train_csv.exists():
-                target_train_csv = artifacts_dir / source_train_csv.name
-                shutil.copy2(source_train_csv, target_train_csv)
-                copied_files["training_dataset_path"] = _relative_posix(
-                    target_train_csv, model_root
-                )
-
-        metadata = {
-            "model_id": resolved_model_id,
-            "display_name": record.display_name or resolved_model_id,
-            "version": record.version or "1.0",
-            "status": record.status,
-            "owner": record.owner or "chemspacecopilot",
-            "source": record.source or "internal_training",
-            "backend_name": record.backend_name,
-            "task": {
-                "task_type": record.task.task_type,
-                "smiles_columns": list(record.task.smiles_columns),
-                "target_columns": list(record.task.target_columns),
-                "reaction_columns": list(record.task.reaction_columns),
-                "uncertainty_method": record.task.uncertainty_method,
-                "calibration_method": record.task.calibration_method,
-            },
-            "description": record.description or "",
-            "domain_summary": record.domain_summary or "",
-            "strengths": list(record.strengths),
-            "limitations": list(record.limitations),
-            "recommended_for": list(record.recommended_for),
-            "not_recommended_for": list(record.not_recommended_for),
-            "known_metrics": dict(record.known_metrics),
-            "training_data_summary": dict(record.training_data_summary),
-            "inference_profile": dict(record.inference_profile),
-            "selection_hints": dict(record.selection_hints),
-            "tags": dict(record.tags),
-            "artifacts": copied_files,
-        }
-        if copied_files.get("applicability_domain_path"):
-            metadata["applicability_domain"] = {
-                "available": True,
-                "method": "hybrid_morgan_domain",
-                "reference_store_path": copied_files.get("reference_store_path"),
-                "reference_manifest_path": copied_files.get("reference_manifest_path"),
-                "index_path": copied_files.get("applicability_domain_path"),
-            }
-        if copied_plot_artifacts:
-            metadata["plot_artifacts"] = copied_plot_artifacts
-        metadata_path = model_root / "metadata.json"
-        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
-
-        return {
-            "materialized": True,
-            "model_root": str(model_root),
-            "model_path": str(model_root / copied_files["model_path"]),
-            "metadata_path": str(metadata_path),
-            "artifacts": copied_files,
-        }
-
-    def _sync_internal_metadata(
-        self,
-        *,
-        metadata_path: Optional[str],
-        record: PredictionModelRecord,
-        governance_assessment: Optional[Dict[str, Any]] = None,
-        status_reason: Optional[str] = None,
-    ) -> None:
-        if not metadata_path:
-            return
-        target = Path(metadata_path).expanduser()
-        if not target.exists():
-            return
-        try:
-            payload = json.loads(target.read_text())
-        except Exception:
-            payload = {}
-        payload.update(
-            {
-                "model_id": record.model_id,
-                "display_name": record.display_name or record.model_id,
-                "version": record.version or "1.0",
-                "status": record.status,
-                "owner": record.owner or "chemspacecopilot",
-                "source": record.source or "internal_training",
-                "backend_name": record.backend_name,
-                "description": record.description or "",
-                "domain_summary": record.domain_summary or "",
-                "known_metrics": dict(record.known_metrics),
-                "training_data_summary": dict(record.training_data_summary),
-                "trained_at": (record.training_data_summary or {}).get("trained_at"),
-                "trained_date": (record.training_data_summary or {}).get("trained_date"),
-                "trained_time": (record.training_data_summary or {}).get("trained_time"),
-                "inference_profile": dict(record.inference_profile),
-                "selection_hints": dict(record.selection_hints),
-                "strengths": list(record.strengths),
-                "limitations": list(record.limitations),
-                "recommended_for": list(record.recommended_for),
-                "not_recommended_for": list(record.not_recommended_for),
-                "tags": dict(record.tags),
-                "task": {
-                    "task_type": record.task.task_type,
-                    "smiles_columns": list(record.task.smiles_columns),
-                    "target_columns": list(record.task.target_columns),
-                    "reaction_columns": list(record.task.reaction_columns),
-                    "uncertainty_method": record.task.uncertainty_method,
-                    "calibration_method": record.task.calibration_method,
-                },
-            }
-        )
-        artifacts = payload.get("artifacts") or {}
-        if artifacts.get("applicability_domain_path"):
-            payload["applicability_domain"] = {
-                "available": True,
-                "method": "hybrid_morgan_domain",
-                "reference_store_path": artifacts.get("reference_store_path"),
-                "reference_manifest_path": artifacts.get("reference_manifest_path"),
-                "index_path": artifacts.get("applicability_domain_path"),
-            }
-        if artifacts.get("plot_artifacts"):
-            payload["plot_artifacts"] = artifacts.get("plot_artifacts")
-        if governance_assessment:
-            payload["governance_assessment"] = governance_assessment
-        if status_reason:
-            payload["status_reason"] = status_reason
-        target.write_text(json.dumps(payload, indent=2) + "\n")
-
-    def describe_backends(self) -> Dict[str, Any]:
-        """Describe all configured prediction backends."""
-        return {
-            name: backend.describe_environment()
-            for name, backend in self.backends.items()
-        }
-
-    def _get_backend(self, backend_name: str):
-        backend = self.backends.get(backend_name)
-        if backend is None:
-            raise ValueError(f"Unsupported prediction backend: {backend_name}")
-        return backend
-
-    def describe_catalog(self) -> Dict[str, Any]:
-        """Describe the persistent model catalog configured for prediction."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        return {
-            "catalog_path": str(self.catalog.source_path),
-            "num_models": len(self.catalog.list_models()),
-            "model_ids": [record.model_id for record in self.catalog.list_models()],
-        }
-
-    def _annotate_record(self, record: PredictionModelRecord) -> Dict[str, Any]:
-        payload = record.as_dict()
-        payload["backend_environment"] = self._get_backend(
-            record.backend_name
-        ).describe_environment()
-        payload["model_path_exists"] = Path(record.model_path).expanduser().exists()
-        return payload
-
-    def list_catalog_models(
-        self,
-        allowed_statuses: Optional[List[str]] = None,
-        include_unavailable_paths: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """List models from the persistent catalog with runtime annotations."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        available_backends = [
-            name for name, backend in self.backends.items() if backend.is_available()
-        ]
-        candidates = self.catalog.search(
-            allowed_statuses=allowed_statuses,
-            backend_available=bool(available_backends),
-            available_backend_names=available_backends,
-            include_unavailable_paths=include_unavailable_paths,
-        )
-        return [candidate.as_dict() for candidate in candidates]
-
-    def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
-        """Return the catalog metadata for one model, enriched with runtime checks."""
-        return self._annotate_record(self.catalog.get_model(model_id))
-
-    def recommend_catalog_model(
-        self,
-        task_type: str,
-        target_hint: Optional[str] = None,
-        domain_hint: Optional[str] = None,
-        require_uncertainty: bool = False,
-        allowed_statuses: Optional[List[str]] = None,
-        preferred_backend: Optional[str] = None,
-        include_unavailable_paths: bool = True,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Recommend the best catalog model for a requested task."""
-        self.catalog.refresh_from_internal_store(persist=True)
-        recommendation = self.catalog.recommend(
-            task_type=task_type,
-            target_hint=target_hint,
-            domain_hint=domain_hint,
-            require_uncertainty=require_uncertainty,
-            allowed_statuses=allowed_statuses,
-            preferred_backend=preferred_backend,
-            backend_available=any(backend.is_available() for backend in self.backends.values()),
-            available_backend_names=[
-                name for name, backend in self.backends.items() if backend.is_available()
-            ],
-            include_unavailable_paths=include_unavailable_paths,
-        )
-
-        if agent is not None:
-            prediction_state = _get_prediction_state(agent)
-            prediction_state["catalog_recommendations"] = recommendation
-
-        return recommendation
-
-    def register_catalog_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
-        """Register a model from the persistent catalog into the current session."""
-        if agent is None:
-            raise ValueError("Agent is required to register a catalog model")
-
-        self.catalog.refresh_from_internal_store(persist=True)
-        record = self.catalog.get_model(model_id)
-        return self.register_model(
-            model_id=record.model_id,
-            model_path=record.model_path,
-            backend_name=record.backend_name,
-            task_type=record.task.task_type,
-            smiles_columns=record.task.smiles_columns,
-            target_columns=record.task.target_columns,
-            reaction_columns=record.task.reaction_columns,
-            uncertainty_method=record.task.uncertainty_method,
-            calibration_method=record.task.calibration_method,
-            description=record.description,
-            tags=record.tags,
-            version=record.version,
-            status=record.status,
-            owner=record.owner,
-            source=record.source,
-            domain_summary=record.domain_summary,
-            strengths=record.strengths,
-            limitations=record.limitations,
-            recommended_for=record.recommended_for,
-            not_recommended_for=record.not_recommended_for,
-            known_metrics=record.known_metrics,
-            training_data_summary=record.training_data_summary,
-            inference_profile=record.inference_profile,
-            selection_hints=record.selection_hints,
-            applicability_domain=record.applicability_domain,
-            agent=agent,
-        )
-
-    def register_model(
-        self,
-        model_id: str,
-        model_path: str,
-        task_type: str,
-        backend_name: Optional[str] = None,
-        smiles_columns: Optional[List[str]] = None,
-        target_columns: Optional[List[str]] = None,
-        reaction_columns: Optional[List[str]] = None,
-        uncertainty_method: Optional[str] = None,
-        calibration_method: Optional[str] = None,
-        description: Optional[str] = None,
-        tags: Optional[Dict[str, str]] = None,
-        version: Optional[str] = None,
-        status: str = "experimental",
-        owner: Optional[str] = None,
-        source: Optional[str] = None,
-        domain_summary: Optional[str] = None,
-        strengths: Optional[List[str]] = None,
-        limitations: Optional[List[str]] = None,
-        recommended_for: Optional[List[str]] = None,
-        not_recommended_for: Optional[List[str]] = None,
-        known_metrics: Optional[Dict[str, Any]] = None,
-        training_data_summary: Optional[Dict[str, Any]] = None,
-        inference_profile: Optional[Dict[str, Any]] = None,
-        selection_hints: Optional[Dict[str, Any]] = None,
-        applicability_domain: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Register a Chemprop model in session state for later use."""
-        if agent is None:
-            raise ValueError("Agent is required to register a model")
-
-        backend_name = backend_name or self.backend.backend_name
-        backend = self._get_backend(backend_name)
-        validated_path = backend.validate_model_path(model_path)
-        task = PredictionTaskSpec(
-            task_type=task_type,
-            smiles_columns=smiles_columns or ["smiles"],
-            target_columns=target_columns or [],
-            reaction_columns=reaction_columns or [],
-            uncertainty_method=uncertainty_method,
-            calibration_method=calibration_method,
-        )
-        record = PredictionModelRecord(
-            model_id=model_id,
-            backend_name=backend.backend_name,
-            model_path=str(validated_path),
-            metadata_path=None,
-            task=task,
-            description=description,
-            tags=tags or {},
-            version=version,
-            status=status,
-            owner=owner,
-            source=source,
-            domain_summary=domain_summary,
-            strengths=strengths or [],
-            limitations=limitations or [],
-            recommended_for=recommended_for or [],
-            not_recommended_for=not_recommended_for or [],
-            known_metrics=known_metrics or {},
-            training_data_summary=training_data_summary or {},
-            inference_profile=inference_profile or {},
-            selection_hints=selection_hints or {},
-            applicability_domain=applicability_domain or {},
-        )
-
-        prediction_state = _get_prediction_state(agent)
-        prediction_state["registered"][model_id] = record.as_dict()
-        return record.as_dict()
-
-    def persist_registered_model(
-        self,
-        model_id: str,
-        status: Optional[str] = None,
-        display_name: Optional[str] = None,
-        description: Optional[str] = None,
-        source: Optional[str] = None,
-        domain_summary: Optional[str] = None,
-        owner: Optional[str] = None,
-        version: Optional[str] = None,
-        strengths: Optional[List[str]] = None,
-        limitations: Optional[List[str]] = None,
-        recommended_for: Optional[List[str]] = None,
-        not_recommended_for: Optional[List[str]] = None,
-        known_metrics: Optional[Dict[str, Any]] = None,
-        training_data_summary: Optional[Dict[str, Any]] = None,
-        inference_profile: Optional[Dict[str, Any]] = None,
-        selection_hints: Optional[Dict[str, Any]] = None,
-        tags: Optional[Dict[str, str]] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Persist a session-registered model into the catalog JSON."""
-        if agent is None:
-            raise ValueError("Agent is required to persist a registered model")
-
-        current = self._resolve_record(model_id, agent)
-        prediction_state = _get_prediction_state(agent)
-        training_runs = prediction_state.get("training_runs") or []
-        train_csv = None
-        matching_training_run = None
-        inferred_run_dir = self._infer_training_run_dir(current)
-        if inferred_run_dir is not None:
-            inferred_output = str(inferred_run_dir.resolve())
-            for run in reversed(training_runs):
-                if str(Path(run.get("output_dir", "")).expanduser().resolve()) == inferred_output:
-                    matching_training_run = run
-                    train_csv = run.get("train_csv")
-                    break
-
-        governance_assessment = {}
-        recommended_status = None
-        applicability_domain = {}
-        summary_payload: Dict[str, Any] = {}
-        summary_path: Optional[Path] = None
-        if matching_training_run:
-            summary_path = Path(matching_training_run.get("output_dir", "")).expanduser() / "cs_copilot_training_summary.json"
-            if summary_path.exists():
-                try:
-                    summary_payload = json.loads(summary_path.read_text())
-                    applicability_domain = summary_payload.get("applicability_domain") or {}
-                    governance_assessment = (
-                        (summary_payload.get("validation_assessment") or {}).get("governance") or {}
-                    )
-                    recommended_status = governance_assessment.get("recommended_status")
-                except Exception:
-                    governance_assessment = {}
-                    applicability_domain = {}
-                    summary_payload = {}
-
-        resolved_version = version or current.version or "1"
-        trained_at_raw = summary_payload.get("trained_at")
-        try:
-            trained_at = _coerce_project_timezone(trained_at_raw)
-        except Exception:
-            trained_at = _project_now()
-        train_csv_for_name = train_csv or summary_payload.get("train_csv") or current.source
-        endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
-        protocol_name = (
-            summary_payload.get("validation_protocol")
-            or matching_training_run.get("validation_protocol")
-            if matching_training_run
-            else "protocol"
-        )
-        canonical_model_id = _canonical_model_id(
-            endpoint=endpoint_name,
-            dataset=dataset_name,
-            protocol=str(protocol_name or "protocol"),
-            backend=current.backend_name,
-            version=str(resolved_version),
-            trained_at=trained_at,
-        )
-        canonical_display_name = _canonical_display_name(
-            endpoint=endpoint_name,
-            dataset=dataset_name,
-            protocol=str(protocol_name or "protocol"),
-            backend=current.backend_name,
-            version=str(resolved_version),
-        )
-
-        source_artifacts = {
-            "training_summary_path": str(summary_path) if matching_training_run and summary_path.exists() else None,
-            "config_path": summary_payload.get("config_path"),
-            "splits_path": summary_payload.get("splits_path"),
-            "test_predictions_path": summary_payload.get("test_predictions_path"),
-            "reference_store_path": applicability_domain.get("reference_store_path"),
-            "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
-            "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
-            "plot_artifacts": summary_payload.get("plot_artifacts") or {},
-        }
-
-        materialized = self._materialize_internal_model(
-            record=current,
-            train_csv=train_csv,
-            model_id=canonical_model_id,
-            source_artifacts=source_artifacts,
-        )
-        resolved_model_path = materialized.get("model_path", current.model_path)
-        resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
-        requested_status = status or current.status
-        resolved_status = requested_status
-        status_reason = None
-        governed_statuses = {"validated", "robust_validated"}
-        if requested_status in governed_statuses and recommended_status and recommended_status != requested_status:
-            resolved_status = recommended_status
-            status_reason = (
-                f"Requested `{requested_status}` was adjusted by governance because the final "
-                "validation gates did not support that status."
-            )
-        persisted_record = PredictionModelRecord(
-            model_id=canonical_model_id,
-            backend_name=current.backend_name,
-            model_path=resolved_model_path,
-            metadata_path=resolved_metadata_path,
-            task=current.task,
-            display_name=display_name or canonical_display_name,
-            description=description or current.description,
-            tags=tags or current.tags,
-            version=resolved_version,
-            status=resolved_status,
-            owner=owner or current.owner,
-            source=source or current.source,
-            domain_summary=domain_summary or current.domain_summary,
-            strengths=strengths or current.strengths,
-            limitations=limitations or current.limitations,
-            recommended_for=recommended_for or current.recommended_for,
-            not_recommended_for=not_recommended_for or current.not_recommended_for,
-            known_metrics=known_metrics or current.known_metrics,
-            training_data_summary={
-                **current.training_data_summary,
-                **(training_data_summary or {}),
-                "trained_at": trained_at.isoformat(),
-                "trained_date": trained_at.strftime("%d/%m/%Y"),
-                "trained_time": trained_at.strftime("%H:%M:%S"),
-                "endpoint_name": endpoint_name,
-                "dataset_name": dataset_name,
-                "validation_protocol": str(protocol_name or "protocol"),
-            },
-            inference_profile={
-                **current.inference_profile,
-                **(inference_profile or {}),
-            },
-            selection_hints={
-                **current.selection_hints,
-                **(selection_hints or {}),
-                "governance_recommended_status": recommended_status,
-            },
-            applicability_domain={
-                **current.applicability_domain,
-                **(applicability_domain or {}),
-            },
-        )
-
-        self.catalog.upsert_model(persisted_record)
-        self.catalog = PredictionModelCatalog.load(str(self.catalog.source_path))
-        self._sync_internal_metadata(
-            metadata_path=resolved_metadata_path,
-            record=persisted_record,
-            governance_assessment=governance_assessment,
-            status_reason=status_reason,
-        )
-
-        prediction_state["registered"].pop(model_id, None)
-        prediction_state["registered"][canonical_model_id] = persisted_record.as_dict()
-
-        return {
-            "catalog_path": str(self.catalog.source_path),
-            "model_id": persisted_record.model_id,
-            "status": persisted_record.status,
-            "persisted": True,
-            "materialized": bool(materialized.get("materialized")),
-            "model_root": materialized.get("model_root"),
-            "metadata_path": persisted_record.metadata_path,
-            "governance_assessment": governance_assessment,
-            "status_reason": status_reason,
-            "record": persisted_record.as_dict(),
-        }
-
-    def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
-        """List models registered in the current session."""
-        if agent is None:
-            return []
-        prediction_state = _get_prediction_state(agent)
-        return list(prediction_state["registered"].values())
-
-    def summarize_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
-        """Return the stored summary for a registered model."""
-        if agent is None:
-            raise ValueError("Agent is required to summarize a model")
-        prediction_state = _get_prediction_state(agent)
-        record = prediction_state["registered"].get(model_id)
-        if not record:
-            raise ValueError(f"Unknown model_id: {model_id}")
-        return self._annotate_record(PredictionModelRecord.from_dict(record))
-
-    def _resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
-        prediction_state = _get_prediction_state(agent)
-        payload = prediction_state["registered"].get(model_id)
-        if payload is None:
-            raise ValueError(f"Unknown model_id: {model_id}")
-        return PredictionModelRecord.from_dict(payload)
-
-    def predict_from_csv(
-        self,
-        model_id: str,
-        input_csv: str,
-        smiles_column: str = "smiles",
-        preds_path: Optional[str] = None,
-        return_uncertainty: bool = False,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Run prediction from a CSV file and persist the result path in session state."""
-        if agent is None:
-            raise ValueError("Agent is required for prediction")
-
-        record = self._resolve_record(model_id, agent)
-        output_path = _prediction_output_path(model_id, preds_path)
-        backend = self._get_backend(record.backend_name)
-        local_input = Path(input_csv).expanduser()
-        if local_input.exists():
-            source_df = pd.read_csv(local_input)
-        else:
-            with S3.open(input_csv, "r") as fh:
-                source_df = pd.read_csv(fh)
-
-        df = source_df.copy()
-
-        smiles_found = None
-        smiles_candidates = [
-            smiles_column,
-            "smiles",
-            "SMILES",
-            "canonical_smiles",
-            "Smiles",
-            "smi",
-        ]
-        for candidate in smiles_candidates:
-            if candidate and candidate in df.columns:
-                smiles_found = candidate
-                break
-
-        if smiles_found is None:
-            raise ValueError(
-                f"No SMILES column found for prediction. Tried {smiles_candidates}. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-        df = standardize_smiles_column(df, smiles_found)
-        if smiles_found != "smiles":
-            df = df.rename(columns={smiles_found: "smiles"})
-        local_input = Path(".files") / "prediction_inputs" / f"{model_id}_input.csv"
-        local_input.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(local_input, index=False)
-
-        result = backend.predict_from_csv(
-            input_csv=str(local_input),
-            model_record=record,
-            preds_path=str(output_path),
-            return_uncertainty=return_uncertainty,
-        )
-
-        predictions_only_df = pd.read_csv(output_path)
-        prediction_columns = [
-            column for column in predictions_only_df.columns if column not in source_df.columns
-        ]
-        if prediction_columns:
-            enriched_output_df = pd.concat(
-                [source_df.reset_index(drop=True), predictions_only_df[prediction_columns].reset_index(drop=True)],
-                axis=1,
-            )
-            enriched_output_df.to_csv(output_path, index=False)
-
-        preview_df = pd.read_csv(output_path)
-        preview_columns = list(preview_df.columns)
-        preview = preview_df.head(5).to_dict(orient="records")
-        num_rows = int(len(preview_df))
-
-        prediction_state = _get_prediction_state(agent)
-        prediction_state["last_prediction"] = {
-            "model_id": model_id,
-            "input_csv": str(local_input),
-            "preds_path": str(output_path),
-            "return_uncertainty": return_uncertainty,
-            "applicability_domain": result.get("applicability_domain") or {},
-            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
-        }
-        history_entry = {
-            "model_id": model_id,
-            "backend_name": record.backend_name,
-            "task_type": record.task.task_type,
-            "input_csv": str(local_input),
-            "preds_path": str(output_path),
-            "download_file_ref": str(output_path),
-            "preview_columns": preview_columns,
-            "preview": preview,
-            "num_rows": num_rows,
-            "applicability_domain": result.get("applicability_domain") or {},
-            "applicability_domain_columns": result.get("applicability_domain_columns") or [],
-        }
-        prediction_state["prediction_history"].append(history_entry)
-        result["preds_path"] = str(output_path)
-        result["download_file_ref"] = str(output_path)
-        result["preview_columns"] = preview_columns
-        result["preview"] = preview
-        result["num_rows"] = num_rows
-        return result
-
-    def predict_from_smiles(
-        self,
-        model_id: str,
-        smiles: List[str],
-        preds_path: Optional[str] = None,
-        return_uncertainty: bool = False,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Run prediction from an in-memory list of SMILES by materializing a temporary CSV."""
-        if agent is None:
-            raise ValueError("Agent is required for prediction")
-
-        if not smiles:
-            raise ValueError("At least one SMILES string is required")
-
-        input_path = Path(".files") / "prediction_inputs" / f"{model_id}_smiles_input.csv"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame({"smiles": smiles})
-        df = standardize_smiles_column(df, "smiles")
-        df.to_csv(input_path, index=False)
-
-        result = self.predict_from_csv(
-            model_id=model_id,
-            input_csv=str(input_path),
-            smiles_column="smiles",
-            preds_path=preds_path,
-            return_uncertainty=return_uncertainty,
-            agent=agent,
-        )
-        result["num_smiles"] = len(smiles)
-        return result
-
-    def export_prediction_summary(
-        self,
-        summary_csv: Optional[str] = None,
-        agent: Optional[Agent] = None,
-    ) -> Dict[str, Any]:
-        """Export a consolidated CSV summary from prediction history."""
-        if agent is None:
-            raise ValueError("Agent is required to export a prediction summary")
-
-        prediction_state = _get_prediction_state(agent)
-        history = prediction_state.get("prediction_history") or []
-        if not history:
-            raise ValueError("No prediction history is available for summary export")
-
-        summary_path = (
-            Path(summary_csv).expanduser()
-            if summary_csv
-            else (Path(".files") / "prediction_outputs" / "prediction_summary.csv").resolve()
-        )
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-
-        frames: List[pd.DataFrame] = []
-        for item in history:
-            preds_path = item.get("preds_path")
-            model_id = item.get("model_id")
-            task_type = item.get("task_type")
-            if not preds_path or not Path(preds_path).exists():
-                continue
-
-            df = pd.read_csv(preds_path).copy()
-            if df.empty:
-                continue
-
-            value_columns = [col for col in df.columns if col.lower() != "smiles"]
-            if not value_columns:
-                continue
-
-            melted = df.melt(
-                id_vars=["smiles"] if "smiles" in df.columns else None,
-                value_vars=value_columns,
-                var_name="prediction_column",
-                value_name="predicted_value",
-            )
-            melted.insert(0, "model_id", model_id)
-            melted.insert(1, "task_type", task_type)
-            frames.append(melted)
-
-        if not frames:
-            raise ValueError("No readable prediction files were found for summary export")
-
-        summary_df = pd.concat(frames, ignore_index=True)
-        summary_df.to_csv(summary_path, index=False)
-
-        prediction_outputs = agent.session_state.setdefault("prediction_outputs", {})
-        prediction_outputs["latest_summary"] = str(summary_path)
-
-        preview_columns = list(summary_df.columns)
-        preview = summary_df.head(10).to_dict(orient="records")
-
-        return {
-            "summary_csv": str(summary_path),
-            "download_file_ref": str(summary_path),
-            "num_rows": int(len(summary_df)),
-            "num_files": len(frames),
-            "preview_columns": preview_columns,
-            "preview": preview,
-        }
-
     def _compute_training_metrics(
         self,
         *,
@@ -1828,15 +1093,30 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
         output_path = Path(output_dir).expanduser()
-        resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
-        splits_path = resolved_artifacts["splits_path"]
-        preds_path = resolved_artifacts["test_predictions_path"]
-
-        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
-            return {}
-
         target_column = task.target_columns[0] if task.target_columns else None
         if not target_column:
+            return {}
+
+        normalized_predictions = self._write_normalized_test_predictions(
+            train_csv=train_csv,
+            output_dir=output_path,
+            task=task,
+        )
+        resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
+        splits_path = resolved_artifacts["splits_path"]
+        preds_path = Path(
+            str(
+                normalized_predictions.get("test_predictions_path")
+                or resolved_artifacts["test_predictions_path"]
+            )
+        )
+
+        if (
+            splits_path is None
+            or preds_path is None
+            or not splits_path.exists()
+            or not preds_path.exists()
+        ):
             return {}
 
         dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
@@ -1847,16 +1127,101 @@ class ChempropToolkit(Toolkit):
             return {}
 
         test_indices = split_payload[0]["test"]
-        actual = dataset.iloc[test_indices].reset_index(drop=True)
+        is_classification = _is_classification_task(task.task_type)
+        if is_classification:
+            true_column = f"{target_column}_true"
+            if true_column in predictions.columns:
+                true_labels = predictions[true_column].map(_normalize_classification_label)
+            else:
+                actual = dataset.iloc[test_indices].reset_index(drop=True)
+                if target_column not in actual.columns:
+                    return {}
+                true_labels = actual[target_column].map(_normalize_classification_label)
+            if "predicted_class" in predictions.columns:
+                predicted_labels = predictions["predicted_class"].map(
+                    _normalize_classification_label
+                )
+            elif "prediction" in predictions.columns:
+                predicted_labels = predictions["prediction"].map(_normalize_classification_label)
+            elif target_column in predictions.columns:
+                predicted_labels = predictions[target_column].map(_normalize_classification_label)
+            else:
+                return {}
+            class_labels = _resolve_class_labels(true_labels)
+            if len(class_labels) < 2:
+                return {}
+            if "y_true_encoded" in predictions.columns:
+                y_true = pd.to_numeric(predictions["y_true_encoded"], errors="coerce")
+            else:
+                y_true = _encode_classification_labels(true_labels, class_labels)
+            if "y_pred_encoded" in predictions.columns:
+                y_pred = pd.to_numeric(predictions["y_pred_encoded"], errors="coerce")
+            elif "predicted_class_index" in predictions.columns:
+                y_pred = pd.to_numeric(predictions["predicted_class_index"], errors="coerce")
+            else:
+                y_pred = _encode_classification_labels(predicted_labels, class_labels)
+            positive_scores = (
+                pd.to_numeric(predictions["positive_class_probability"], errors="coerce")
+                if "positive_class_probability" in predictions.columns
+                else None
+            )
+            metrics = _compute_classification_metrics(
+                y_true,
+                y_pred,
+                class_labels,
+                positive_scores=positive_scores,
+            )
+            metrics["target_column"] = target_column
+            return {
+                "best_model_path": (
+                    str(resolved_artifacts["best_model_path"])
+                    if resolved_artifacts.get("best_model_path")
+                    else None
+                ),
+                "test_predictions_path": str(preds_path),
+                "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
+                or [],
+                "splits_path": str(splits_path),
+                "train_size": len(split_payload[0].get("train") or []),
+                "val_size": len(
+                    split_payload[0].get("val") or split_payload[0].get("validation") or []
+                ),
+                "test_size": len(test_indices),
+                "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
+                or self._replicate_artifacts(output_path),
+                "replicate_count": normalized_predictions.get("replicate_count") or 1,
+                "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
+                "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
+                "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
+                or "single_replicate",
+                "replicate_alignment_policy": normalized_predictions.get(
+                    "replicate_alignment_policy"
+                ),
+                "prediction_kind": normalized_predictions.get("prediction_kind"),
+                "prediction_column": normalized_predictions.get("prediction_column")
+                or target_column,
+                "target_true_column": normalized_predictions.get("target_true_column")
+                or target_column,
+                "target_prediction_column": normalized_predictions.get("target_prediction_column")
+                or target_column,
+                "class_labels": normalized_predictions.get("class_labels")
+                or [_json_safe_label(label) for label in class_labels],
+                "positive_class_label": normalized_predictions.get("positive_class_label"),
+                "metrics": {"test": metrics},
+            }
 
-        if target_column not in actual.columns or target_column not in predictions.columns:
-            return {}
-
-        if len(actual) != len(predictions):
-            return {}
-
-        actual_values = pd.to_numeric(actual[target_column], errors="coerce")
-        predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
+        true_column = f"{target_column}_true"
+        if true_column in predictions.columns and "prediction" in predictions.columns:
+            actual_values = pd.to_numeric(predictions[true_column], errors="coerce")
+            predicted_values = pd.to_numeric(predictions["prediction"], errors="coerce")
+        else:
+            actual = dataset.iloc[test_indices].reset_index(drop=True)
+            if target_column not in actual.columns or target_column not in predictions.columns:
+                return {}
+            if len(actual) != len(predictions):
+                return {}
+            actual_values = pd.to_numeric(actual[target_column], errors="coerce")
+            predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
         valid_mask = actual_values.notna() & predicted_values.notna()
         if not valid_mask.any():
             return {}
@@ -1878,7 +1243,9 @@ class ChempropToolkit(Toolkit):
         kendall = None
         try:
             spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            spearman = float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+            spearman = (
+                float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+            )
         except Exception:
             spearman = None
         try:
@@ -1888,9 +1255,32 @@ class ChempropToolkit(Toolkit):
             kendall = None
 
         return {
-            "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
+            "best_model_path": (
+                str(resolved_artifacts["best_model_path"])
+                if resolved_artifacts.get("best_model_path")
+                else None
+            ),
             "test_predictions_path": str(preds_path),
+            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
+            or [],
             "splits_path": str(splits_path),
+            "train_size": len(split_payload[0].get("train") or []),
+            "val_size": len(
+                split_payload[0].get("val") or split_payload[0].get("validation") or []
+            ),
+            "test_size": len(test_indices),
+            "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
+            or self._replicate_artifacts(output_path),
+            "replicate_count": normalized_predictions.get("replicate_count") or 1,
+            "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
+            "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
+            "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
+            or "single_replicate",
+            "replicate_alignment_policy": normalized_predictions.get("replicate_alignment_policy"),
+            "prediction_column": normalized_predictions.get("prediction_column") or target_column,
+            "target_true_column": normalized_predictions.get("target_true_column") or target_column,
+            "target_prediction_column": normalized_predictions.get("target_prediction_column")
+            or target_column,
             "metrics": {
                 "test": {
                     "mse": mse,
@@ -1906,39 +1296,6 @@ class ChempropToolkit(Toolkit):
             },
         }
 
-    def prepare_training_dataset(
-        self,
-        input_csv: str,
-        smiles_column: str,
-        target_columns: List[str] | str,
-        output_csv: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Normalize a training CSV into the canonical format expected by later prediction tools."""
-        with S3.open(input_csv, "r") as fh:
-            df = pd.read_csv(fh)
-
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            if not isinstance(parsed, list):
-                raise ValueError("target_columns must be a list or a JSON-encoded list.")
-            target_columns = parsed
-
-        df = standardize_smiles_column(df, smiles_column)
-        missing_targets = [column for column in target_columns if column not in df.columns]
-        if missing_targets:
-            raise ValueError(f"Missing target columns: {missing_targets}")
-
-        standardized = df[["smiles", *target_columns]].copy()
-        destination = output_csv or "training/chemprop_training_dataset.csv"
-        with S3.open(destination, "w") as fh:
-            standardized.to_csv(fh, index=False)
-
-        return {
-            "output_csv": destination,
-            "rows": int(len(standardized)),
-            "columns": list(standardized.columns),
-        }
-
     def train_model(
         self,
         train_csv: str,
@@ -1947,35 +1304,84 @@ class ChempropToolkit(Toolkit):
         smiles_columns: Optional[List[str] | str] = None,
         target_columns: Optional[List[str] | str] = None,
         reaction_columns: Optional[List[str] | str] = None,
+        activity_cliff_index: str = "sali",
+        activity_cliff_feedback: bool = False,
+        activity_cliff_feedback_loops: int = 0,
+        activity_cliff_similarity_threshold: float = 0.70,
+        activity_cliff_top_k_neighbors: int = 10,
+        activity_cliff_flag_threshold: float = 0.35,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
-        if isinstance(smiles_columns, str):
-            parsed = json.loads(smiles_columns)
-            smiles_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(target_columns, str):
-            parsed = json.loads(target_columns)
-            target_columns = parsed if isinstance(parsed, list) else [str(parsed)]
-        if isinstance(reaction_columns, str):
-            parsed = json.loads(reaction_columns)
-            reaction_columns = parsed if isinstance(parsed, list) else [str(parsed)]
+        smiles_columns = normalize_json_list_argument(
+            smiles_columns,
+            argument_name="smiles_columns",
+        )
+        target_columns = normalize_json_list_argument(
+            target_columns,
+            argument_name="target_columns",
+        )
+        reaction_columns = normalize_json_list_argument(
+            reaction_columns,
+            argument_name="reaction_columns",
+        )
 
         resolved_output_dir = str(Path(output_dir).expanduser().resolve())
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
-        trained_at = _project_now()
-        training_policy = self._apply_training_profile(extra_args)
+        trained_at = project_now()
+        cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        activity_args = {
+            "activity_cliff_index": activity_cliff_index,
+            "activity_cliff_feedback": activity_cliff_feedback,
+            "activity_cliff_feedback_loops": activity_cliff_feedback_loops,
+            "activity_cliff_similarity_threshold": activity_cliff_similarity_threshold,
+            "activity_cliff_top_k_neighbors": activity_cliff_top_k_neighbors,
+            "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
+            **extra_activity_args,
+        }
+        training_policy = self._apply_training_profile(cleaned_extra_args)
+        normalized_task_type = str(task_type or "").strip().lower()
+        if _is_classification_task(normalized_task_type) and "metric" not in cleaned_extra_args:
+            training_policy["extra_args"].pop("metric", None)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
+            seed_policy=training_policy["extra_args"].get("seed_policy"),
+            base_seed=training_policy["extra_args"].get("data_seed")
+            or training_policy["extra_args"].get("random_state"),
         )
+        protocol_override_note = self._apply_protocol_training_overrides(
+            training_policy=training_policy,
+            protocol_policy=protocol_policy,
+        )
+        training_policy["extra_args"]["data_seed"] = protocol_policy["seed_policy"]["model_seed"]
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=smiles_columns or ["smiles"],
             target_columns=target_columns or [],
             reaction_columns=reaction_columns or [],
         )
+        activity_cliffs: Dict[str, Any] = {}
+        if str(task.task_type).strip().lower() == "regression" and len(task.target_columns) == 1:
+            try:
+                activity_cliffs = prepare_activity_cliff_context(
+                    train_csv=train_csv,
+                    output_dir=resolved_output_dir,
+                    smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
+                    target_column=task.target_columns[0],
+                    **activity_args,
+                )
+            except Exception as exc:
+                if activity_args.get("activity_cliff_index") != "sali":
+                    raise
+                activity_cliffs = {
+                    "enabled": False,
+                    "mode": "skipped",
+                    "index_name": activity_args.get("activity_cliff_index", "sali"),
+                    "warnings": [f"Activity-cliff annotation skipped: {exc}"],
+                }
         prediction_state = None
         qsar_training_state = None
         active_run_record = {
@@ -1990,17 +1396,17 @@ class ChempropToolkit(Toolkit):
         }
 
         if agent is not None:
-            prediction_state = _get_prediction_state(agent)
+            prediction_state = get_prediction_state(agent)
             prediction_state["active_training_run"] = dict(active_run_record)
             qsar_training_state = agent.session_state.setdefault("qsar_training", {})
             qsar_training_state["active_run"] = dict(active_run_record)
 
-        _write_active_training_marker(active_marker_path, active_run_record)
+        write_active_training_marker(active_marker_path, active_run_record)
 
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         primary_output_dir: Optional[Path] = None
-        total_started_at = _project_now()
+        total_started_at = project_now()
 
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
@@ -2008,12 +1414,16 @@ class ChempropToolkit(Toolkit):
             for split_run in protocol_policy["split_runs"]:
                 label = split_run["label"]
                 run_output_dir = (
-                    root_output_path / f"{_safe_slug(label)}_split"
+                    root_output_path / f"{safe_slug(label)}_split"
                     if multi_run_protocol
                     else root_output_path
                 )
                 run_args = {
-                    **training_policy["extra_args"],
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "split_type": split_run["backend_split_type"],
                     "data_seed": split_run["seed"],
                 }
@@ -2023,7 +1433,7 @@ class ChempropToolkit(Toolkit):
                     prediction_state["active_training_run"] = dict(active_run_record)
                 if qsar_training_state is not None:
                     qsar_training_state["active_run"] = dict(active_run_record)
-                _write_active_training_marker(active_marker_path, active_run_record)
+                write_active_training_marker(active_marker_path, active_run_record)
 
                 single_result = self._train_single_run(
                     train_csv=train_csv,
@@ -2071,6 +1481,7 @@ class ChempropToolkit(Toolkit):
                         "smiles_columns": task.smiles_columns,
                         "target_columns": task.target_columns,
                         "validation_protocol": protocol_policy["protocol"],
+                        "seed_policy": protocol_policy["seed_policy"],
                         "split_runs": [
                             {
                                 "label": item["strategy_label"],
@@ -2098,66 +1509,115 @@ class ChempropToolkit(Toolkit):
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
-            if target_column:
-                plots_output_dir = root_output_path / "artifacts" / "plots"
-                try:
-                    plot_artifacts = build_qsar_training_plots(
-                        train_csv=train_csv,
-                        split_results=split_results,
-                        primary_run=primary_run,
-                        output_dir=str(plots_output_dir),
-                        target_column=target_column,
-                    )
-                except Exception:
-                    plot_artifacts = {}
+            if str(task.task_type).strip().lower() == "regression":
+                plot_artifacts = build_training_plots_if_possible(
+                    train_csv=train_csv,
+                    split_results=split_results,
+                    primary_run=primary_run,
+                    root_artifacts=root_artifacts,
+                    root_output_dir=root_output_path,
+                    target_column=target_column,
+                )
 
             result = dict(primary_run)
+            result["backend_name"] = self.backend.backend_name
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
+            result["seed_policy"] = protocol_policy["seed_policy"]
+            result["seed_policy_report"] = seed_policy_reporting_text(
+                protocol_policy["seed_policy"]
+            )
+            result["reproducibility"] = seed_policy_reproducibility_metadata(
+                protocol_policy["seed_policy"]
+            )
             result["split_results"] = split_results
             result["validation_assessment"] = validation_assessment
             result["compute_environment"] = training_policy["compute_environment"]
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
-            result["effective_train_args"] = training_policy["extra_args"]
+            result["effective_train_args"] = {
+                key: value
+                for key, value in training_policy["extra_args"].items()
+                if key != "seed_policy"
+            }
+            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get(
+                "model_seed"
+            )
+            if primary_run.get("seed") is not None:
+                result["effective_train_args"]["data_seed"] = primary_run.get("seed")
+                result["effective_train_args"]["data_seed_scope"] = "primary_split"
+            result["replicate_policy"] = {
+                "num_replicates_requested": int(
+                    result["effective_train_args"].get("num_replicates") or 1
+                ),
+                "protocol_override_note": protocol_override_note,
+                "prediction_aggregation": primary_run.get("prediction_aggregation"),
+                "catalog_primary_replicate_index": 0,
+                "catalog_primary_model_policy": (
+                    "The catalog model artifact points to replicate_0/model_0/best.pt. "
+                    "Validation prediction CSVs aggregate only replicate outputs whose SMILES "
+                    "exactly align to the split test rows; non-aligned Chemprop replicate outputs "
+                    "are recorded but excluded from validation metrics."
+                ),
+                "split_replicate_counts": [
+                    {
+                        "label": item.get("strategy_label"),
+                        "strategy_family": item.get("strategy_family"),
+                        "replicate_count": item.get("replicate_count"),
+                        "detected_replicate_count": item.get("detected_replicate_count"),
+                        "excluded_replicate_count": item.get("excluded_replicate_count"),
+                        "prediction_aggregation": item.get("prediction_aggregation"),
+                        "replicate_alignment_policy": item.get("replicate_alignment_policy"),
+                    }
+                    for item in split_results
+                ],
+            }
             result["training_resources"] = self._summarize_training_resources(
                 compute_env=training_policy["compute_environment"],
-                effective_train_args=training_policy["extra_args"],
+                effective_train_args=result["effective_train_args"],
             )
-            total_completed_at = _project_now()
+            total_completed_at = project_now()
             result["training_durations"] = self._summarize_training_durations(
                 split_results=split_results,
                 total_started_at=total_started_at,
                 total_completed_at=total_completed_at,
             )
             result["applicability_domain"] = ad_summary
+            result["activity_cliffs"] = activity_cliffs
             result["plot_artifacts"] = plot_artifacts
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
-            training_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            training_summary_path.write_text(json.dumps(result, indent=2))
 
-            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
+            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(
+                Path(resolved_output_dir)
+            )
             best_model_path = Path(
                 root_artifacts.get("best_model_path")
                 or resolved_primary_artifacts.get("best_model_path")
                 or (Path(resolved_output_dir) / "model_0" / "best.pt")
             )
-            config_path = Path(root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"])
-            splits_path = Path(root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"])
+            config_path = Path(
+                root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"]
+            )
+            splits_path = Path(
+                root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"]
+            )
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)
+                result["model_path"] = str(best_model_path)
                 result["download_file_ref"] = str(best_model_path)
             result["summary_file_ref"] = str(training_summary_path)
             if root_artifacts.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
+                result["test_predictions_path"] = root_artifacts["test_predictions_path"]
             elif primary_run.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = primary_run["test_predictions_path"]
+                result["test_predictions_path"] = primary_run["test_predictions_path"]
             if ad_summary.get("applicability_domain_path"):
                 result["applicability_domain_file_ref"] = ad_summary["applicability_domain_path"]
             bundle_path = (
@@ -2165,32 +1625,29 @@ class ChempropToolkit(Toolkit):
                 / "prediction_outputs"
                 / f"{Path(resolved_output_dir).name}_training_bundle.zip"
             ).resolve()
-            bundle_files = [
-                Path(train_csv).expanduser(),
-                training_summary_path,
-                best_model_path,
-                config_path,
-                splits_path,
-            ]
-            for item in split_results:
-                if item.get("summary_path"):
-                    bundle_files.append(Path(item["summary_path"]).expanduser())
-                if item.get("test_predictions_path"):
-                    bundle_files.append(Path(item["test_predictions_path"]).expanduser())
-            for ad_key in (
-                "reference_store_path",
-                "reference_manifest_path",
-                "applicability_domain_path",
-            ):
-                if ad_summary.get(ad_key):
-                    bundle_files.append(Path(ad_summary[ad_key]).expanduser())
-            for plot_path in plot_artifacts.values():
-                bundle_files.append(Path(plot_path).expanduser())
-            bundle = _bundle_artifacts(
+            bundle_files = collect_training_bundle_files(
+                train_csv=train_csv,
+                summary_path=training_summary_path,
+                result={
+                    **result,
+                    "best_model_path": str(best_model_path),
+                    "config_path": str(config_path),
+                    "splits_path": str(splits_path),
+                },
+                split_results=split_results,
+                ad_summary=ad_summary,
+                plot_artifacts=plot_artifacts,
+                activity_cliffs=activity_cliffs,
+                extra_files=[Path(resolved_output_dir)],
+            )
+            bundle = bundle_artifacts(
                 bundle_path,
                 bundle_files,
             )
             result["bundle_file_ref"] = str(bundle)
+            result["training_bundle"] = str(bundle)
+            result["bundle_download_tag"] = f"<file>{bundle}</file>"
+            write_training_summary(training_summary_path, result)
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"
@@ -2199,7 +1656,7 @@ class ChempropToolkit(Toolkit):
                 prediction_state["active_training_run"] = dict(active_run_record)
             if qsar_training_state is not None:
                 qsar_training_state["active_run"] = dict(active_run_record)
-            _write_active_training_marker(active_marker_path, active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
             raise
         finally:
             if active_marker_path.exists():

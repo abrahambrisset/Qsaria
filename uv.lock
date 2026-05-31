@@ -731,6 +731,19 @@ wheels = [
 ]
 
 [[package]]
+name = "chembl-structure-pipeline"
+version = "1.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "rdkit" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/56/29/4ce697880f4b239dc96e89c371d7a86c43cd08e3f9b54c375510f49f19d8/chembl_structure_pipeline-1.2.4.tar.gz", hash = "sha256:e381500ac815ded31cc4841d1fbfe7c089788a07f2fbaa9bb818b52facfa9030", size = 16159, upload-time = "2025-11-24T16:41:34.971808Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/5c/b9d714ff6381793e811ef96daa744350e1c5f233e0f15044e1f6160aeeaa/chembl_structure_pipeline-1.2.4-py3-none-any.whl", hash = "sha256:1bb5121b3714d564610c55e39e214ae6409001d0a50bb48a00831b3f5573c479", size = 17302, upload-time = "2025-11-24T16:41:34.053260Z" },
+]
+
+[[package]]
 name = "chemfunc"
 version = "1.0.12"
 source = { registry = "https://pypi.org/simple" }
@@ -980,6 +993,7 @@ dependencies = [
     { name = "agno" },
     { name = "asyncpg" },
     { name = "chainlit" },
+    { name = "chembl-structure-pipeline" },
     { name = "chembl-webresource-client" },
     { name = "chemographykit" },
     { name = "deepchemography" },
@@ -1050,6 +1064,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "cairosvg", marker = "extra == 'synplanner'", specifier = ">=2.8.2" },
     { name = "chainlit", specifier = ">=2.8.3" },
+    { name = "chembl-structure-pipeline", specifier = ">=1.2.4" },
     { name = "chembl-webresource-client", specifier = ">=0.10.9" },
     { name = "chemographykit", specifier = ">=0.1.0" },
     { name = "chemprop", marker = "extra == 'prediction'", specifier = ">=2.2.0" },

@@ -2,30 +2,95 @@
 
 ## Goal
 
-Add predictive modeling to ChemSpace Copilot without coupling the agent layer to a
-single ML library.
-
-The initial backend target is **Chemprop**, but the architecture is designed so
-that future backends can reuse the same agent and data contracts.
+QSAR prediction and training are backend-neutral at the agent boundary. Agents
+talk to public toolkits that own one responsibility each; backend-specific
+toolkits and backend adapters sit behind those public facades.
 
 ## Layering
 
 ```text
-Agent (property_predictor)
+Agents
+  |
+  |-- DatasetCurationToolkit
+  |-- QSARTrainingToolkit
+  |-- ModelRegistryToolkit
+  |-- PredictionInferenceToolkit
+  |-- BenchmarkToolkit
+  |-- EnsembleToolkit
+  |-- QSARReportingToolkit
         |
-Toolkit (ChempropToolkit)
+        |-- training_orchestration.py
+        |-- backend_factory.py
+        |-- tabular_representations.py
+        |-- MolecularFeatureToolkit
+        |-- ActivityCliffToolkit
         |
-Backend contract (PredictionBackend)
-        |
-Concrete backend (ChempropBackend)
+        |-- ChempropToolkit  -> ChempropBackend
+        |-- LightGBMToolkit  -> LightGBMBackend
+        |-- TabICLToolkit    -> TabICLBackend
+        |-- EnsembleToolkit  -> EnsembleBackend
 ```
 
-## Why this shape
+`ChempropToolkit`, `LightGBMToolkit`, and `TabICLToolkit` are backend-internal
+training toolkits. They are not the registry, inference, or agent-facing
+training facade.
 
-- The agent should reason about tasks and datasets, not Chemprop CLI flags.
-- The toolkit should manage session state, file normalization, and output paths.
-- The backend should encapsulate Chemprop-specific command construction.
-- This keeps later support for other predictors realistic.
+## Public Toolkits
+
+- `QSARTrainingToolkit`: single entry point for training workflows, including
+  `prepare_training_dataset`, `train_qsar_model`, `train_chemprop_model`,
+  `train_lightgbm_model`, and `train_tabicl_model`.
+- `ModelRegistryToolkit`: catalog and session registry operations, including
+  model registration, persistence, model summaries, catalog recommendations,
+  and backend capability descriptions.
+- `PredictionInferenceToolkit`: batch and direct inference for registered or
+  catalog models.
+- `BenchmarkToolkit`: explicit benchmark campaigns only. It compares candidates
+  by delegating actual training to `QSARTrainingToolkit` and persistence to
+  `ModelRegistryToolkit`.
+- `EnsembleToolkit`: ensemble creation, summary, and evaluation workflows.
+
+## Tabular QSAR Representations
+
+Tabular representations are declared once in `tabular_representations.py` and
+consumed by training, benchmark, and backend capability reporting.
+
+Modern automatic pack:
+
+- `rdkit_all`
+- `morgan_only`
+- `morgan_count_only`
+- `morgan_binary_count_rdkit_all`
+
+Legacy explicit-only representations:
+
+- `rdkit_basic_only`
+- `morgan_rdkit_basic`
+
+`MolecularFeatureToolkit` owns feature generation for all tabular backends.
+Features are cached by dataset fingerprint, SMILES column, representation, and
+feature parameters. Combined representations reuse the cached RDKit all, Morgan
+binary, and Morgan count feature tables rather than regenerating them per split
+or candidate.
+
+## Training Modes
+
+- `fast_local`: quick smoke test. Tabular backends use `rdkit_all`; Chemprop
+  uses molecular graphs.
+- `standard_qsar`: Chemprop trains one graph candidate; LightGBM/TabICL train
+  the full modern tabular pack with one random and one scaffold split.
+- `robust_qsar`: same candidates as `standard_qsar`, with three random splits
+  plus one scaffold split.
+- `benchmark_standard_qsar`: multi-backend comparison over Chemprop graph plus
+  the modern LightGBM/TabICL pack using the standard protocol.
+- `benchmark_robust_qsar`: the same benchmark candidates with the robust
+  protocol. There is no top-N preselection yet.
+
+## Backend Construction
+
+`backend_factory.py` centralizes default backend creation. Registry and
+inference facades receive the same backend mapping so catalog records,
+registered session models, and prediction calls agree on backend identity.
 
 ## Session State Contract
 
@@ -41,24 +106,20 @@ session_state["prediction_models"] = {
     "registered": {
         "<model_id>": {
             "model_id": "...",
-            "backend_name": "chemprop",
+            "backend_name": "lightgbm",
             "model_path": "...",
             "status": "validated",
-            "strengths": [...],
-            "limitations": [...],
             "known_metrics": {...},
             "task": {
                 "task_type": "regression",
                 "smiles_columns": ["smiles"],
-                "target_columns": ["solubility"],
-                "reaction_columns": [],
-                "uncertainty_method": None,
-                "calibration_method": None,
+                "target_columns": ["pEC50"],
             },
             "tags": {...},
         }
     },
     "last_prediction": {...},
+    "prediction_history": [...],
     "training_runs": [...],
 }
 ```
@@ -71,8 +132,7 @@ The persistent catalog lives in:
 src/cs_copilot/tools/prediction/model_catalog.json
 ```
 
-It acts as the source of truth for model selection metadata.  Each model entry
-can include:
+Each model entry can include:
 
 - runtime identity: `model_id`, `display_name`, `backend_name`, `model_path`
 - governance: `version`, `status`, `owner`, `source`
@@ -80,9 +140,6 @@ can include:
 - quality signals: `known_metrics`, `training_data_summary`
 - operational hints: `inference_profile`, `selection_hints`
 - user-facing caveats: `strengths`, `limitations`
-
-This allows the property predictor to justify why it chose a model, not just
-which model it ran.
 
 ## Canonical Data Contracts
 
@@ -96,7 +153,8 @@ which model it ran.
 ### Output
 
 - Input columns preserved whenever possible
-- Prediction columns written by backend output
+- Backend-specific prediction columns plus a canonical `prediction` when
+  available
 - Metadata tracked separately in session state:
   - `model_id`
   - `backend_name`
@@ -104,14 +162,10 @@ which model it ran.
   - `preds_path`
   - `return_uncertainty`
 
-## Near-Term Extension Points
+## Non-Goals
 
-- Add a `PredictionBackendRegistry` if multiple backends become active
-- Add uncertainty-aware ranking and calibration workflows
-- Add fingerprint extraction for GTM and chemoinformatics integration
-- Add active learning loops on top of `training_runs`
-
-## Deliberate Non-Goals of the First Iteration
-
-- No hard dependency on Chemprop for the whole project
-- No hidden training workflow guessed from user text without explicit metadata
+- No registry or inference routing through `ChempropToolkit`.
+- No implicit benchmark launch for ordinary `standard_qsar` or `robust_qsar`
+  training requests.
+- No hidden training workflow guessed from user text without explicit dataset,
+  target, task, and protocol metadata.

@@ -275,6 +275,8 @@ def _normalize_strategy_label(item: Dict[str, Any]) -> Optional[str]:
     strategy = str(item.get("strategy") or "").lower().strip()
     strategy_label = str(item.get("strategy_label") or "").lower().strip()
     combined = " ".join([strategy_family, strategy, strategy_label])
+    if strategy_label.startswith("random_seed_"):
+        return strategy_label
     if "scaffold" in combined:
         return "scaffold"
     if "cluster" in combined or "kmeans" in combined:
@@ -358,7 +360,9 @@ def build_qsar_training_plots(
 
     for item in split_results:
         strategy_label = _normalize_strategy_label(item)
-        if strategy_label not in {"random", "scaffold", "cluster_kmeans"}:
+        if strategy_label not in {"random", "scaffold", "cluster_kmeans"} and not strategy_label.startswith(
+            "random_seed_"
+        ):
             continue
         predictions_path = Path(item.get("test_predictions_path") or "")
         splits_path = Path(item.get("splits_path") or "")

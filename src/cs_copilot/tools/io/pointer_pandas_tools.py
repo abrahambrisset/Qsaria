@@ -6,6 +6,7 @@ Enhanced PandasTools with pointer-based dataframe management and S3 support.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 from uuid import uuid4
@@ -28,12 +29,22 @@ def _looks_like_json_path(path: object) -> bool:
     except Exception:
         return False
 
+
+def _ensure_parent_dir(path: object) -> None:
+    if not isinstance(path, str) or path.startswith("s3://"):
+        return
+    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
 _OPERATION_ALIASES = {
     "summary": "describe",
     "stats": "describe",
     "stat": "describe",
     "describe_dataframe": "describe",
     "describe_data": "describe",
+    "numeric_summary": "describe_numeric",
+    "numeric_stats": "describe_numeric",
+    "list_columns": "columns",
+    "column_info": "dtypes",
     "head_rows": "head",
     "tail_rows": "tail",
     "preview": "head",
@@ -46,10 +57,15 @@ _OPERATION_ALIASES = {
     "concatenate": "concat",
     "select": "select",
     "select_columns": "select",
+    "get_column": "__getitem__",
     "subset": "select",
     "drop_columns": "drop",
     "remove_columns": "drop",
     "drop_rows": "drop",
+    "rename_columns": "rename",
+    "to_pandas": "_identity",
+    "to_list": "_to_list",
+    "tolist": "_to_list",
     "len": "_len",
     "length": "_len",
     "n_rows": "_len",
@@ -86,15 +102,25 @@ _NULL_CHECK_OPS = {
 
 _CREATION_FUNCTIONS_MISUSED_AS_OPERATIONS = {"from_dict", "from_records", "dataframe"}
 _UNSUPPORTED_PSEUDO_OPERATIONS = {"import_subprocess", "subprocess", "shell", "exec", "execute"}
+_DEDICATED_TOOL_OPERATIONS = {"smiles_to_morgan_fingerprints", "smiles_to_rdkit_descriptors"}
 
 
 def _preview(df: pd.DataFrame) -> str:
     """Generate a preview string for a DataFrame."""
     head = df.iloc[:SAMPLE_ROWS, :SAMPLE_COLS]
-    return (
-        f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
-        + head.to_markdown(maxcolwidths=[MAX_COL_WIDTH])
-    )
+    header = f"(preview rows={SAMPLE_ROWS}, cols={SAMPLE_COLS}, shape={df.shape})\n"
+    if head.empty:
+        return header + f"Empty DataFrame with columns: {list(head.columns)}"
+    return header + head.to_markdown(maxcolwidths=[MAX_COL_WIDTH])
+
+
+def _json_payload_to_dataframe(payload: object) -> pd.DataFrame:
+    """Represent a JSON artifact as a small inspectable DataFrame."""
+    if isinstance(payload, list):
+        return pd.json_normalize(payload, sep=".")
+    if isinstance(payload, dict):
+        return pd.json_normalize(payload, sep=".")
+    return pd.DataFrame({"value": [payload]})
 
 
 def _normalize_csv(params: dict) -> dict:
@@ -137,6 +163,15 @@ def _normalize_operation_name(operation: str) -> str:
     if op.startswith("DataFrame."):
         op = op.split(".", 1)[1]
     return op
+
+
+def _parse_series_describe_expression(operation: str) -> Optional[str]:
+    """Accept the common LLM pseudo-operation df['column'].describe()."""
+    match = re.fullmatch(
+        r"(?:df|[A-Za-z_]\w*)\[['\"]([^'\"]+)['\"]\]\.describe\(\)",
+        operation.strip(),
+    )
+    return match.group(1) if match else None
 
 
 def _normalize_param_aliases(params: dict, canonical: str, aliases: tuple[str, ...]) -> None:
@@ -287,8 +322,8 @@ class PointerPandasTools(PandasTools):
             function_parameters, param_name="function_parameters"
         )
 
-        # Normalize CSV params early for common cases
-        if create_using_function in {"read_csv", "to_csv"}:
+        # Normalize file params early for common cases
+        if create_using_function in {"read_csv", "read_json", "to_csv"}:
             function_parameters = _normalize_csv(function_parameters)
 
         if create_using_function == "concat":
@@ -325,14 +360,11 @@ class PointerPandasTools(PandasTools):
                 )
             try:
                 if _looks_like_json_path(path):
-                    with S3.open(path, "r") as fh:
-                        df = pd.read_json(fh)
-                    self.dataframes[dataframe_name] = df
-                    logger.warning(
-                        "create_pandas_dataframe(read_csv=...) received JSON path %s; auto-loaded with read_json instead.",
-                        path,
+                    raise ValueError(
+                        "JSON artifacts should not be loaded with create_pandas_dataframe(read_csv=...). "
+                        "Use create_pandas_dataframe(create_using_function='read_json', ...) "
+                        f"or inspect the artifact path directly: {path}"
                     )
-                    return {"dataframe_name": dataframe_name, "preview": _preview(df)}
                 with S3.open(path, "r") as fh:
                     df = pd.read_csv(fh, **params)
                 self.dataframes[dataframe_name] = df
@@ -341,6 +373,35 @@ class PointerPandasTools(PandasTools):
             except Exception as e:
                 logger.error(f"Error reading CSV from {path}: {e}")
                 raise
+        elif create_using_function == "read_json":
+            params = function_parameters.copy()
+            path = params.pop("path_or_buf", None)
+
+            if path is None:
+                path = params.pop("filepath_or_buffer", None)
+            if path is None:
+                path = params.pop("filepath", None)
+            if path is None:
+                path = params.pop("file_path", None)
+            if path is None:
+                path = params.pop("path", None)
+
+            if path is None:
+                raise ValueError(
+                    "read_json requires 'path_or_buf' parameter. "
+                    "Example: function_parameters={'path_or_buf': 'artifact.json'}. "
+                    f"Received function_parameters: {function_parameters}"
+                )
+            try:
+                with S3.open(path, "r") as fh:
+                    payload = json.load(fh)
+                df = _json_payload_to_dataframe(payload)
+                self.dataframes[dataframe_name] = df
+                logger.info(f"Successfully loaded JSON from {path} with shape {df.shape}")
+                return {"dataframe_name": dataframe_name, "preview": _preview(df)}
+            except Exception as e:
+                logger.error(f"Error reading JSON from {path}: {e}")
+                raise
         elif create_using_function == "from_s3":
             # Handle loading from S3 path
             s3_path = function_parameters.get("s3_path")
@@ -348,7 +409,10 @@ class PointerPandasTools(PandasTools):
                 raise ValueError("s3_path parameter is required for from_s3 function")
             try:
                 with S3.open(s3_path, "r") as f:
-                    df = pd.read_json(f) if _looks_like_json_path(s3_path) else pd.read_csv(f)
+                    if _looks_like_json_path(s3_path):
+                        df = _json_payload_to_dataframe(json.load(f))
+                    else:
+                        df = pd.read_csv(f)
                 self.dataframes[dataframe_name] = df
                 logger.info(f"Successfully loaded file from {s3_path} with shape {df.shape}")
                 return {"dataframe_name": dataframe_name, "preview": _preview(df)}
@@ -361,7 +425,10 @@ class PointerPandasTools(PandasTools):
             try:
                 # Use S3.open which now supports s3://, local absolute, and relative
                 with S3.open(file_path, "r") as f:
-                    df = pd.read_json(f) if _looks_like_json_path(file_path) else pd.read_csv(f)
+                    if _looks_like_json_path(file_path):
+                        df = _json_payload_to_dataframe(json.load(f))
+                    else:
+                        df = pd.read_csv(f)
                 self.dataframes[dataframe_name] = df
                 logger.info(f"Successfully loaded file from {file_path} with shape {df.shape}")
                 return {"dataframe_name": dataframe_name, "preview": _preview(df)}
@@ -475,6 +542,10 @@ class PointerPandasTools(PandasTools):
             raise ValueError("operation cannot be empty")
 
         operation = _normalize_operation_name(operation)
+        described_column = _parse_series_describe_expression(operation)
+        if described_column is not None:
+            operation = "describe"
+            operation_parameters = {"column": described_column}
         operation = _OPERATION_ALIASES.get(operation.lower(), operation)
         params = _coerce_parameter_dict(
             operation_parameters, param_name="operation_parameters"
@@ -492,6 +563,12 @@ class PointerPandasTools(PandasTools):
                 "run_dataframe_operation() only works on existing DataFrames."
             )
 
+        if operation in _DEDICATED_TOOL_OPERATIONS:
+            raise ValueError(
+                f"'{operation}' is a dedicated molecular feature tool, not a pandas DataFrame operation. "
+                "Call it directly instead of routing it through run_dataframe_operation()."
+            )
+
         # Fix legacy to_csv aliases
         if operation == "to_csv":
             params = _normalize_csv(params)
@@ -503,6 +580,7 @@ class PointerPandasTools(PandasTools):
                 return df.to_csv(**params)
             try:
                 # pandas decides newline/encoding; we just provide a text handle
+                _ensure_parent_dir(path)
                 with S3.open(path, "w") as fh:
                     result = df.to_csv(fh, **params)
                 logger.info(f"Successfully wrote CSV to {path}")
@@ -526,6 +604,28 @@ class PointerPandasTools(PandasTools):
 
             if operation == "_len":
                 return int(len(df))
+
+            if operation == "_identity":
+                return {
+                    "dataframe_name": dataframe_name,
+                    "note": "DataFrame is already loaded; returning pointer and preview.",
+                    "preview": _preview(df),
+                }
+
+            if operation == "_to_list":
+                sample = df.head(SAMPLE_ROWS).values.tolist()
+                return {
+                    "dataframe_name": dataframe_name,
+                    "note": "sample only – full list omitted to save tokens",
+                    "columns": list(df.columns),
+                    "sample": sample,
+                    "rows_returned": len(sample),
+                    "total_rows": int(df.shape[0]),
+                }
+
+            if operation == "describe_numeric":
+                operation = "describe"
+                params.setdefault("include", "number")
 
             # Intercept to_dict to avoid context blow-up
             if operation == "to_dict":
@@ -753,6 +853,14 @@ class PointerPandasTools(PandasTools):
                         func = params.pop("operation_parameters")
                     elif "functions" in params:
                         func = params.pop("functions")
+                    elif "aggfunc" in params:
+                        func = params.pop("aggfunc")
+                    elif "agg_func" in params:
+                        func = params.pop("agg_func")
+                    elif "agg_dict" in params:
+                        func = params.pop("agg_dict")
+                    elif "aggregation_dict" in params:
+                        func = params.pop("aggregation_dict")
                     else:
                         raise ValueError(
                             f"'{operation}' requires 'func' parameter with aggregation functions. "
@@ -760,6 +868,10 @@ class PointerPandasTools(PandasTools):
                             f"func={{'column': 'mean'}}, func={{'column': ['min', 'max']}}. "
                             f"Received params: {params}"
                         )
+                if "column" in params and not isinstance(func, dict):
+                    columns = _coerce_columns(params.pop("column"), param_name="column")
+                    _validate_columns(df, columns, param_name="column")
+                    func = {column: func for column in columns}
 
                 # Ensure func is properly formatted
                 if isinstance(func, str):
@@ -773,6 +885,30 @@ class PointerPandasTools(PandasTools):
                     raise ValueError(
                         f"'func' must be a string, list, or dict. Got: {type(func).__name__}"
                     )
+
+            # Guard against LLM-generated pseudo-code passed into pandas apply-like APIs.
+            if operation in ("apply", "applymap", "map", "transform"):
+                func_param_name = None
+                for candidate in ("func", "callable", "function", "mapper"):
+                    if candidate in params:
+                        func_param_name = candidate
+                        break
+                if func_param_name is not None:
+                    func_value = params[func_param_name]
+                    if isinstance(func_value, str):
+                        stripped = func_value.strip()
+                        if stripped.startswith("lambda") or "lambda " in stripped:
+                            raise ValueError(
+                                f"{operation}() does not accept inline Python such as "
+                                f"'{func_value}'. Use a built-in pandas operation instead "
+                                "of passing code strings."
+                            )
+                        if operation in ("applymap", "map") and stripped:
+                            raise ValueError(
+                                f"{operation}() requires a real callable, but received the "
+                                f"string '{func_value}'. Use a supported pandas operation "
+                                "instead of passing function source code."
+                            )
 
             # Perform the operation
             if result is None:

@@ -27,7 +27,7 @@ The system uses a **Factory Pattern + Registry** for agent creation.
 
 | Agent | Role |
 |-------|------|
-| **Property Predictor** | Registers predictive models and runs molecular property prediction workflows (Chemprop-ready backend, not wired into the default team yet) |
+| **QSAR Prediction Agents** | Curate QSAR datasets, train models, manage the model catalog, run inference, create ensembles, and produce final QSAR reports through backend-neutral toolkits |
 
 ## Separate Evaluation Agent
 

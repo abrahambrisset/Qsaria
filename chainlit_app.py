@@ -356,6 +356,61 @@ def _is_qsar_team_mode() -> bool:
     return _get_active_team_mode() == "qsar"
 
 
+_QSAR_HANDOFF_LABEL_RE = re.compile(
+    r"(?im)^\s*(?:REPORT_LANGUAGE|HANDOFF_STATUS|SELECTED_MODEL|REASONS|"
+    r"PREDICTION_TABLE|FILES|CAVEATS|DATASET|COMPUTE|SPLIT|METRICS|"
+    r"MODEL_ID|REGISTRY_STATUS|BLOCKERS|NEXT_STEP|SOURCE_DATASET|"
+    r"RETAINED_COLUMNS|ROW_COUNTS|CURATION_POLICY|WARNINGS|FINAL_STATUS)\s*[:：]"
+)
+
+
+def _find_polished_qsar_report_start(full_content: str, *, after: int = -1) -> int:
+    """Find the start of a human-facing QSAR report inside a team trace."""
+    polished_patterns = [
+        r"(?im)^\s*Rapport(?:\s|$|[QSARdEéeD'’:\-—])",
+        r"(?im)^\s*pEC50 Prediction Report\b",
+        r"(?im)^\s*Prediction Report\b",
+        r"(?im)^\s*Résumé de l['’]ensemble\b",
+        r"(?im)^\s*Resume de l['’]ensemble\b",
+        r"(?im)^\s*Ensemble Summary\b",
+        r"(?im)^\s*Résumé des prédictions\b",
+        r"(?im)^\s*Resume des predictions\b",
+        r"(?im)^\s*Résumé des résultats\b",
+        r"(?im)^\s*Resume des resultats\b",
+        r"(?i)L['’]inférence a été réalisée",
+        r"(?i)L['’]inference a ete realisee",
+        r"(?i)Voici le résumé",
+        r"(?i)Voici le resume",
+        r"(?i)Voici les résultats",
+        r"(?i)Voici les resultats",
+        r"(?i)Here are the results",
+    ]
+    starts: list[int] = []
+    for pattern in polished_patterns:
+        for match in re.finditer(pattern, full_content):
+            if match.start() > after:
+                starts.append(match.start())
+    return min(starts) if starts else -1
+
+
+def _find_latest_backend_inventory_start(full_content: str, *, after: int = -1) -> int:
+    """Find the latest backend capability inventory inside a verbose team trace."""
+    backend_inventory_patterns = [
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Backends QSAR disponibles\b",
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?Available QSAR backends\b",
+        r"(?im)^\s*(?:[#*_>\-\s]*)(?:[^\w\s]\s*)?QSAR backends available\b",
+        r"(?im)^\s*Voici une description complète (?:de tous )?(?:des|de\s+\d+\s+)?backends QSAR disponibles\b",
+        r"(?im)^\s*Voici une description complete (?:de tous )?(?:des|de\s+\d+\s+)?backends QSAR disponibles\b",
+        r"(?im)^\s*Here (?:is|are) (?:a )?complete description of (?:all )?(?:the )?available QSAR backends\b",
+    ]
+    starts: list[int] = []
+    for pattern in backend_inventory_patterns:
+        for match in re.finditer(pattern, full_content):
+            if match.start() > after:
+                starts.append(match.start())
+    return max(starts) if starts else -1
+
+
 def _extract_qsar_final_report(full_content: str) -> str:
     """Best-effort extraction of the final QSAR report from a verbose team trace."""
     if not full_content:
@@ -364,6 +419,36 @@ def _extract_qsar_final_report(full_content: str) -> str:
     marked = re.findall(r"<qsar_report>\s*(.*?)\s*</qsar_report>", full_content, flags=re.S | re.I)
     if marked:
         return marked[-1].strip()
+
+    handoff_matches = list(_QSAR_HANDOFF_LABEL_RE.finditer(full_content))
+    last_handoff_start = handoff_matches[-1].start() if handoff_matches else -1
+
+    latest_backend_inventory = _find_latest_backend_inventory_start(
+        full_content,
+        after=last_handoff_start,
+    )
+    if latest_backend_inventory >= 0:
+        return full_content[latest_backend_inventory:].strip()
+
+    polished_after_handoff = _find_polished_qsar_report_start(
+        full_content,
+        after=last_handoff_start,
+    )
+    if polished_after_handoff >= 0:
+        return full_content[polished_after_handoff:].strip()
+
+    polished_start = _find_polished_qsar_report_start(full_content)
+    if polished_start >= 0:
+        candidate = full_content[polished_start:].strip()
+        handoff_tail = _QSAR_HANDOFF_LABEL_RE.search(candidate)
+        if handoff_tail:
+            candidate = candidate[:handoff_tail.start()].strip()
+        if candidate:
+            return candidate
+
+    latest_backend_inventory = _find_latest_backend_inventory_start(full_content)
+    if latest_backend_inventory >= 0:
+        return full_content[latest_backend_inventory:].strip()
 
     report_markers = [
         "QSAR Dataset Curation Report",
@@ -386,9 +471,8 @@ def _extract_qsar_final_report(full_content: str) -> str:
     if last_idx >= 0:
         return full_content[last_idx:].strip()
 
-    handoff_idx = full_content.rfind("HANDOFF_STATUS:")
-    if handoff_idx >= 0:
-        return full_content[handoff_idx:].strip()
+    if handoff_matches:
+        return full_content[last_handoff_start:].strip()
 
     return full_content.strip()
 
@@ -726,6 +810,16 @@ async def _file_bubble_streaming(file_ref: str) -> cl.Message:
         attached_refs = cl.user_session.get("attached_file_refs") or set()
         attached_refs.add(normalized_ref)
         cl.user_session.set("attached_file_refs", attached_refs)
+    except FileNotFoundError as e:
+        logger.warning(
+            "Downloadable file tag points to a missing file: %s (%s)",
+            normalized_ref,
+            e,
+        )
+        await cl.Message(
+            content=f"Could not prepare downloadable file: `{normalized_ref}`",
+            author="assistant",
+        ).send()
     except Exception as e:
         logger.error(
             "Failed to create downloadable file for %s: %s: %s",

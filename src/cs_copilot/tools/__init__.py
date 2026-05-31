@@ -22,6 +22,7 @@ Main Classes and Functions:
 
 # Analysis toolkits
 from .analysis import RobustnessAnalysisToolkit
+from .activity_cliffs import ActivityCliffToolkit
 from .chemistry import (
     AutoencoderToolkit,
     BaseChemistryToolkit,
@@ -30,11 +31,20 @@ from .chemistry import (
     SynPlannerToolkit,
 )
 from .curation import DatasetCurationToolkit
+from .features import MolecularFeatureToolkit
 from .prediction import (
+    BenchmarkToolkit,
     CatalogRecommendation,
     ChempropBackend,
-    ChempropToolkit,
+    EnsembleBackend,
+    EnsembleToolkit,
+    LightGBMBackend,
+    PredictionInferenceToolkit,
     PredictionModelCatalog,
+    ModelRegistryToolkit,
+    QSARTrainingToolkit,
+    TabICLBackend,
+    build_default_prediction_backends,
 )
 
 # GTM Toolkit
@@ -63,12 +73,22 @@ __all__ = [
     "BaseChemistryToolkit",
     "ChemicalSimilarityToolkit",
     "DatasetCurationToolkit",
+    "ActivityCliffToolkit",
+    "MolecularFeatureToolkit",
     "AutoencoderToolkit",
     "PeptideWAEToolkit",
     "SynPlannerToolkit",
-    "ChempropToolkit",
     "ChempropBackend",
+    "EnsembleToolkit",
+    "EnsembleBackend",
+    "LightGBMBackend",
+    "BenchmarkToolkit",
+    "TabICLBackend",
     "PredictionModelCatalog",
+    "ModelRegistryToolkit",
+    "PredictionInferenceToolkit",
+    "QSARTrainingToolkit",
+    "build_default_prediction_backends",
     "CatalogRecommendation",
     "ChemblToolkit",
     "RobustnessAnalysisToolkit",

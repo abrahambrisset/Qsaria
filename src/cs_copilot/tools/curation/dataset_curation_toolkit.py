@@ -19,7 +19,17 @@ from agno.tools.toolkit import Toolkit
 from rdkit import Chem
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+from cs_copilot.tools.curation.backends import (
+    standardize_with_chembl_structure_v1,
+    standardize_with_legacy_rdkit_v1,
+)
+from cs_copilot.tools.curation.policies import (
+    CHEMBL_QSAR_POLICY,
+    DEFAULT_CURATION_BACKEND,
+    DEFAULT_DUPLICATE_CONFLICT_THRESHOLD,
+    LEGACY_CURATION_BACKEND,
+    LEGACY_QSAR_POLICY,
+)
 
 from .backend import CurationRequest, CurationResult, TargetSummary
 
@@ -75,13 +85,18 @@ def _count_stereo_markers_removed(original: pd.Series, standardized: pd.Series) 
     return count
 
 
-_UNIT_COLUMN_PATTERN = re.compile(r"(?:^|_)(unit|units|uom|measurement_unit|conc_unit)(?:$|_)", re.I)
+_UNIT_COLUMN_PATTERN = re.compile(
+    r"(?:^|_)(unit|units|uom|measurement_unit|conc_unit)(?:$|_)", re.I
+)
 _ASSAY_CONTEXT_PATTERNS = {
     "assay_columns": re.compile(r"(assay|protocol|experiment|screen)", re.I),
     "ph_columns": re.compile(r"(^|_)(ph|p_h)(_|$)", re.I),
     "temperature_columns": re.compile(r"(temp|temperature)", re.I),
     "replicate_columns": re.compile(r"(replicate|replicates|repeat|n_repl|nrep)", re.I),
-    "fit_quality_columns": re.compile(r"(fit_quality|fitscore|fit_score|curve_quality|r2_fit|hill_fit|dose_response_quality)", re.I),
+    "fit_quality_columns": re.compile(
+        r"(fit_quality|fitscore|fit_score|curve_quality|r2_fit|hill_fit|dose_response_quality)",
+        re.I,
+    ),
     "cytotoxicity_columns": re.compile(r"(cytotox|cytotoxicity|cell_viability|viability)", re.I),
     "interference_columns": re.compile(r"(interference|artifact|fluorescence|quench|signal)", re.I),
     "time_columns": re.compile(r"(time|incubation)", re.I),
@@ -235,11 +250,94 @@ def _detect_measurement_context(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
+
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _normalize_classification_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return pd.NA
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else pd.NA
+    return value
+
+
 _METAL_ATOMIC_NUMBERS = {
-    3, 4, 11, 12, 13, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 55, 56,
-    57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
-    74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+    3,
+    4,
+    11,
+    12,
+    13,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
 }
 
 
@@ -286,29 +384,51 @@ def _resolve_regression_duplicates(
     df: pd.DataFrame,
     target_columns: List[str],
     conflict_threshold: float,
+    identity_column: str = "smiles",
 ) -> Dict[str, Any]:
     """Resolve duplicate standardized structures for regression datasets."""
     grouped_rows: List[Dict[str, Any]] = []
+    duplicate_group_records: List[Dict[str, Any]] = []
     duplicate_groups_detected = 0
     duplicate_groups_aggregated = 0
     duplicate_conflicting_groups = 0
     duplicate_conflicting_rows_removed = 0
 
-    for _, group in df.groupby("smiles", dropna=False, sort=False):
+    for identity_key, group in df.groupby(identity_column, dropna=False, sort=False):
         if len(group) == 1:
             grouped_rows.append(group.iloc[0].to_dict())
             continue
 
         duplicate_groups_detected += 1
         is_conflicting = False
+        target_spreads: Dict[str, float] = {}
+        target_values: Dict[str, List[float]] = {}
         for target in target_columns:
             series = pd.to_numeric(group[target], errors="coerce").dropna()
+            target_values[target] = [float(value) for value in series.tolist()]
             if len(series) <= 1:
+                target_spreads[target] = 0.0
                 continue
             spread = float(series.max() - series.min())
+            target_spreads[target] = spread
             if spread > conflict_threshold:
                 is_conflicting = True
                 break
+
+        group_record = {
+            "identity_key": identity_key,
+            "identity_column": identity_column,
+            "group_size": int(len(group)),
+            "resolution": "removed_conflict" if is_conflicting else "aggregated_mean",
+            "target_spreads": json.dumps(target_spreads, sort_keys=True),
+            "target_values": json.dumps(target_values, sort_keys=True),
+            "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
+            "raw_smiles": " | ".join(str(v) for v in group.get("raw_smiles", pd.Series()).tolist()),
+            "standardized_smiles": " | ".join(
+                str(v) for v in group.get("standardized_smiles", group["smiles"]).tolist()
+            ),
+        }
+        duplicate_group_records.append(group_record)
 
         if is_conflicting:
             duplicate_conflicting_groups += 1
@@ -328,7 +448,87 @@ def _resolve_regression_duplicates(
         "duplicate_groups_aggregated": duplicate_groups_aggregated,
         "duplicate_conflicting_groups": duplicate_conflicting_groups,
         "duplicate_conflicting_rows_removed": duplicate_conflicting_rows_removed,
+        "duplicate_group_records": duplicate_group_records,
     }
+
+
+def _resolve_classification_duplicates(
+    df: pd.DataFrame,
+    target_columns: List[str],
+    identity_column: str = "smiles",
+) -> Dict[str, Any]:
+    """Resolve duplicate standardized structures for classification datasets."""
+    grouped_rows: List[Dict[str, Any]] = []
+    duplicate_group_records: List[Dict[str, Any]] = []
+    duplicate_groups_detected = 0
+    duplicate_groups_aggregated = 0
+    duplicate_conflicting_groups = 0
+    duplicate_conflicting_rows_removed = 0
+
+    for identity_key, group in df.groupby(identity_column, dropna=False, sort=False):
+        if len(group) == 1:
+            grouped_rows.append(group.iloc[0].to_dict())
+            continue
+
+        duplicate_groups_detected += 1
+        target_values = {
+            target: [_normalize_classification_label(value) for value in group[target].tolist()]
+            for target in target_columns
+        }
+        is_conflicting = any(
+            len({str(value) for value in values if not pd.isna(value)}) > 1
+            for values in target_values.values()
+        )
+        duplicate_group_records.append(
+            {
+                "identity_key": identity_key,
+                "identity_column": identity_column,
+                "group_size": int(len(group)),
+                "resolution": (
+                    "removed_class_conflict" if is_conflicting else "kept_first_same_class"
+                ),
+                "target_spreads": "{}",
+                "target_values": json.dumps(
+                    {
+                        target: [str(value) for value in values]
+                        for target, values in target_values.items()
+                    },
+                    sort_keys=True,
+                ),
+                "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
+                "raw_smiles": " | ".join(str(v) for v in group["raw_smiles"].tolist()),
+                "standardized_smiles": " | ".join(
+                    str(v) for v in group["standardized_smiles"].tolist()
+                ),
+            }
+        )
+        if is_conflicting:
+            duplicate_conflicting_groups += 1
+            duplicate_conflicting_rows_removed += int(len(group))
+            continue
+        grouped_rows.append(group.iloc[0].to_dict())
+        duplicate_groups_aggregated += 1
+
+    resolved_df = pd.DataFrame(grouped_rows, columns=df.columns)
+    return {
+        "dataframe": resolved_df,
+        "duplicate_groups_detected": duplicate_groups_detected,
+        "duplicate_groups_aggregated": duplicate_groups_aggregated,
+        "duplicate_conflicting_groups": duplicate_conflicting_groups,
+        "duplicate_conflicting_rows_removed": duplicate_conflicting_rows_removed,
+        "duplicate_group_records": duplicate_group_records,
+    }
+
+
+def _select_curation_backend(curation_backend: str):
+    if curation_backend == DEFAULT_CURATION_BACKEND:
+        return standardize_with_chembl_structure_v1
+    if curation_backend == LEGACY_CURATION_BACKEND:
+        return standardize_with_legacy_rdkit_v1
+    available = [DEFAULT_CURATION_BACKEND, LEGACY_CURATION_BACKEND]
+    raise ValueError(
+        f"Unknown curation_backend: {curation_backend}. Available backends: {available}"
+    )
 
 
 class DatasetCurationToolkit(Toolkit):
@@ -344,7 +544,26 @@ class DatasetCurationToolkit(Toolkit):
 
     def inspect_dataset_schema(self, dataset_path: str) -> Dict[str, Any]:
         """Inspect columns, size, and a small preview for a dataset."""
-        df = _load_dataset(dataset_path)
+        try:
+            df = _load_dataset(dataset_path)
+        except FileNotFoundError as exc:
+            requested_name = Path(str(dataset_path)).name.lower()
+            target_like_names = {
+                "pec50.csv",
+                "pic50.csv",
+                "ec50.csv",
+                "ic50.csv",
+                "pki.csv",
+                "ki.csv",
+            }
+            if requested_name in target_like_names:
+                raise FileNotFoundError(
+                    f"Dataset path `{dataset_path}` does not exist. `{Path(str(dataset_path)).stem}` looks like a "
+                    "target name, not an uploaded dataset file. For a request such as `cree un ensemble QSAR sur "
+                    "pEC50`, do not inspect a dataset schema; route to the model-registry ensemble workflow "
+                    "(`inspect_ensemble_candidates` then `create_ensemble_from_catalog`)."
+                ) from exc
+            raise
         return {
             "dataset_path": dataset_path,
             "rows": int(len(df)),
@@ -387,8 +606,19 @@ class DatasetCurationToolkit(Toolkit):
                 for column in columns
                 if column not in excluded and pd.api.types.is_numeric_dtype(df[column])
             ]
-            if task_type == "regression":
+            if str(task_type or "").strip().lower() == "regression":
                 target_columns = numeric_candidates[:1]
+            elif _is_classification_task(task_type):
+                classification_candidates = []
+                for column in columns:
+                    if column in excluded:
+                        continue
+                    normalized = df[column].map(_normalize_classification_label).dropna()
+                    class_count = int(normalized.nunique(dropna=True))
+                    max_reasonable_classes = max(2, min(50, int(len(normalized) / 2) or 2))
+                    if 2 <= class_count <= max_reasonable_classes:
+                        classification_candidates.append(column)
+                target_columns = classification_candidates[:1]
             else:
                 target_columns = numeric_candidates[:1]
 
@@ -409,7 +639,8 @@ class DatasetCurationToolkit(Toolkit):
         target_columns: List[str],
         output_csv: Optional[str] = None,
         dataset_id: Optional[str] = None,
-        duplicate_conflict_threshold: float = 1.0,
+        duplicate_conflict_threshold: float = DEFAULT_DUPLICATE_CONFLICT_THRESHOLD,
+        curation_backend: str = DEFAULT_CURATION_BACKEND,
         report_path: Optional[str] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -421,7 +652,11 @@ class DatasetCurationToolkit(Toolkit):
             preferred_smiles_column=smiles_column,
             preferred_target_columns=target_columns,
             duplicate_conflict_threshold=duplicate_conflict_threshold,
+            curation_backend=curation_backend,
         )
+        normalized_task_type = str(task_type or "").strip().lower()
+        is_regression_task = normalized_task_type == "regression"
+        is_classification_task = _is_classification_task(normalized_task_type)
         df = _load_dataset(dataset_path)
         rows_in = int(len(df))
         working = df.copy()
@@ -429,19 +664,20 @@ class DatasetCurationToolkit(Toolkit):
         warnings: List[str] = []
         blocking_issues: List[str] = []
         actions: List[str] = []
+        backend_policy = (
+            CHEMBL_QSAR_POLICY
+            if curation_backend == DEFAULT_CURATION_BACKEND
+            else LEGACY_QSAR_POLICY
+        )
         curation_policy = {
-            "structure_pipeline": [
-                "remove inorganic structures",
-                "remove organometallic structures",
-                "remove mixtures with multiple organic fragments",
-                "standardize remaining structures",
-            ],
-            "fragment_handling": "retain largest fragment parent for salt/counterion cases",
-            "smiles_standardization": "cleanup -> fragment parent -> uncharge -> canonical tautomer",
-            "tautomer_policy": "canonical_tautomer",
+            **backend_policy,
             "duplicate_policy": "aggregate_mean_if_spread_within_threshold_else_drop_conflicts",
             "duplicate_conflict_threshold": duplicate_conflict_threshold,
-            "target_policy": "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets",
+            "target_policy": (
+                "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets"
+                if is_regression_task
+                else "preserve_class_labels -> remove_missing_labels -> require_at_least_two_classes"
+            ),
             "unit_policy": "detect explicit unit columns -> block on unresolved heterogeneous units -> infer unit context only when no explicit unit column exists",
             "outlier_policy": "detect_iqr_1.5 -> flag_only",
             "measurement_context_policy": "detect assay/context/fit-quality columns -> report availability without filtering rows",
@@ -496,7 +732,29 @@ class DatasetCurationToolkit(Toolkit):
         structural_remove_mask = (
             flags_df["is_inorganic"] | flags_df["is_organometallic"] | flags_df["is_mixture"]
         )
+        structural_removed_records: List[Dict[str, Any]] = []
         if structural_remove_mask.any():
+            removed_structures = working.loc[structural_remove_mask].copy()
+            for row_index, row in removed_structures.iterrows():
+                flag_row = flags_df.loc[row_index]
+                reasons = [
+                    reason
+                    for reason, active in {
+                        "inorganic": flag_row["is_inorganic"],
+                        "organometallic": flag_row["is_organometallic"],
+                        "mixture_multiple_organic_fragments": flag_row["is_mixture"],
+                    }.items()
+                    if active
+                ]
+                structural_removed_records.append(
+                    {
+                        "row_index": row_index,
+                        "raw_smiles": row.get("smiles"),
+                        "standardized_smiles": None,
+                        "curation_identity_key": None,
+                        "removal_reason": ",".join(reasons),
+                    }
+                )
             working = working.loc[~structural_remove_mask].copy()
             actions.append("remove inorganic structures")
             actions.append("remove organometallic structures")
@@ -505,8 +763,55 @@ class DatasetCurationToolkit(Toolkit):
             actions.append("check inorganic / organometallic / mixture structures")
 
         original_smiles = working["smiles"].copy()
-        working = standardize_smiles_column(working, "smiles")
-        invalid_before_drop = int(working["smiles"].isna().sum())
+        backend_standardizer = _select_curation_backend(curation_backend)
+        backend_result = backend_standardizer(original_smiles)
+        curation_policy["curation_backend_requested"] = backend_result.get("backend_name")
+        curation_policy["curation_backend_used"] = backend_result.get("used_backend_name")
+        curation_policy["curation_backend_fallback_used"] = bool(
+            backend_result.get("fallback_used")
+        )
+        if backend_result.get("fallback_reason"):
+            curation_policy["curation_backend_fallback_reason"] = backend_result["fallback_reason"]
+        standardization_map = backend_result["standardization_map"].copy()
+        standardization_map = standardization_map.set_index("row_index", drop=False)
+        working["raw_smiles"] = standardization_map.reindex(working.index)["raw_smiles"].values
+        if "chembl_input_smiles" in standardization_map.columns:
+            working["chembl_input_smiles"] = standardization_map.reindex(working.index)[
+                "chembl_input_smiles"
+            ].values
+        working["standardized_smiles"] = standardization_map.reindex(working.index)[
+            "standardized_smiles"
+        ].values
+        working["qsar_identity_smiles"] = standardization_map.reindex(working.index)[
+            "qsar_identity_smiles"
+        ].values
+        working["curation_identity_key"] = standardization_map.reindex(working.index)[
+            "curation_identity_key"
+        ].values
+        working["curation_identity_key_type"] = standardization_map.reindex(working.index)[
+            "curation_identity_key_type"
+        ].values
+        working["curation_backend_status"] = standardization_map.reindex(working.index)[
+            "curation_backend_status"
+        ].values
+        working["checker_issues"] = standardization_map.reindex(working.index)[
+            "checker_issues"
+        ].values
+        working["checker_max_penalty"] = standardization_map.reindex(working.index)[
+            "checker_max_penalty"
+        ].values
+        working["parent_structure_changed"] = standardization_map.reindex(working.index)[
+            "parent_structure_changed"
+        ].values
+        working["stereochemistry_removed_for_identity"] = standardization_map.reindex(
+            working.index
+        )["stereochemistry_removed_for_identity"].values
+        working["smiles"] = working["standardized_smiles"]
+        checker_warning_mask = (
+            pd.to_numeric(working["checker_max_penalty"], errors="coerce").fillna(0) > 0
+        )
+        invalid_or_rejected_mask = working["smiles"].isna()
+        invalid_before_drop = int(invalid_or_rejected_mask.sum())
         stereochemistry_markers_removed = _count_stereo_markers_removed(
             original_smiles, working["smiles"]
         )
@@ -515,42 +820,86 @@ class DatasetCurationToolkit(Toolkit):
             actions.append("remove invalid smiles")
         else:
             actions.append("standardize smiles")
-        working = working.dropna(subset=["smiles"]).copy()
+        invalid_removed_records = [
+            {
+                "row_index": row_index,
+                "raw_smiles": row.get("raw_smiles"),
+                "standardized_smiles": row.get("standardized_smiles"),
+                "curation_identity_key": row.get("curation_identity_key"),
+                "removal_reason": (
+                    "chembl_checker_penalty_ge_6"
+                    if pd.to_numeric(row.get("checker_max_penalty"), errors="coerce") >= 6
+                    else row.get("curation_backend_status") or "invalid_smiles"
+                ),
+            }
+            for row_index, row in working.loc[invalid_or_rejected_mask].iterrows()
+        ]
+        working = working.loc[~invalid_or_rejected_mask].copy()
 
         missing_target_removed = 0
         non_numeric_target_removed = 0
         infinite_target_removed = 0
+        classification_target_summary: Dict[str, Any] = {}
         curated_targets: List[str] = []
         for column in target_columns:
-            numeric = pd.to_numeric(working[column], errors="coerce")
-            raw_missing = int(working[column].isna().sum())
-            coerced_missing = int(numeric.isna().sum())
-            non_numeric_target_removed += max(coerced_missing - raw_missing, 0)
-            infinite_mask = numeric.apply(lambda v: isinstance(v, (int, float)) and not math.isfinite(v))
-            infinite_target_removed += int(infinite_mask.sum())
-            numeric = numeric.mask(infinite_mask, other=pd.NA)
-            missing_target_removed += int(numeric.isna().sum())
-            working[column] = numeric
-            curated_targets.append(column)
+            if is_regression_task:
+                numeric = pd.to_numeric(working[column], errors="coerce")
+                raw_missing = int(working[column].isna().sum())
+                coerced_missing = int(numeric.isna().sum())
+                non_numeric_target_removed += max(coerced_missing - raw_missing, 0)
+                infinite_mask = numeric.apply(
+                    lambda v: isinstance(v, (int, float)) and not math.isfinite(v)
+                )
+                infinite_target_removed += int(infinite_mask.sum())
+                numeric = numeric.mask(infinite_mask, other=pd.NA)
+                missing_target_removed += int(numeric.isna().sum())
+                working[column] = numeric
+                curated_targets.append(column)
+            elif is_classification_task:
+                normalized_labels = working[column].map(_normalize_classification_label)
+                missing_mask = normalized_labels.isna()
+                missing_target_removed += int(missing_mask.sum())
+                working = working.loc[~missing_mask].copy()
+                working[column] = normalized_labels.loc[working.index]
+                curated_targets.append(column)
+                class_counts = working[column].value_counts(dropna=False).to_dict()
+                classification_target_summary[column] = {
+                    "class_counts": {str(key): int(value) for key, value in class_counts.items()},
+                    "class_count": int(len(class_counts)),
+                    "classes": [str(value) for value in class_counts.keys()],
+                }
+            else:
+                curated_targets.append(column)
 
-        if task_type == "regression":
+        if is_regression_task:
             if not curated_targets:
                 blocking_issues.append("No regression target column was retained after curation.")
             working = working.dropna(subset=curated_targets).copy()
             actions.append("coerce target columns to numeric")
             actions.append("remove missing target rows")
+        elif is_classification_task:
+            if not curated_targets:
+                blocking_issues.append(
+                    "No classification target column was retained after curation."
+                )
+            actions.append("preserve classification target labels")
+            if missing_target_removed:
+                actions.append("remove missing classification target rows")
 
-        duplicate_rows_removed = int(working.duplicated(subset=["smiles"]).sum())
+        duplicate_identity_column = backend_result.get("identity_column") or "curation_identity_key"
+        duplicate_rows_removed = int(working.duplicated(subset=[duplicate_identity_column]).sum())
         duplicate_groups_detected = 0
         duplicate_groups_aggregated = 0
         duplicate_conflicting_groups = 0
         duplicate_conflicting_rows_removed = 0
+        duplicate_group_records: List[Dict[str, Any]] = []
         if duplicate_rows_removed:
-            if task_type == "regression" and curated_targets:
+            if is_regression_task and curated_targets:
                 duplicate_resolution = _resolve_regression_duplicates(
                     working,
                     curated_targets,
                     conflict_threshold=duplicate_conflict_threshold,
+                    identity_column=duplicate_identity_column,
                 )
                 working = duplicate_resolution["dataframe"]
                 duplicate_groups_detected = duplicate_resolution["duplicate_groups_detected"]
@@ -559,14 +908,60 @@ class DatasetCurationToolkit(Toolkit):
                 duplicate_conflicting_rows_removed = duplicate_resolution[
                     "duplicate_conflicting_rows_removed"
                 ]
+                duplicate_group_records = duplicate_resolution["duplicate_group_records"]
                 actions.append(
-                    "resolve duplicate standardized smiles using conflict-threshold aggregation"
+                    "resolve duplicate QSAR identities using conflict-threshold aggregation"
                 )
+            elif is_classification_task and curated_targets:
+                duplicate_resolution = _resolve_classification_duplicates(
+                    working,
+                    curated_targets,
+                    identity_column=duplicate_identity_column,
+                )
+                working = duplicate_resolution["dataframe"]
+                duplicate_groups_detected = duplicate_resolution["duplicate_groups_detected"]
+                duplicate_groups_aggregated = duplicate_resolution["duplicate_groups_aggregated"]
+                duplicate_conflicting_groups = duplicate_resolution["duplicate_conflicting_groups"]
+                duplicate_conflicting_rows_removed = duplicate_resolution[
+                    "duplicate_conflicting_rows_removed"
+                ]
+                duplicate_group_records = duplicate_resolution["duplicate_group_records"]
+                actions.append("resolve duplicate QSAR identities using classification labels")
             else:
-                working = working.drop_duplicates(subset=["smiles"], keep="first").copy()
-                actions.append("remove duplicate standardized smiles")
+                duplicate_group_records = [
+                    {
+                        "identity_key": key,
+                        "identity_column": duplicate_identity_column,
+                        "group_size": int(len(group)),
+                        "resolution": "kept_first",
+                        "target_spreads": "{}",
+                        "target_values": json.dumps(
+                            {
+                                target: [
+                                    float(value)
+                                    for value in pd.to_numeric(group[target], errors="coerce")
+                                    .dropna()
+                                    .tolist()
+                                ]
+                                for target in curated_targets
+                            },
+                            sort_keys=True,
+                        ),
+                        "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
+                        "raw_smiles": " | ".join(str(v) for v in group["raw_smiles"].tolist()),
+                        "standardized_smiles": " | ".join(
+                            str(v) for v in group["standardized_smiles"].tolist()
+                        ),
+                    }
+                    for key, group in working.groupby(duplicate_identity_column, dropna=False)
+                    if len(group) > 1
+                ]
+                working = working.drop_duplicates(
+                    subset=[duplicate_identity_column], keep="first"
+                ).copy()
+                actions.append("remove duplicate QSAR identities")
         else:
-            actions.append("check duplicate standardized smiles")
+            actions.append("check duplicate QSAR identities")
 
         rows_out = int(len(working))
         if rows_out == 0:
@@ -575,95 +970,176 @@ class DatasetCurationToolkit(Toolkit):
         target_summaries: List[TargetSummary] = []
         constant_target_columns: List[str] = []
         for column in curated_targets:
-            series = pd.to_numeric(working[column], errors="coerce").dropna()
-            if series.empty:
-                warnings.append(f"Target column `{column}` is empty after curation.")
-                continue
-            if series.nunique(dropna=True) <= 1:
-                constant_target_columns.append(column)
-            target_summaries.append(
-                TargetSummary(
-                    column=column,
-                    mean=float(series.mean()),
-                    std=float(series.std()) if len(series) > 1 else 0.0,
-                    minimum=float(series.min()),
-                    maximum=float(series.max()),
-                    median=float(series.median()),
+            if is_regression_task:
+                series = pd.to_numeric(working[column], errors="coerce").dropna()
+                if series.empty:
+                    warnings.append(f"Target column `{column}` is empty after curation.")
+                    continue
+                if series.nunique(dropna=True) <= 1:
+                    constant_target_columns.append(column)
+                target_summaries.append(
+                    TargetSummary(
+                        column=column,
+                        mean=float(series.mean()),
+                        std=float(series.std()) if len(series) > 1 else 0.0,
+                        minimum=float(series.min()),
+                        maximum=float(series.max()),
+                        median=float(series.median()),
+                    )
                 )
+            elif is_classification_task:
+                class_counts = working[column].value_counts(dropna=False).to_dict()
+                classification_target_summary[column] = {
+                    "class_counts": {str(key): int(value) for key, value in class_counts.items()},
+                    "class_count": int(len(class_counts)),
+                    "classes": [str(value) for value in class_counts.keys()],
+                }
+                if len(class_counts) <= 1:
+                    constant_target_columns.append(column)
+
+        if is_regression_task and len(constant_target_columns) == len(curated_targets):
+            blocking_issues.append("All retained target columns are constant after curation.")
+        if is_classification_task and len(constant_target_columns) == len(curated_targets):
+            blocking_issues.append(
+                "All retained classification target columns have fewer than two classes after curation."
             )
 
-        if task_type == "regression" and len(constant_target_columns) == len(curated_targets):
-            blocking_issues.append("All retained target columns are constant after curation.")
-
-        unit_quality = _detect_target_unit_quality(
-            df=df,
-            dataset_path=dataset_path,
-            dataset_id=dataset_id or Path(dataset_path).stem,
-            target_columns=curated_targets or target_columns,
-        )
-        outlier_quality = _detect_target_outliers(
-            working,
-            target_columns=curated_targets,
-        )
+        if is_regression_task:
+            unit_quality = _detect_target_unit_quality(
+                df=df,
+                dataset_path=dataset_path,
+                dataset_id=dataset_id or Path(dataset_path).stem,
+                target_columns=curated_targets or target_columns,
+            )
+            outlier_quality = _detect_target_outliers(
+                working,
+                target_columns=curated_targets,
+            )
+        else:
+            unit_quality = {
+                "unit_columns_detected": [],
+                "unit_values_detected": [],
+                "target_unit_detected": None,
+                "target_unit_source": None,
+                "target_unit_homogeneous": None,
+                "unit_conflicts_detected": 0,
+                "unit_column_value_map": {},
+            }
+            outlier_quality = {
+                "outlier_method": None,
+                "outliers_flagged_total": 0,
+                "outliers_flagged_by_target": {},
+                "outlier_bounds_by_target": {},
+                "outlier_policy": "not_applicable_for_classification",
+            }
         measurement_context = _detect_measurement_context(df)
 
         target_data_quality = {
-            "numeric_targets_required": task_type == "regression",
+            "numeric_targets_required": is_regression_task,
+            "classification_targets_allowed": is_classification_task,
             "non_numeric_target_removed": non_numeric_target_removed,
             "infinite_target_removed": infinite_target_removed,
             "missing_target_removed": missing_target_removed,
             "constant_target_columns": list(constant_target_columns),
+            "classification_target_summary": classification_target_summary,
             "target_ready_for_qsar": not bool(
                 blocking_issues
-                or (task_type == "regression" and len(constant_target_columns) == len(curated_targets))
+                or (is_regression_task and len(constant_target_columns) == len(curated_targets))
+                or (is_classification_task and len(constant_target_columns) == len(curated_targets))
             ),
         }
         target_data_quality.update(unit_quality)
         target_data_quality.update(outlier_quality)
         target_data_quality.update(measurement_context)
 
-        if unit_quality.get("unit_conflicts_detected", 0):
-            blocking_issues.append(
-                "Conflicting target units detected in the dataset; unit harmonization is required before QSAR training."
-            )
-        elif unit_quality.get("target_unit_detected"):
-            actions.append(
-                f"detect target unit context: {unit_quality['target_unit_detected']}"
-            )
+        if is_regression_task:
+            if unit_quality.get("unit_conflicts_detected", 0):
+                blocking_issues.append(
+                    "Conflicting target units detected in the dataset; unit harmonization is required before QSAR training."
+                )
+            elif unit_quality.get("target_unit_detected"):
+                actions.append(
+                    f"detect target unit context: {unit_quality['target_unit_detected']}"
+                )
         if measurement_context.get("experimental_context_columns_detected"):
             actions.append("detect experimental context columns")
 
         if invalid_before_drop == 0:
             warnings.append("No invalid SMILES were removed during curation.")
+        if backend_result.get("fallback_used"):
+            warnings.append(
+                "Requested ChEMBL curation backend fell back to legacy RDKit backend: "
+                + str(backend_result.get("fallback_reason"))
+            )
+        parent_changed_count = int(
+            standardization_map["parent_structure_changed"].fillna(False).sum()
+        )
+        if parent_changed_count:
+            warnings.append(
+                f"{parent_changed_count} structures changed during parent/salt standardization."
+            )
+        checker_warning_count = int(checker_warning_mask.sum())
+        if checker_warning_count:
+            max_checker_penalty = int(
+                pd.to_numeric(working["checker_max_penalty"], errors="coerce").fillna(0).max()
+            )
+            warnings.append(
+                f"ChEMBL checker flagged {checker_warning_count} standardized parent structures; max penalty={max_checker_penalty}. Rows were retained because checker policy is warn_only."
+            )
+        row_fallback_count = int(
+            (
+                standardization_map["curation_backend_status"] == "chembl_row_fallback_legacy_rdkit"
+            ).sum()
+        )
+        if row_fallback_count:
+            warnings.append(
+                f"{row_fallback_count} rows used legacy RDKit fallback after ChEMBL row-level standardization errors."
+            )
+        stereo_identity_removed_count = int(
+            standardization_map["stereochemistry_removed_for_identity"].fillna(False).sum()
+        )
+        if stereo_identity_removed_count:
+            warnings.append(
+                f"Stereochemistry was stripped for QSAR identity on {stereo_identity_removed_count} rows."
+            )
         if inorganic_rows_removed:
             warnings.append(f"{inorganic_rows_removed} inorganic structures were removed.")
         if organometallic_rows_removed:
-            warnings.append(f"{organometallic_rows_removed} organometallic structures were removed.")
+            warnings.append(
+                f"{organometallic_rows_removed} organometallic structures were removed."
+            )
         if mixture_rows_removed:
-            warnings.append(f"{mixture_rows_removed} multi-component organic mixtures were removed.")
+            warnings.append(
+                f"{mixture_rows_removed} multi-component organic mixtures were removed."
+            )
         if salt_or_counterion_rows_processed:
             warnings.append(
                 f"{salt_or_counterion_rows_processed} rows were processed as salt/counterion cases via fragment-parent standardization."
             )
         if duplicate_rows_removed == 0:
-            warnings.append("No duplicate standardized SMILES were removed.")
+            warnings.append("No duplicate QSAR identities were removed.")
         elif duplicate_conflicting_groups:
             warnings.append(
-                f"{duplicate_conflicting_groups} duplicate structure groups exceeded the conflict threshold and were removed."
+                f"{duplicate_conflicting_groups} duplicate QSAR identity groups exceeded the conflict threshold and were removed."
             )
         if duplicate_groups_aggregated:
-            warnings.append(
-                f"{duplicate_groups_aggregated} duplicate structure groups were aggregated by mean target."
-            )
+            if is_classification_task:
+                warnings.append(
+                    f"{duplicate_groups_aggregated} duplicate QSAR identity groups agreed on class labels and were collapsed."
+                )
+            else:
+                warnings.append(
+                    f"{duplicate_groups_aggregated} duplicate QSAR identity groups were aggregated by mean target."
+                )
         if stereochemistry_markers_removed:
             warnings.append(
                 f"Standardization removed explicit stereochemistry markers for {stereochemistry_markers_removed} rows."
             )
-        if non_numeric_target_removed:
+        if is_regression_task and non_numeric_target_removed:
             warnings.append(
                 f"{non_numeric_target_removed} target values were non-numeric and removed during coercion."
             )
-        if infinite_target_removed:
+        if is_regression_task and infinite_target_removed:
             warnings.append(
                 f"{infinite_target_removed} target values were infinite and removed during curation."
             )
@@ -671,21 +1147,22 @@ class DatasetCurationToolkit(Toolkit):
             warnings.append(
                 f"Constant target columns detected after curation: {', '.join(constant_target_columns)}."
             )
-        if unit_quality.get("unit_conflicts_detected", 0):
-            warnings.append(
-                "Multiple target units were detected; the dataset was blocked pending unit harmonization."
-            )
-        elif unit_quality.get("target_unit_detected"):
-            unit_source = unit_quality.get("target_unit_source") or "unknown_source"
-            warnings.append(
-                f"Target unit context detected as `{unit_quality['target_unit_detected']}` via {unit_source}."
-            )
-        else:
-            warnings.append("No explicit target unit column was detected.")
-        if outlier_quality.get("outliers_flagged_total", 0):
-            warnings.append(
-                f"{outlier_quality['outliers_flagged_total']} potential target outliers were flagged using the IQR rule."
-            )
+        if is_regression_task:
+            if unit_quality.get("unit_conflicts_detected", 0):
+                warnings.append(
+                    "Multiple target units were detected; the dataset was blocked pending unit harmonization."
+                )
+            elif unit_quality.get("target_unit_detected"):
+                unit_source = unit_quality.get("target_unit_source") or "unknown_source"
+                warnings.append(
+                    f"Target unit context detected as `{unit_quality['target_unit_detected']}` via {unit_source}."
+                )
+            else:
+                warnings.append("No explicit target unit column was detected.")
+            if outlier_quality.get("outliers_flagged_total", 0):
+                warnings.append(
+                    f"{outlier_quality['outliers_flagged_total']} potential target outliers were flagged using the IQR rule."
+                )
         if measurement_context.get("experimental_context_columns_detected"):
             warnings.append(
                 "Experimental context columns detected: "
@@ -699,7 +1176,8 @@ class DatasetCurationToolkit(Toolkit):
 
         target_data_quality["target_ready_for_qsar"] = not bool(
             blocking_issues
-            or (task_type == "regression" and len(constant_target_columns) == len(curated_targets))
+            or (is_regression_task and len(constant_target_columns) == len(curated_targets))
+            or (is_classification_task and len(constant_target_columns) == len(curated_targets))
         )
 
         if output_csv:
@@ -709,6 +1187,112 @@ class DatasetCurationToolkit(Toolkit):
             curated_path = (Path(".files") / "qsar_curation" / f"{stem}_curated.csv").resolve()
         curated_path.parent.mkdir(parents=True, exist_ok=True)
         working.to_csv(curated_path, index=False)
+
+        artifact_dir = curated_path.parent / f"{curated_path.stem}_curation_artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        standardization_map_path = artifact_dir / "curation_standardization_map.csv"
+        duplicate_groups_path = artifact_dir / "curation_duplicate_identity_groups.csv"
+        removed_rows_path = artifact_dir / "curation_removed_rows.csv"
+        identity_diagnostics_path = artifact_dir / "curation_identity_diagnostics.json"
+        manifest_path = artifact_dir / "curation_manifest.json"
+
+        standardization_map.to_csv(standardization_map_path, index=False)
+        pd.DataFrame(duplicate_group_records).to_csv(duplicate_groups_path, index=False)
+        duplicate_conflict_removed_records = [
+            {
+                "row_index": record["row_indices"],
+                "row_indices": record["row_indices"],
+                "group_size": record["group_size"],
+                "removed_row_count": record["group_size"],
+                "raw_smiles": record["raw_smiles"],
+                "standardized_smiles": record["standardized_smiles"],
+                "curation_identity_key": record["identity_key"],
+                "target_spreads": record.get("target_spreads", "{}"),
+                "target_values": record.get("target_values", "{}"),
+                "removal_reason": "duplicate_identity_conflict",
+            }
+            for record in duplicate_group_records
+            if record.get("resolution") == "removed_conflict"
+        ]
+        removed_rows = pd.DataFrame(
+            [
+                *structural_removed_records,
+                *invalid_removed_records,
+                *duplicate_conflict_removed_records,
+            ]
+        )
+        removed_reason_counts = (
+            removed_rows["removal_reason"].value_counts(dropna=False).to_dict()
+            if "removal_reason" in removed_rows.columns
+            else {}
+        )
+        removed_rows.to_csv(removed_rows_path, index=False)
+        identity_diagnostics = {
+            "curation_backend_requested": backend_result.get("backend_name"),
+            "curation_backend_used": backend_result.get("used_backend_name"),
+            "curation_backend_fallback_used": bool(backend_result.get("fallback_used")),
+            "curation_backend_fallback_reason": backend_result.get("fallback_reason"),
+            "duplicate_identity_column": duplicate_identity_column,
+            "duplicate_conflict_threshold": duplicate_conflict_threshold,
+            "duplicate_groups_detected": duplicate_groups_detected,
+            "duplicate_groups_aggregated": duplicate_groups_aggregated,
+            "duplicate_conflicting_groups": duplicate_conflicting_groups,
+            "checker_policy": curation_policy.get("checker_policy"),
+            "checker_flagged_rows": checker_warning_count,
+            "checker_rejected_rows": 0,
+            "backend_status_counts": standardization_map["curation_backend_status"]
+            .value_counts(dropna=False)
+            .to_dict(),
+            "chembl_row_fallback_legacy_rdkit_rows": row_fallback_count,
+            "removed_reason_counts": removed_reason_counts,
+            "parent_structure_changed_rows": parent_changed_count,
+            "stereochemistry_stripped_for_identity_rows": stereo_identity_removed_count,
+        }
+        identity_diagnostics_path.write_text(json.dumps(identity_diagnostics, indent=2) + "\n")
+        manifest = {
+            "dataset_id": dataset_id or Path(dataset_path).stem,
+            "curation_backend": backend_result.get("used_backend_name"),
+            "curation_policy": {
+                "stereochemistry_policy": curation_policy.get("stereochemistry_policy"),
+                "duplicate_identity_policy": curation_policy.get("duplicate_identity_policy"),
+                "duplicate_conflict_threshold": duplicate_conflict_threshold,
+                "checker_policy": curation_policy.get("checker_policy"),
+            },
+            "files": {
+                "curated_dataset_csv": {
+                    "path": str(curated_path),
+                    "description": "QSAR-ready curated dataset.",
+                },
+                "curation_report_json": {
+                    "path": "<written by write_curation_report>",
+                    "description": "Canonical machine-readable curation summary, written by write_curation_report.",
+                },
+                "standardization_map_csv": {
+                    "path": str(standardization_map_path),
+                    "description": "Per-row raw, ChEMBL input, standardized, and QSAR identity mapping.",
+                },
+                "duplicate_identity_groups_csv": {
+                    "path": str(duplicate_groups_path),
+                    "description": "Duplicate QSAR identity groups with row indices, target values, spreads, and resolution.",
+                },
+                "removed_rows_csv": {
+                    "path": str(removed_rows_path),
+                    "description": "Rows or duplicate groups removed during curation with explicit removal reasons.",
+                },
+                "identity_diagnostics_json": {
+                    "path": str(identity_diagnostics_path),
+                    "description": "Compact diagnostics for backend, checker, duplicate identity, and identity stripping.",
+                },
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        curation_artifacts = {
+            "standardization_map_csv": str(standardization_map_path),
+            "duplicate_identity_groups_csv": str(duplicate_groups_path),
+            "removed_rows_csv": str(removed_rows_path),
+            "identity_diagnostics_json": str(identity_diagnostics_path),
+            "manifest_json": str(manifest_path),
+        }
 
         result = CurationResult(
             status="ready" if not blocking_issues else "blocked",
@@ -734,6 +1318,18 @@ class DatasetCurationToolkit(Toolkit):
             duplicate_groups_aggregated=duplicate_groups_aggregated,
             duplicate_conflicting_groups=duplicate_conflicting_groups,
             duplicate_conflicting_rows_removed=duplicate_conflicting_rows_removed,
+            curation_backend=backend_result.get("backend_name"),
+            curation_backend_used=backend_result.get("used_backend_name"),
+            curation_backend_fallback_used=bool(backend_result.get("fallback_used")),
+            curation_backend_fallback_reason=backend_result.get("fallback_reason"),
+            curation_identity_key_type=(
+                str(working["curation_identity_key_type"].dropna().iloc[0])
+                if "curation_identity_key_type" in working.columns
+                and not working["curation_identity_key_type"].dropna().empty
+                else None
+            ),
+            curation_artifacts=curation_artifacts,
+            curation_diagnostics=identity_diagnostics,
             missing_target_removed=missing_target_removed,
             non_numeric_target_removed=non_numeric_target_removed,
             infinite_target_removed=infinite_target_removed,
@@ -828,17 +1424,34 @@ class DatasetCurationToolkit(Toolkit):
         curated_dataset_path = curation_result.get("curated_dataset_path")
         if curated_dataset_path:
             curated_path = Path(curated_dataset_path).expanduser()
+            manifest_ref = (curation_result.get("curation_artifacts") or {}).get("manifest_json")
+            if manifest_ref:
+                manifest_path = Path(manifest_ref).expanduser()
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(manifest_path.read_text())
+                        manifest.setdefault("files", {}).setdefault("curation_report_json", {})[
+                            "path"
+                        ] = str(destination)
+                        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+                    except Exception:
+                        pass
+            artifact_files = [
+                Path(path).expanduser()
+                for path in (curation_result.get("curation_artifacts") or {}).values()
+                if path
+            ]
             bundle_path = (
-                Path(".files")
-                / "qsar_curation"
-                / f"{dataset_id}_curation_bundle.zip"
+                Path(".files") / "qsar_curation" / f"{dataset_id}_curation_bundle.zip"
             ).resolve()
-            bundle = _bundle_files(bundle_path, [curated_path, destination])
+            bundle = _bundle_files(bundle_path, [curated_path, destination, *artifact_files])
             payload["bundle_file_ref"] = str(bundle)
+            payload["bundle_download_tag"] = f"<file>{bundle}</file>"
         if agent is not None:
             state = _get_curation_state(agent)
             if state.get("last_result"):
                 state["last_result"]["report_path"] = str(destination)
                 if payload.get("bundle_file_ref"):
                     state["last_result"]["bundle_file_ref"] = payload["bundle_file_ref"]
+                    state["last_result"]["bundle_download_tag"] = payload["bundle_download_tag"]
         return payload
