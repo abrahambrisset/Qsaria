@@ -5,6 +5,7 @@ Agent factory classes for creating specialized cs_copilot agents.
 Contains the base factory class and all specialized factory implementations.
 """
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -14,20 +15,20 @@ from agno.agent import Agent
 from agno.models.base import Model  # Agno v2 base class
 
 from cs_copilot.tools import (
-    AutoencoderToolkit,
     ActivityCliffToolkit,
+    AutoencoderToolkit,
     BenchmarkToolkit,
     ChemblToolkit,
     ChemicalSimilarityToolkit,
     DatasetCurationToolkit,
     EnsembleToolkit,
     GTMToolkit,
+    ModelRegistryToolkit,
     MolecularFeatureToolkit,
     PeptideWAEToolkit,
     PointerPandasTools,
     PredictionInferenceToolkit,
     QSARReportingToolkit,
-    ModelRegistryToolkit,
     QSARTrainingToolkit,
     SynPlannerToolkit,
     build_default_prediction_backends,
@@ -51,6 +52,7 @@ from .prompts import (
     ROBUSTNESS_EVALUATION_INSTRUCTIONS,
     SYNPLANNER_INSTRUCTIONS,
 )
+from .qsar_workflow import copy_qsar_session_state
 
 
 @dataclass
@@ -81,19 +83,66 @@ class AgentCreationError(Exception):
     pass
 
 
-def _prediction_facade_tools(*, include_inference: bool = False) -> List[Any]:
-    """Create backend-neutral prediction tools that share one backend registry."""
-    backends = build_default_prediction_backends()
-    registry_toolkit = ModelRegistryToolkit(backends=backends)
-    tools: List[Any] = [registry_toolkit]
-    if include_inference:
-        tools.append(
-            PredictionInferenceToolkit(
-                backends=backends,
-                registry_toolkit=registry_toolkit,
-            )
+@dataclass
+class QSARServiceContext:
+    """Shared service objects for one isolated QSAR team instance."""
+
+    backends: Dict[str, Any]
+    registry_toolkit: ModelRegistryToolkit
+    training_toolkit: QSARTrainingToolkit
+    reporting_toolkit: QSARReportingToolkit
+
+    @classmethod
+    def create(cls) -> "QSARServiceContext":
+        backends = build_default_prediction_backends()
+        registry_toolkit = ModelRegistryToolkit(backends=backends)
+        return cls(
+            backends=backends,
+            registry_toolkit=registry_toolkit,
+            training_toolkit=QSARTrainingToolkit(),
+            reporting_toolkit=QSARReportingToolkit(),
         )
-    return tools
+
+    def prediction_tools(self, *, include_inference: bool = False) -> List[Any]:
+        tools: List[Any] = [self.registry_toolkit]
+        if include_inference:
+            tools.append(
+                PredictionInferenceToolkit(
+                    backends=self.backends,
+                    registry_toolkit=self.registry_toolkit,
+                )
+            )
+        return tools
+
+    def benchmark_toolkit(self) -> BenchmarkToolkit:
+        return BenchmarkToolkit(
+            training_toolkit=self.training_toolkit,
+            registry_toolkit=self.registry_toolkit,
+        )
+
+    def ensemble_toolkit(self) -> EnsembleToolkit:
+        component_backends = {
+            name: backend
+            for name, backend in self.backends.items()
+            if name in {"chemprop", "lightgbm", "tabicl"}
+        }
+        return EnsembleToolkit(
+            catalog=self.registry_toolkit.catalog,
+            backends=component_backends,
+        )
+
+
+def _get_qsar_context(qsar_context: Optional[QSARServiceContext] = None) -> QSARServiceContext:
+    return qsar_context or QSARServiceContext.create()
+
+
+def _prediction_facade_tools(
+    *,
+    include_inference: bool = False,
+    qsar_context: Optional[QSARServiceContext] = None,
+) -> List[Any]:
+    """Create backend-neutral prediction tools that share one backend registry."""
+    return _get_qsar_context(qsar_context).prediction_tools(include_inference=include_inference)
 
 
 class BaseAgentFactory(ABC):
@@ -128,7 +177,14 @@ class BaseAgentFactory(ABC):
             Created agent instance
         """
         try:
-            config = self.get_agent_config()
+            config_kwargs: Dict[str, Any] = {}
+            qsar_context = kwargs.pop("qsar_context", None)
+            if qsar_context is not None:
+                config_signature = inspect.signature(self.get_agent_config)
+                if "qsar_context" in config_signature.parameters:
+                    config_kwargs["qsar_context"] = qsar_context
+
+            config = self.get_agent_config(**config_kwargs)
             config.validate()
 
             # Log agent creation
@@ -653,7 +709,10 @@ class DatasetCurationFactory(BaseAgentFactory):
 
     agent_type = "dataset_curation"
 
-    def get_agent_config(self) -> AgentConfig:
+    def get_agent_config(
+        self, qsar_context: Optional[QSARServiceContext] = None
+    ) -> AgentConfig:
+        qsar_context = _get_qsar_context(qsar_context)
         return AgentConfig(
             name="dataset_curation_agent",
             description="""
@@ -679,13 +738,7 @@ class DatasetCurationFactory(BaseAgentFactory):
             """,
             tools=[DatasetCurationToolkit()],
             instructions=DATASET_CURATION_INSTRUCTIONS,
-            session_state={
-                "qsar_curation": {
-                    "last_request": {},
-                    "last_result": {},
-                    "history": [],
-                }
-            },
+            session_state=copy_qsar_session_state(),
         )
 
 
@@ -694,7 +747,10 @@ class QSARTrainingFactory(BaseAgentFactory):
 
     agent_type = "qsar_training"
 
-    def get_agent_config(self) -> AgentConfig:
+    def get_agent_config(
+        self, qsar_context: Optional[QSARServiceContext] = None
+    ) -> AgentConfig:
+        qsar_context = _get_qsar_context(qsar_context)
         return AgentConfig(
             name="qsar_training_agent",
             description="""
@@ -705,31 +761,14 @@ class QSARTrainingFactory(BaseAgentFactory):
             not interpret business meaning, and you do not decide catalog policy.
             """,
             tools=[
-                QSARTrainingToolkit(),
-                *_prediction_facade_tools(),
-                BenchmarkToolkit(),
+                qsar_context.training_toolkit,
+                qsar_context.benchmark_toolkit(),
                 ActivityCliffToolkit(),
                 MolecularFeatureToolkit(),
                 PointerPandasTools(),
             ],
             instructions=QSAR_TRAINING_INSTRUCTIONS,
-            session_state={
-                "prediction_models": {
-                    "registered": {},
-                    "last_prediction": {},
-                    "prediction_history": [],
-                    "catalog_recommendations": {},
-                    "training_runs": [],
-                },
-                "prediction_outputs": {
-                    "latest_predictions_csv": None,
-                    "latest_summary": None,
-                },
-                "qsar_training": {
-                    "last_request": {},
-                    "last_result": {},
-                },
-            },
+            session_state=copy_qsar_session_state(),
         )
 
 
@@ -738,7 +777,10 @@ class ModelRegistryFactory(BaseAgentFactory):
 
     agent_type = "model_registry"
 
-    def get_agent_config(self) -> AgentConfig:
+    def get_agent_config(
+        self, qsar_context: Optional[QSARServiceContext] = None
+    ) -> AgentConfig:
+        qsar_context = _get_qsar_context(qsar_context)
         return AgentConfig(
             name="model_registry_agent",
             description="""
@@ -748,23 +790,11 @@ class ModelRegistryFactory(BaseAgentFactory):
             You do not train models or perform free-form prediction analysis.
             """,
             tools=[
-                *_prediction_facade_tools(),
-                EnsembleToolkit(),
+                *qsar_context.prediction_tools(),
+                qsar_context.ensemble_toolkit(),
             ],
             instructions=MODEL_REGISTRY_INSTRUCTIONS,
-            session_state={
-                "prediction_models": {
-                    "registered": {},
-                    "last_prediction": {},
-                    "prediction_history": [],
-                    "catalog_recommendations": {},
-                    "training_runs": [],
-                },
-                "qsar_registry": {
-                    "last_request": {},
-                    "last_result": {},
-                },
-            },
+            session_state=copy_qsar_session_state(),
         )
 
 
@@ -773,7 +803,10 @@ class ModelInferenceFactory(BaseAgentFactory):
 
     agent_type = "model_inference"
 
-    def get_agent_config(self) -> AgentConfig:
+    def get_agent_config(
+        self, qsar_context: Optional[QSARServiceContext] = None
+    ) -> AgentConfig:
+        qsar_context = _get_qsar_context(qsar_context)
         return AgentConfig(
             name="model_inference_agent",
             description="""
@@ -783,28 +816,12 @@ class ModelInferenceFactory(BaseAgentFactory):
             downstream reporting. You do not curate datasets or train models.
             """,
             tools=[
-                *_prediction_facade_tools(include_inference=True),
-                EnsembleToolkit(),
+                *qsar_context.prediction_tools(include_inference=True),
+                qsar_context.ensemble_toolkit(),
                 PointerPandasTools(),
             ],
             instructions=MODEL_INFERENCE_INSTRUCTIONS,
-            session_state={
-                "prediction_models": {
-                    "registered": {},
-                    "last_prediction": {},
-                    "prediction_history": [],
-                    "catalog_recommendations": {},
-                    "training_runs": [],
-                },
-                "prediction_outputs": {
-                    "latest_predictions_csv": None,
-                    "latest_summary": None,
-                },
-                "qsar_inference": {
-                    "last_request": {},
-                    "last_result": {},
-                },
-            },
+            session_state=copy_qsar_session_state(),
         )
 
 
@@ -813,7 +830,10 @@ class QSARReportFactory(BaseAgentFactory):
 
     agent_type = "qsar_report"
 
-    def get_agent_config(self) -> AgentConfig:
+    def get_agent_config(
+        self, qsar_context: Optional[QSARServiceContext] = None
+    ) -> AgentConfig:
+        qsar_context = _get_qsar_context(qsar_context)
         return AgentConfig(
             name="qsar_report_agent",
             description="""
@@ -822,18 +842,12 @@ class QSARReportFactory(BaseAgentFactory):
             registry, and inference into the final user-facing response. You do not
             execute curation, training, registry, or inference actions yourself.
             """,
-            tools=[PointerPandasTools()],
+            tools=[
+                qsar_context.reporting_toolkit,
+                PointerPandasTools(),
+            ],
             instructions=QSAR_REPORT_INSTRUCTIONS,
-            session_state={
-                "qsar_report": {
-                    "last_request": {},
-                    "last_result": {},
-                },
-                "prediction_outputs": {
-                    "latest_predictions_csv": None,
-                    "latest_summary": None,
-                },
-            },
+            session_state=copy_qsar_session_state(),
         )
 
 

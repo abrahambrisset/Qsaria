@@ -448,11 +448,7 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN],
                     feature_prefix="fp_",
                     fingerprint_kind="binary",
                 )
@@ -494,11 +490,7 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN],
                     feature_prefix="cfp_",
                     fingerprint_kind="count",
                 )
@@ -541,11 +533,7 @@ class QSARTrainingToolkit(Toolkit):
                     output_csv=component["output_csv"],
                     descriptor_set=descriptor_set,
                     include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
+                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN],
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
