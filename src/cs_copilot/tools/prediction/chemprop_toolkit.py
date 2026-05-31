@@ -1060,9 +1060,8 @@ class ChempropToolkit(Toolkit):
             extra_args["num_replicates"] = 1
             if requested_replicates != 1:
                 return (
-                    f"Chemprop `{protocol}` uses one replicate per split. "
-                    "Robustness is measured through protocol split runs, not Chemprop "
-                    "replicate multiplication."
+                    f"Chemprop protocol {protocol} uses one replicate per split. "
+                    "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
                 )
         return None
 

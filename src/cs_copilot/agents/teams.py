@@ -12,8 +12,9 @@ from agno.models.base import Model  # Agno v2 base class
 from agno.team import Team
 
 from .config import CS_COPILOT_MEMORY_DB  # optional now; kept for compatibility
-from .factories import AgentCreationError
+from .factories import AgentCreationError, QSARServiceContext
 from .prompts import AGENT_TEAM_INSTRUCTIONS
+from .qsar_workflow import copy_qsar_session_state, describe_qsar_routes, plan_qsar_workflow
 from .registry import create_agent
 
 
@@ -197,10 +198,15 @@ def get_qsar_agent_team(
     if enable_memory:
         db = SqliteDb(db_file=db_file or CS_COPILOT_MEMORY_DB)
 
+    qsar_context = QSARServiceContext.create()
+    qsar_session_state = copy_qsar_session_state()
+    qsar_session_state["qsar_workflow"]["routes"] = describe_qsar_routes()
+
     agent_params = {
         "markdown": markdown,
         "debug_mode": debug_mode,
         "enable_mlflow_tracking": enable_mlflow_tracking,
+        "qsar_context": qsar_context,
     }
 
     agents_config: List[Tuple[str, str]] = [
@@ -233,6 +239,7 @@ def get_qsar_agent_team(
         members=agents,
         model=model,
         db=db,
+        session_state=qsar_session_state,
         enable_agentic_memory=enable_memory,
         enable_user_memories=False,
         add_history_to_context=enable_memory,
@@ -241,6 +248,7 @@ def get_qsar_agent_team(
         store_history_messages=enable_memory,
         store_tool_messages=enable_memory,
         store_media=enable_memory,
+        tools=[plan_qsar_workflow],
         add_session_state_to_context=True,
         enable_agentic_state=True,
         description=(
@@ -253,20 +261,23 @@ def get_qsar_agent_team(
             "Use Model Registry for catalog governance and persistence decisions. "
             "Use Model Inference for explicit predictions or model-selection-driven predictions. "
             "Use QSAR Report as the only final drafting agent for the user-facing answer. "
-            "Keep handoffs structured and concise."
+            "Keep handoffs structured and concise. "
+            "A deterministic planning tool named `plan_qsar_workflow` is available for route selection."
         ),
         instructions=[
             "You coordinate only the isolated QSAR agents in this team.",
             "Never route work to non-QSAR agents.",
+            "Before delegating a new QSAR user request, use `plan_qsar_workflow` on the latest user message and follow the returned route.",
+            f"Supported deterministic QSAR routes:\n{describe_qsar_routes()}",
             "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
             "For training requests, orchestrate: dataset_curation -> qsar_training -> model_registry -> qsar_report.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
             "For QSAR backend/capability inventory requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
             "For QSAR catalog listing, catalog search, model recommendation, model summary, or model comparison requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
             "For existing ensemble summary requests, orchestrate: model_registry -> qsar_report. Do not return the model_registry handoff directly to the user.",
-            "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `model_inference` only and treat the task as a documentation export for the latest completed prediction state.",
-            "When the user asks only for LaTeX or payload export, do not rerun prediction and do not route to `qsar_report` unless the user also asked for a narrative report.",
-            "For export-only LaTeX or payload requests handled by `model_inference`, return the `model_inference` answer verbatim without adding any extra narrative.",
+            "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `qsar_report` only and treat the task as a documentation export for the latest completed prediction state.",
+            "When the user asks only for LaTeX or payload export, do not rerun prediction and do not route to `model_inference` unless no latest prediction state exists and model selection is required.",
+            "For export-only LaTeX or payload requests handled by `qsar_report`, return the `qsar_report` answer verbatim without adding any extra narrative.",
             "Before routing, determine REPORT_LANGUAGE from the latest user message: English for English prompts, French for French prompts. Include `REPORT_LANGUAGE: English` or `REPORT_LANGUAGE: French` in every handoff, especially the final handoff to `qsar_report`.",
             "The final QSAR report must use REPORT_LANGUAGE even if operational handoffs, tool outputs, catalog metadata, or prior conversation are in another language.",
             "Only `qsar_report` may draft the final user-facing answer.",
