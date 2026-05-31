@@ -14,19 +14,20 @@ from .backend_capabilities import (
     BackendCapabilities,
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
+    backend_supports_multi_target,
     describe_backend_capabilities,
     enrich_backend_environment,
     get_backend_capabilities,
 )
-from .catalog import CatalogRecommendation, PredictionModelCatalog
+from .backend_factory import build_default_prediction_backends
 from .benchmark_toolkit import BenchmarkToolkit
+from .catalog import CatalogRecommendation, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
 from .ensemble_toolkit import EnsembleToolkit
 from .lightgbm_backend import LightGBMBackend
-from .prediction_inference_toolkit import PredictionInferenceToolkit
 from .model_registry_toolkit import ModelRegistryToolkit
-from .backend_factory import build_default_prediction_backends
+from .prediction_inference_toolkit import PredictionInferenceToolkit
 from .qsar_training_toolkit import QSARTrainingToolkit
 from .tabicl_backend import TabICLBackend
 
@@ -44,6 +45,7 @@ __all__ = [
     "describe_backend_capabilities",
     "backend_requires_feature_preparation",
     "backend_supports_component_orchestration",
+    "backend_supports_multi_target",
     "enrich_backend_environment",
     "PredictionModelCatalog",
     "CatalogRecommendation",

@@ -25,6 +25,8 @@ class BackendCapabilities:
     supports_uncertainty: str
     supports_component_orchestration: bool = False
     supports_activity_cliff_feedback_loops: bool = False
+    supports_multi_target: bool = False
+    multi_target_task_types: Tuple[str, ...] = ()
     gpu_support: str = "not_declared"
     catalog_model_filename: str | None = None
     training_summary_filenames: Tuple[str, ...] = ("cs_copilot_training_summary.json",)
@@ -49,6 +51,8 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supported_representations=("molecular_graph",),
         supports_applicability_domain=True,
         supports_uncertainty="none",
+        supports_multi_target=True,
+        multi_target_task_types=("regression", "classification"),
         gpu_support="runtime_dependent",
     ),
     "lightgbm": BackendCapabilities(
@@ -158,3 +162,26 @@ def backend_supports_component_orchestration(
         backend_name,
         registry=registry,
     ).supports_component_orchestration
+
+
+def normalize_capability_task_type(task_type: str) -> str:
+    """Normalize task-type aliases used by toolkits to capability names."""
+    normalized = str(task_type or "").strip().lower()
+    if normalized in {"binary_classification", "multiclass", "multiclass_classification"}:
+        return "classification"
+    return normalized
+
+
+def backend_supports_multi_target(
+    backend_name: str,
+    task_type: str,
+    *,
+    registry: Mapping[str, BackendCapabilities] | None = None,
+) -> bool:
+    """Return whether a backend supports multiple target columns for a task type."""
+    capabilities = get_backend_capabilities(backend_name, registry=registry)
+    normalized_task_type = normalize_capability_task_type(task_type)
+    return (
+        capabilities.supports_multi_target
+        and normalized_task_type in capabilities.multi_target_task_types
+    )

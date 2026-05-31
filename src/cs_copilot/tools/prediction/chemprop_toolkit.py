@@ -343,6 +343,115 @@ def _majority_vote(values: List[Any]) -> Any:
     return max(counts.values(), key=lambda item: item[1])[0]
 
 
+def _compute_regression_metrics(
+    actual_values: pd.Series,
+    predicted_values: pd.Series,
+    *,
+    target_column: str,
+) -> Optional[Dict[str, Any]]:
+    actual = pd.to_numeric(pd.Series(actual_values).reset_index(drop=True), errors="coerce")
+    predicted = pd.to_numeric(pd.Series(predicted_values).reset_index(drop=True), errors="coerce")
+    valid_mask = actual.notna() & predicted.notna()
+    if not valid_mask.any():
+        return None
+
+    y_true = actual[valid_mask].astype(float)
+    y_pred = predicted[valid_mask].astype(float)
+    residuals = y_true - y_pred
+    mse = float((residuals.pow(2)).mean())
+    mae = float(residuals.abs().mean())
+    rae_denom = float((y_true - float(y_true.mean())).abs().sum())
+    rae_num = float(residuals.abs().sum())
+    rae = float(rae_num / rae_denom) if rae_denom > 0 else None
+    rmse = float(math.sqrt(mse))
+    centered = y_true - float(y_true.mean())
+    ss_tot = float((centered.pow(2)).sum())
+    ss_res = float((residuals.pow(2)).sum())
+    r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
+    spearman = None
+    kendall = None
+    try:
+        spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
+        spearman = (
+            float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+        )
+    except Exception:
+        spearman = None
+    try:
+        kendall_stat = kendalltau(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
+        kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
+    except Exception:
+        kendall = None
+
+    return {
+        "mse": mse,
+        "mae": mae,
+        "rae": rae,
+        "rmse": rmse,
+        "r2": r2,
+        "spearman": spearman,
+        "kendall": kendall,
+        "n": int(valid_mask.sum()),
+        "target_column": target_column,
+    }
+
+
+def _aggregate_target_metrics(
+    metrics_by_target: Dict[str, Dict[str, Any]],
+    target_columns: List[str],
+) -> Dict[str, Any]:
+    ordered_metrics = {
+        target: metrics_by_target[target]
+        for target in target_columns
+        if target in metrics_by_target
+    }
+    if len(ordered_metrics) == 1:
+        return dict(next(iter(ordered_metrics.values())))
+
+    aggregate: Dict[str, Any] = {
+        "target_columns": list(target_columns),
+        "target_count": len(ordered_metrics),
+        "target_metrics": ordered_metrics,
+    }
+    metric_names = (
+        "mse",
+        "mae",
+        "rae",
+        "rmse",
+        "r2",
+        "spearman",
+        "kendall",
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "specificity",
+        "f1",
+        "precision_macro",
+        "recall_macro",
+        "f1_macro",
+        "roc_auc",
+        "log_loss",
+        "brier_score",
+    )
+    for metric_name in metric_names:
+        values = [
+            float(metrics[metric_name])
+            for metrics in ordered_metrics.values()
+            if metrics.get(metric_name) is not None
+        ]
+        if values:
+            aggregate[metric_name] = float(sum(values) / len(values))
+    n_values = [
+        int(metrics["n"])
+        for metrics in ordered_metrics.values()
+        if metrics.get("n") is not None
+    ]
+    if n_values:
+        aggregate["n"] = min(n_values)
+    return aggregate
+
+
 class ChempropToolkit(Toolkit):
     """Backend-specific Chemprop training toolkit used behind QSARTrainingToolkit."""
 
@@ -453,16 +562,15 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         """Create a self-contained Chemprop test-prediction CSV.
 
-        Chemprop writes prediction CSVs with the target column name reused for
-        predictions.  For validation artifacts we keep that compatibility
-        column but add explicit truth/prediction columns and aggregate replicate
-        outputs. Regression replicates are averaged. Binary classification
-        probability replicates are averaged and thresholded at 0.5; class-label
-        outputs are combined by majority vote.
+        Chemprop writes prediction CSVs with target column names reused for
+        predictions.  For validation artifacts we keep the legacy generic
+        columns for single-target runs, and write target-specific true,
+        prediction, uncertainty, and error columns for multi-target runs.
         """
-        target_column = task.target_columns[0] if task.target_columns else None
-        if not target_column:
+        target_columns = [str(column) for column in task.target_columns if column]
+        if not target_columns:
             return {}
+        multi_target = len(target_columns) > 1
 
         output_path = output_dir.expanduser().resolve()
         splits_path = output_path / "splits.json"
@@ -479,7 +587,8 @@ class ChempropToolkit(Toolkit):
             return {}
         test_indices = split_payload[0].get("test") or []
         actual = dataset.iloc[test_indices].reset_index(drop=True)
-        if target_column not in actual.columns:
+        missing_actual_targets = [target for target in target_columns if target not in actual.columns]
+        if missing_actual_targets:
             return {}
 
         smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
@@ -489,7 +598,9 @@ class ChempropToolkit(Toolkit):
             else None
         )
         is_classification = _is_classification_task(task.task_type)
-        prediction_series: List[pd.Series] = []
+        prediction_series_by_target: Dict[str, List[pd.Series]] = {
+            target: [] for target in target_columns
+        }
         prediction_source_paths: List[str] = []
         included_replicate_indices: List[int] = []
         normalized_replicate_artifacts: List[Dict[str, Any]] = []
@@ -508,9 +619,17 @@ class ChempropToolkit(Toolkit):
                 normalized_replicate_artifacts.append(artifact)
                 continue
             predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
+            missing_prediction_targets = [
+                target for target in target_columns if target not in predictions.columns
+            ]
             exclusion_reason = None
-            if target_column not in predictions.columns:
-                exclusion_reason = "missing_target_prediction_column"
+            if missing_prediction_targets:
+                exclusion_reason = (
+                    "missing_target_prediction_column"
+                    if len(missing_prediction_targets) == 1
+                    else "missing_target_prediction_columns: "
+                    + ", ".join(missing_prediction_targets)
+                )
             elif len(predictions) != len(actual):
                 exclusion_reason = "row_count_mismatch"
             elif actual_smiles is not None:
@@ -531,15 +650,18 @@ class ChempropToolkit(Toolkit):
             artifact["aligned_for_validation"] = True
             artifact["exclusion_reason"] = None
             normalized_replicate_artifacts.append(artifact)
-            raw_prediction = predictions[target_column].reset_index(drop=True)
-            if is_classification:
-                prediction_series.append(raw_prediction)
-            else:
-                prediction_series.append(pd.to_numeric(raw_prediction, errors="coerce"))
+            for target_column in target_columns:
+                raw_prediction = predictions[target_column].reset_index(drop=True)
+                if is_classification:
+                    prediction_series_by_target[target_column].append(raw_prediction)
+                else:
+                    prediction_series_by_target[target_column].append(
+                        pd.to_numeric(raw_prediction, errors="coerce")
+                    )
             prediction_source_paths.append(str(prediction_path))
             included_replicate_indices.append(replicate_index)
 
-        if not prediction_series:
+        if not all(prediction_series_by_target[target] for target in target_columns):
             return {}
 
         smiles_values = (
@@ -550,169 +672,245 @@ class ChempropToolkit(Toolkit):
         normalized_path = output_path / "model_0" / "test_predictions.csv"
         normalized_path.parent.mkdir(parents=True, exist_ok=True)
         aggregation = (
-            "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
+            "mean_aligned_replicates"
+            if len(included_replicate_indices) > 1
+            else "single_aligned_replicate"
         )
+        normalized = pd.DataFrame({"source_row_index": test_indices, "smiles": smiles_values})
+        target_true_columns: Dict[str, str] = {}
+        target_prediction_columns: Dict[str, str] = {}
+        prediction_columns: List[str] = []
 
         if is_classification:
-            true_labels = (
-                actual[target_column].map(_normalize_classification_label).reset_index(drop=True)
-            )
-            class_labels = _resolve_class_labels(true_labels)
-            if len(class_labels) < 2:
-                return {}
-            numeric_series = [
-                pd.to_numeric(series, errors="coerce") for series in prediction_series
-            ]
-            numeric_probability_output = (
-                len(class_labels) == 2
-                and all(series.notna().any() for series in numeric_series)
-                and all(series.dropna().between(0.0, 1.0).all() for series in numeric_series)
-            )
-            true_codes = _encode_classification_labels(true_labels, class_labels)
-            if numeric_probability_output:
-                probability_frame = pd.concat(numeric_series, axis=1)
-                probability_frame.columns = [
-                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+            class_labels_by_target: Dict[str, List[Any]] = {}
+            positive_class_labels: Dict[str, Any] = {}
+            prediction_kinds: Dict[str, str] = {}
+            for target_column in target_columns:
+                true_labels = (
+                    actual[target_column].map(_normalize_classification_label).reset_index(drop=True)
+                )
+                class_labels = _resolve_class_labels(true_labels)
+                if len(class_labels) < 2:
+                    return {}
+                class_labels_by_target[target_column] = [
+                    _json_safe_label(label) for label in class_labels
                 ]
-                positive_probability = probability_frame.mean(axis=1, skipna=True)
-                prediction_std = (
-                    probability_frame.std(axis=1, ddof=0).fillna(0.0)
-                    if len(prediction_series) > 1
-                    else pd.Series([0.0] * len(probability_frame))
-                )
-                pred_codes = pd.Series(
-                    [
-                        1 if value >= 0.5 else 0 if pd.notna(value) else None
-                        for value in positive_probability
-                    ],
-                    dtype="object",
-                )
-                predicted_labels = _labels_from_codes(pred_codes, class_labels)
-                negative_probability = 1.0 - positive_probability
-                normalized = pd.DataFrame(
-                    {
-                        "source_row_index": test_indices,
-                        "smiles": smiles_values,
-                        f"{target_column}_true": true_labels,
-                        "y_true": true_labels,
-                        "y_true_encoded": true_codes,
-                        f"{target_column}_prediction": predicted_labels,
-                        "prediction": predicted_labels,
-                        target_column: predicted_labels,
-                        "predicted_class": predicted_labels,
-                        "predicted_class_index": pred_codes,
-                        "y_pred": predicted_labels,
-                        "y_pred_encoded": pred_codes,
-                        "prediction_std": prediction_std,
-                        "positive_class_probability": positive_probability,
-                        f"probability_{_safe_class_token(class_labels[0], 'class_0')}": negative_probability,
-                        f"probability_{_safe_class_token(class_labels[1], 'class_1')}": positive_probability,
-                        "replicate_count": len(prediction_series),
-                        "detected_replicate_count": len(replicate_artifacts),
-                    }
-                )
-                normalized = pd.concat([normalized, probability_frame], axis=1)
-                prediction_kind = "binary_probability"
-            else:
-                label_frame = pd.concat(
-                    [series.map(_normalize_classification_label) for series in prediction_series],
-                    axis=1,
-                )
-                label_frame.columns = [
-                    f"prediction_replicate_{idx}" for idx in included_replicate_indices
+                true_codes = _encode_classification_labels(true_labels, class_labels)
+                numeric_series = [
+                    pd.to_numeric(series, errors="coerce")
+                    for series in prediction_series_by_target[target_column]
                 ]
-                predicted_labels = label_frame.apply(
-                    lambda row: _majority_vote(row.tolist()), axis=1
+                numeric_probability_output = (
+                    len(class_labels) == 2
+                    and all(series.notna().any() for series in numeric_series)
+                    and all(series.dropna().between(0.0, 1.0).all() for series in numeric_series)
                 )
-                pred_codes = _encode_classification_labels(predicted_labels, class_labels)
-                normalized = pd.DataFrame(
-                    {
-                        "source_row_index": test_indices,
-                        "smiles": smiles_values,
-                        f"{target_column}_true": true_labels,
-                        "y_true": true_labels,
-                        "y_true_encoded": true_codes,
-                        f"{target_column}_prediction": predicted_labels,
-                        "prediction": predicted_labels,
-                        target_column: predicted_labels,
-                        "predicted_class": predicted_labels,
-                        "predicted_class_index": pred_codes,
-                        "y_pred": predicted_labels,
-                        "y_pred_encoded": pred_codes,
-                        "replicate_count": len(prediction_series),
-                        "detected_replicate_count": len(replicate_artifacts),
-                    }
-                )
-                normalized = pd.concat([normalized, label_frame], axis=1)
-                prediction_kind = "class_label_majority_vote"
+                replicate_columns = [
+                    (
+                        f"{target_column}_prediction_replicate_{replicate_index}"
+                        if multi_target
+                        else f"prediction_replicate_{replicate_index}"
+                    )
+                    for replicate_index in included_replicate_indices
+                ]
+                true_column = f"{target_column}_true"
+                prediction_column = f"{target_column}_prediction"
+                target_true_columns[target_column] = true_column
+                target_prediction_columns[target_column] = prediction_column
+                prediction_columns.append(prediction_column)
+                normalized[true_column] = true_labels
+                normalized[f"{target_column}_true_encoded"] = true_codes
 
+                if numeric_probability_output:
+                    probability_frame = pd.concat(numeric_series, axis=1)
+                    probability_frame.columns = replicate_columns
+                    positive_probability = probability_frame.mean(axis=1, skipna=True)
+                    prediction_std = (
+                        probability_frame.std(axis=1, ddof=0).fillna(0.0)
+                        if len(numeric_series) > 1
+                        else pd.Series([0.0] * len(probability_frame))
+                    )
+                    pred_codes = pd.Series(
+                        [
+                            1 if value >= 0.5 else 0 if pd.notna(value) else None
+                            for value in positive_probability
+                        ],
+                        dtype="object",
+                    )
+                    predicted_labels = _labels_from_codes(pred_codes, class_labels)
+                    negative_probability = 1.0 - positive_probability
+                    prediction_kinds[target_column] = "binary_probability"
+                    positive_class_labels[target_column] = _json_safe_label(class_labels[1])
+                    normalized[prediction_column] = predicted_labels
+                    normalized[f"{target_column}_predicted_class"] = predicted_labels
+                    normalized[f"{target_column}_predicted_class_index"] = pred_codes
+                    normalized[f"{target_column}_y_pred_encoded"] = pred_codes
+                    normalized[f"{target_column}_prediction_std"] = prediction_std
+                    normalized[f"{target_column}_positive_class_probability"] = (
+                        positive_probability
+                    )
+                    normalized[
+                        f"{target_column}_probability_"
+                        f"{_safe_class_token(class_labels[0], 'class_0')}"
+                    ] = negative_probability
+                    normalized[
+                        f"{target_column}_probability_"
+                        f"{_safe_class_token(class_labels[1], 'class_1')}"
+                    ] = positive_probability
+                    if not multi_target:
+                        normalized["y_true"] = true_labels
+                        normalized["y_true_encoded"] = true_codes
+                        normalized["prediction"] = predicted_labels
+                        normalized[target_column] = predicted_labels
+                        normalized["predicted_class"] = predicted_labels
+                        normalized["predicted_class_index"] = pred_codes
+                        normalized["y_pred"] = predicted_labels
+                        normalized["y_pred_encoded"] = pred_codes
+                        normalized["prediction_std"] = prediction_std
+                        normalized["positive_class_probability"] = positive_probability
+                        normalized[
+                            f"probability_{_safe_class_token(class_labels[0], 'class_0')}"
+                        ] = negative_probability
+                        normalized[
+                            f"probability_{_safe_class_token(class_labels[1], 'class_1')}"
+                        ] = positive_probability
+                    normalized = pd.concat([normalized, probability_frame], axis=1)
+                else:
+                    label_frame = pd.concat(
+                        [
+                            series.map(_normalize_classification_label)
+                            for series in prediction_series_by_target[target_column]
+                        ],
+                        axis=1,
+                    )
+                    label_frame.columns = replicate_columns
+                    predicted_labels = label_frame.apply(
+                        lambda row: _majority_vote(row.tolist()), axis=1
+                    )
+                    pred_codes = _encode_classification_labels(predicted_labels, class_labels)
+                    prediction_kinds[target_column] = "class_label_majority_vote"
+                    normalized[prediction_column] = predicted_labels
+                    normalized[f"{target_column}_predicted_class"] = predicted_labels
+                    normalized[f"{target_column}_predicted_class_index"] = pred_codes
+                    normalized[f"{target_column}_y_pred_encoded"] = pred_codes
+                    if not multi_target:
+                        normalized["y_true"] = true_labels
+                        normalized["y_true_encoded"] = true_codes
+                        normalized["prediction"] = predicted_labels
+                        normalized[target_column] = predicted_labels
+                        normalized["predicted_class"] = predicted_labels
+                        normalized["predicted_class_index"] = pred_codes
+                        normalized["y_pred"] = predicted_labels
+                        normalized["y_pred_encoded"] = pred_codes
+                    normalized = pd.concat([normalized, label_frame], axis=1)
+
+            normalized["replicate_count"] = len(included_replicate_indices)
+            normalized["detected_replicate_count"] = len(replicate_artifacts)
             normalized.to_csv(normalized_path, index=False)
-            return {
+            result = {
                 "test_predictions_path": str(normalized_path),
                 "raw_test_prediction_paths": prediction_source_paths,
                 "replicate_artifacts": normalized_replicate_artifacts,
-                "replicate_count": len(prediction_series),
+                "replicate_count": len(included_replicate_indices),
                 "detected_replicate_count": len(replicate_artifacts),
-                "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+                "excluded_replicate_count": len(replicate_artifacts)
+                - len(included_replicate_indices),
                 "prediction_aggregation": aggregation,
                 "replicate_alignment_policy": (
-                    "Only replicate prediction files whose SMILES exactly match the split test rows "
-                    "are aggregated for validation metrics."
+                    "Only replicate prediction files whose SMILES exactly match the split "
+                    "test rows are aggregated for validation metrics."
                 ),
-                "prediction_kind": prediction_kind,
-                "prediction_column": "prediction",
-                "target_true_column": f"{target_column}_true",
-                "target_prediction_column": f"{target_column}_prediction",
-                "class_labels": [_json_safe_label(label) for label in class_labels],
-                "positive_class_label": (
-                    _json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
-                ),
+                "prediction_columns": prediction_columns,
+                "target_true_columns": target_true_columns,
+                "target_prediction_columns": target_prediction_columns,
+                "class_labels_by_target": class_labels_by_target,
+                "positive_class_labels": positive_class_labels,
+                "prediction_kinds": prediction_kinds,
+                "multi_target": multi_target,
+                "target_columns": list(target_columns),
             }
+            if not multi_target:
+                target_column = target_columns[0]
+                result.update(
+                    {
+                        "prediction_kind": prediction_kinds.get(target_column),
+                        "prediction_column": "prediction",
+                        "target_true_column": target_true_columns[target_column],
+                        "target_prediction_column": target_prediction_columns[target_column],
+                        "class_labels": class_labels_by_target[target_column],
+                        "positive_class_label": positive_class_labels.get(target_column),
+                    }
+                )
+            return result
 
-        prediction_frame = pd.concat(prediction_series, axis=1)
-        prediction_frame.columns = [
-            f"prediction_replicate_{idx}" for idx in included_replicate_indices
-        ]
-        y_true = pd.to_numeric(actual[target_column], errors="coerce")
-        y_pred = prediction_frame.mean(axis=1, skipna=True)
-        prediction_std = (
-            prediction_frame.std(axis=1, ddof=0).fillna(0.0)
-            if len(prediction_series) > 1
-            else pd.Series([0.0] * len(prediction_frame))
-        )
-        normalized = pd.DataFrame(
-            {
-                "source_row_index": test_indices,
-                "smiles": smiles_values,
-                f"{target_column}_true": y_true,
-                f"{target_column}_prediction": y_pred,
-                "prediction": y_pred,
-                target_column: y_pred,
-                "prediction_std": prediction_std,
-                "residual": y_true - y_pred,
-                "absolute_error": (y_true - y_pred).abs(),
-                "replicate_count": len(prediction_series),
-                "detected_replicate_count": len(replicate_artifacts),
-            }
-        )
-        normalized = pd.concat([normalized, prediction_frame], axis=1)
+        for target_column in target_columns:
+            prediction_frame = pd.concat(prediction_series_by_target[target_column], axis=1)
+            prediction_frame.columns = [
+                (
+                    f"{target_column}_prediction_replicate_{replicate_index}"
+                    if multi_target
+                    else f"prediction_replicate_{replicate_index}"
+                )
+                for replicate_index in included_replicate_indices
+            ]
+            y_true = pd.to_numeric(actual[target_column], errors="coerce")
+            y_pred = prediction_frame.mean(axis=1, skipna=True)
+            prediction_std = (
+                prediction_frame.std(axis=1, ddof=0).fillna(0.0)
+                if len(prediction_series_by_target[target_column]) > 1
+                else pd.Series([0.0] * len(prediction_frame))
+            )
+            residual = y_true - y_pred
+            true_column = f"{target_column}_true"
+            prediction_column = f"{target_column}_prediction"
+            target_true_columns[target_column] = true_column
+            target_prediction_columns[target_column] = prediction_column
+            prediction_columns.append(prediction_column)
+            normalized[true_column] = y_true
+            normalized[prediction_column] = y_pred
+            if multi_target:
+                normalized[f"{target_column}_prediction_std"] = prediction_std
+                normalized[f"{target_column}_residual"] = residual
+                normalized[f"{target_column}_absolute_error"] = residual.abs()
+            else:
+                normalized["prediction"] = y_pred
+                normalized[target_column] = y_pred
+                normalized["prediction_std"] = prediction_std
+                normalized["residual"] = residual
+                normalized["absolute_error"] = residual.abs()
+            normalized = pd.concat([normalized, prediction_frame], axis=1)
+
+        normalized["replicate_count"] = len(included_replicate_indices)
+        normalized["detected_replicate_count"] = len(replicate_artifacts)
         normalized.to_csv(normalized_path, index=False)
-        return {
+        result = {
             "test_predictions_path": str(normalized_path),
             "raw_test_prediction_paths": prediction_source_paths,
             "replicate_artifacts": normalized_replicate_artifacts,
-            "replicate_count": len(prediction_series),
+            "replicate_count": len(included_replicate_indices),
             "detected_replicate_count": len(replicate_artifacts),
-            "excluded_replicate_count": len(replicate_artifacts) - len(prediction_series),
+            "excluded_replicate_count": len(replicate_artifacts) - len(included_replicate_indices),
             "prediction_aggregation": aggregation,
             "replicate_alignment_policy": (
                 "Only replicate prediction files whose SMILES exactly match the split test rows "
                 "are aggregated for validation metrics."
             ),
-            "prediction_column": "prediction",
-            "target_true_column": f"{target_column}_true",
-            "target_prediction_column": f"{target_column}_prediction",
+            "prediction_columns": prediction_columns,
+            "target_true_columns": target_true_columns,
+            "target_prediction_columns": target_prediction_columns,
+            "multi_target": multi_target,
+            "target_columns": list(target_columns),
         }
+        if not multi_target:
+            target_column = target_columns[0]
+            result.update(
+                {
+                    "prediction_column": "prediction",
+                    "target_true_column": target_true_columns[target_column],
+                    "target_prediction_column": target_prediction_columns[target_column],
+                }
+            )
+        return result
 
     def _detect_physical_memory_bytes(self) -> Optional[int]:
         try:
@@ -1093,9 +1291,10 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
     ) -> Dict[str, Any]:
         output_path = Path(output_dir).expanduser()
-        target_column = task.target_columns[0] if task.target_columns else None
-        if not target_column:
+        target_columns = [str(column) for column in task.target_columns if column]
+        if not target_columns:
             return {}
+        multi_target = len(target_columns) > 1
 
         normalized_predictions = self._write_normalized_test_predictions(
             train_csv=train_csv,
@@ -1127,134 +1326,7 @@ class ChempropToolkit(Toolkit):
             return {}
 
         test_indices = split_payload[0]["test"]
-        is_classification = _is_classification_task(task.task_type)
-        if is_classification:
-            true_column = f"{target_column}_true"
-            if true_column in predictions.columns:
-                true_labels = predictions[true_column].map(_normalize_classification_label)
-            else:
-                actual = dataset.iloc[test_indices].reset_index(drop=True)
-                if target_column not in actual.columns:
-                    return {}
-                true_labels = actual[target_column].map(_normalize_classification_label)
-            if "predicted_class" in predictions.columns:
-                predicted_labels = predictions["predicted_class"].map(
-                    _normalize_classification_label
-                )
-            elif "prediction" in predictions.columns:
-                predicted_labels = predictions["prediction"].map(_normalize_classification_label)
-            elif target_column in predictions.columns:
-                predicted_labels = predictions[target_column].map(_normalize_classification_label)
-            else:
-                return {}
-            class_labels = _resolve_class_labels(true_labels)
-            if len(class_labels) < 2:
-                return {}
-            if "y_true_encoded" in predictions.columns:
-                y_true = pd.to_numeric(predictions["y_true_encoded"], errors="coerce")
-            else:
-                y_true = _encode_classification_labels(true_labels, class_labels)
-            if "y_pred_encoded" in predictions.columns:
-                y_pred = pd.to_numeric(predictions["y_pred_encoded"], errors="coerce")
-            elif "predicted_class_index" in predictions.columns:
-                y_pred = pd.to_numeric(predictions["predicted_class_index"], errors="coerce")
-            else:
-                y_pred = _encode_classification_labels(predicted_labels, class_labels)
-            positive_scores = (
-                pd.to_numeric(predictions["positive_class_probability"], errors="coerce")
-                if "positive_class_probability" in predictions.columns
-                else None
-            )
-            metrics = _compute_classification_metrics(
-                y_true,
-                y_pred,
-                class_labels,
-                positive_scores=positive_scores,
-            )
-            metrics["target_column"] = target_column
-            return {
-                "best_model_path": (
-                    str(resolved_artifacts["best_model_path"])
-                    if resolved_artifacts.get("best_model_path")
-                    else None
-                ),
-                "test_predictions_path": str(preds_path),
-                "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
-                or [],
-                "splits_path": str(splits_path),
-                "train_size": len(split_payload[0].get("train") or []),
-                "val_size": len(
-                    split_payload[0].get("val") or split_payload[0].get("validation") or []
-                ),
-                "test_size": len(test_indices),
-                "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
-                or self._replicate_artifacts(output_path),
-                "replicate_count": normalized_predictions.get("replicate_count") or 1,
-                "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
-                "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
-                "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
-                or "single_replicate",
-                "replicate_alignment_policy": normalized_predictions.get(
-                    "replicate_alignment_policy"
-                ),
-                "prediction_kind": normalized_predictions.get("prediction_kind"),
-                "prediction_column": normalized_predictions.get("prediction_column")
-                or target_column,
-                "target_true_column": normalized_predictions.get("target_true_column")
-                or target_column,
-                "target_prediction_column": normalized_predictions.get("target_prediction_column")
-                or target_column,
-                "class_labels": normalized_predictions.get("class_labels")
-                or [_json_safe_label(label) for label in class_labels],
-                "positive_class_label": normalized_predictions.get("positive_class_label"),
-                "metrics": {"test": metrics},
-            }
-
-        true_column = f"{target_column}_true"
-        if true_column in predictions.columns and "prediction" in predictions.columns:
-            actual_values = pd.to_numeric(predictions[true_column], errors="coerce")
-            predicted_values = pd.to_numeric(predictions["prediction"], errors="coerce")
-        else:
-            actual = dataset.iloc[test_indices].reset_index(drop=True)
-            if target_column not in actual.columns or target_column not in predictions.columns:
-                return {}
-            if len(actual) != len(predictions):
-                return {}
-            actual_values = pd.to_numeric(actual[target_column], errors="coerce")
-            predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
-        valid_mask = actual_values.notna() & predicted_values.notna()
-        if not valid_mask.any():
-            return {}
-
-        y_true = actual_values[valid_mask].astype(float)
-        y_pred = predicted_values[valid_mask].astype(float)
-        residuals = y_true - y_pred
-        mse = float((residuals.pow(2)).mean())
-        mae = float(residuals.abs().mean())
-        rae_denom = float((y_true - float(y_true.mean())).abs().sum())
-        rae_num = float(residuals.abs().sum())
-        rae = float(rae_num / rae_denom) if rae_denom > 0 else None
-        rmse = float(math.sqrt(mse))
-        centered = y_true - float(y_true.mean())
-        ss_tot = float((centered.pow(2)).sum())
-        ss_res = float((residuals.pow(2)).sum())
-        r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
-        spearman = None
-        kendall = None
-        try:
-            spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            spearman = (
-                float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
-            )
-        except Exception:
-            spearman = None
-        try:
-            kendall_stat = kendalltau(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
-        except Exception:
-            kendall = None
-
-        return {
+        common_result: Dict[str, Any] = {
             "best_model_path": (
                 str(resolved_artifacts["best_model_path"])
                 if resolved_artifacts.get("best_model_path")
@@ -1276,25 +1348,158 @@ class ChempropToolkit(Toolkit):
             "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
             "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
             or "single_replicate",
-            "replicate_alignment_policy": normalized_predictions.get("replicate_alignment_policy"),
-            "prediction_column": normalized_predictions.get("prediction_column") or target_column,
-            "target_true_column": normalized_predictions.get("target_true_column") or target_column,
-            "target_prediction_column": normalized_predictions.get("target_prediction_column")
-            or target_column,
-            "metrics": {
-                "test": {
-                    "mse": mse,
-                    "mae": mae,
-                    "rae": rae,
-                    "rmse": rmse,
-                    "r2": r2,
-                    "spearman": spearman,
-                    "kendall": kendall,
-                    "n": int(valid_mask.sum()),
-                    "target_column": target_column,
-                }
-            },
+            "replicate_alignment_policy": normalized_predictions.get(
+                "replicate_alignment_policy"
+            ),
+            "prediction_columns": normalized_predictions.get("prediction_columns") or [],
+            "target_true_columns": normalized_predictions.get("target_true_columns") or {},
+            "target_prediction_columns": normalized_predictions.get("target_prediction_columns")
+            or {},
+            "multi_target": multi_target,
+            "target_columns": list(target_columns),
         }
+        if not multi_target:
+            target_column = target_columns[0]
+            common_result.update(
+                {
+                    "prediction_column": normalized_predictions.get("prediction_column")
+                    or target_column,
+                    "target_true_column": normalized_predictions.get("target_true_column")
+                    or target_column,
+                    "target_prediction_column": normalized_predictions.get(
+                        "target_prediction_column"
+                    )
+                    or target_column,
+                }
+            )
+
+        is_classification = _is_classification_task(task.task_type)
+        actual = dataset.iloc[test_indices].reset_index(drop=True)
+        if is_classification:
+            metrics_by_target: Dict[str, Dict[str, Any]] = {}
+            class_labels_by_target: Dict[str, List[Any]] = {}
+            positive_class_labels: Dict[str, Any] = {}
+            for target_column in target_columns:
+                true_column = f"{target_column}_true"
+                prediction_column = f"{target_column}_prediction"
+                if true_column in predictions.columns:
+                    true_labels = predictions[true_column].map(_normalize_classification_label)
+                else:
+                    if target_column not in actual.columns:
+                        continue
+                    true_labels = actual[target_column].map(_normalize_classification_label)
+                if prediction_column in predictions.columns:
+                    predicted_labels = predictions[prediction_column].map(
+                        _normalize_classification_label
+                    )
+                elif not multi_target and "predicted_class" in predictions.columns:
+                    predicted_labels = predictions["predicted_class"].map(
+                        _normalize_classification_label
+                    )
+                elif not multi_target and "prediction" in predictions.columns:
+                    predicted_labels = predictions["prediction"].map(_normalize_classification_label)
+                elif not multi_target and target_column in predictions.columns:
+                    predicted_labels = predictions[target_column].map(_normalize_classification_label)
+                else:
+                    continue
+                class_labels = _resolve_class_labels(true_labels)
+                if len(class_labels) < 2:
+                    continue
+                true_encoded_column = f"{target_column}_true_encoded"
+                predicted_encoded_column = f"{target_column}_y_pred_encoded"
+                class_index_column = f"{target_column}_predicted_class_index"
+                if true_encoded_column in predictions.columns:
+                    y_true = pd.to_numeric(predictions[true_encoded_column], errors="coerce")
+                elif not multi_target and "y_true_encoded" in predictions.columns:
+                    y_true = pd.to_numeric(predictions["y_true_encoded"], errors="coerce")
+                else:
+                    y_true = _encode_classification_labels(true_labels, class_labels)
+                if predicted_encoded_column in predictions.columns:
+                    y_pred = pd.to_numeric(predictions[predicted_encoded_column], errors="coerce")
+                elif class_index_column in predictions.columns:
+                    y_pred = pd.to_numeric(predictions[class_index_column], errors="coerce")
+                elif not multi_target and "y_pred_encoded" in predictions.columns:
+                    y_pred = pd.to_numeric(predictions["y_pred_encoded"], errors="coerce")
+                elif not multi_target and "predicted_class_index" in predictions.columns:
+                    y_pred = pd.to_numeric(predictions["predicted_class_index"], errors="coerce")
+                else:
+                    y_pred = _encode_classification_labels(predicted_labels, class_labels)
+                positive_probability_column = f"{target_column}_positive_class_probability"
+                if positive_probability_column in predictions.columns:
+                    positive_scores = pd.to_numeric(
+                        predictions[positive_probability_column], errors="coerce"
+                    )
+                elif not multi_target and "positive_class_probability" in predictions.columns:
+                    positive_scores = pd.to_numeric(
+                        predictions["positive_class_probability"], errors="coerce"
+                    )
+                else:
+                    positive_scores = None
+                metrics = _compute_classification_metrics(
+                    y_true,
+                    y_pred,
+                    class_labels,
+                    positive_scores=positive_scores,
+                )
+                metrics["target_column"] = target_column
+                metrics_by_target[target_column] = metrics
+                class_labels_by_target[target_column] = [
+                    _json_safe_label(label) for label in class_labels
+                ]
+                if len(class_labels) == 2:
+                    positive_class_labels[target_column] = _json_safe_label(class_labels[1])
+            if not metrics_by_target:
+                return {}
+            metrics_payload = _aggregate_target_metrics(metrics_by_target, target_columns)
+            result = dict(common_result)
+            result.update(
+                {
+                    "prediction_kind": normalized_predictions.get("prediction_kind"),
+                    "prediction_kinds": normalized_predictions.get("prediction_kinds") or {},
+                    "class_labels_by_target": class_labels_by_target,
+                    "positive_class_labels": positive_class_labels,
+                    "metrics": {"test": metrics_payload},
+                }
+            )
+            if not multi_target:
+                target_column = target_columns[0]
+                result.update(
+                    {
+                        "class_labels": class_labels_by_target[target_column],
+                        "positive_class_label": positive_class_labels.get(target_column),
+                    }
+                )
+            return result
+
+        metrics_by_target: Dict[str, Dict[str, Any]] = {}
+        for target_column in target_columns:
+            true_column = f"{target_column}_true"
+            prediction_column = f"{target_column}_prediction"
+            if true_column in predictions.columns and prediction_column in predictions.columns:
+                actual_values = predictions[true_column]
+                predicted_values = predictions[prediction_column]
+            elif not multi_target:
+                if target_column not in actual.columns or target_column not in predictions.columns:
+                    continue
+                if len(actual) != len(predictions):
+                    continue
+                actual_values = actual[target_column]
+                predicted_values = predictions[target_column]
+            else:
+                continue
+            metrics = _compute_regression_metrics(
+                actual_values,
+                predicted_values,
+                target_column=target_column,
+            )
+            if metrics:
+                metrics_by_target[target_column] = metrics
+        if not metrics_by_target:
+            return {}
+
+        result = dict(common_result)
+        result["metrics"] = {"test": _aggregate_target_metrics(metrics_by_target, target_columns)}
+        return result
 
     def train_model(
         self,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
 
@@ -147,3 +149,60 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
     assert "feature_columns" not in result["recommended_registry_payload"]["inference_profile"]
+
+def test_qsar_training_facade_allows_multitask_chemprop(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    captured = {}
+
+    def fake_chemprop_train(**kwargs):
+        captured.update(kwargs)
+        model_path = tmp_path / "chemprop" / "model_0" / "best.pt"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text("fake-model")
+        return {
+            "model_path": str(model_path),
+            "best_model_path": str(model_path),
+            "backend_name": "chemprop",
+            "representation_name": "molecular_graph",
+            "validation_protocol": kwargs["extra_args"]["validation_protocol"],
+            "metrics": {
+                "test": {
+                    "target_columns": ["pEC50", "solubility"],
+                    "target_count": 2,
+                }
+            },
+        }
+
+    monkeypatch.setattr(toolkit.chemprop_toolkit, "train_model", fake_chemprop_train)
+
+    result = toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        backend_name="chemprop",
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        target_columns=["pEC50", "solubility"],
+        validation_protocol="fast_local",
+    )
+
+    assert captured["target_columns"] == ["pEC50", "solubility"]
+    assert result["recommended_registry_payload"]["multi_task"] is True
+    assert result["recommended_registry_payload"]["target_count"] == 2
+    assert result["recommended_registry_payload"]["target_columns"] == [
+        "pEC50",
+        "solubility",
+    ]
+
+
+def test_qsar_training_facade_rejects_multitask_tabular_backends(tmp_path):
+    toolkit = QSARTrainingToolkit()
+
+    for backend_name in ("lightgbm", "tabicl"):
+        with pytest.raises(ValueError, match="supports only one target column"):
+            toolkit.train_qsar_model(
+                train_csv=str(tmp_path / "train.csv"),
+                backend_name=backend_name,
+                task_type="classification",
+                output_dir=str(tmp_path / backend_name),
+                target_columns=["activity", "toxicity"],
+                validation_protocol="fast_local",
+            )

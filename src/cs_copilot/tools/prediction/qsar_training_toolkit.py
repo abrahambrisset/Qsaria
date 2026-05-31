@@ -21,6 +21,7 @@ from cs_copilot.tools.chemistry.standardize import (
 )
 from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
+from .backend_capabilities import backend_supports_multi_target, normalize_capability_task_type
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_training_policy import describe_compute_environment
@@ -40,6 +41,25 @@ from .training_orchestration import normalize_json_list_argument, write_training
 
 FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
 QSAR_ROW_ID_COLUMN = "__qsar_row_id"
+
+
+def _validate_backend_target_columns(
+    *,
+    backend_name: str,
+    task_type: str,
+    target_columns: List[str],
+) -> None:
+    if len(target_columns) <= 1:
+        return
+    if backend_supports_multi_target(backend_name, task_type):
+        return
+    normalized_task_type = normalize_capability_task_type(task_type)
+    raise ValueError(
+        f"Backend `{backend_name}` supports only one target column for "
+        f"task_type=`{normalized_task_type}`. Multi-task QSAR is currently supported "
+        "through Chemprop for regression and classification. Received target_columns="
+        f"{target_columns}."
+    )
 
 
 def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]:
@@ -676,6 +696,8 @@ class QSARTrainingToolkit(Toolkit):
         summary_path = result.get("summary_path") or result.get("canonical_summary_path")
         feature_columns = list(result.get("feature_columns") or [])
         return {
+            "multi_task": len(target_columns) > 1,
+            "target_count": len(target_columns),
             "backend_name": backend_name,
             "model_path": result.get("best_model_path") or result.get("model_path"),
             "task_type": task_type,
@@ -683,6 +705,8 @@ class QSARTrainingToolkit(Toolkit):
             "target_columns": list(target_columns),
             "known_metrics": result.get("metrics") or {},
             "training_data_summary": {
+                "multi_task": len(target_columns) > 1,
+                "target_count": len(target_columns),
                 "validation_protocol": result.get("validation_protocol"),
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
@@ -939,6 +963,11 @@ class QSARTrainingToolkit(Toolkit):
         )
         requested_extra_args = dict(extra_args or {})
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
+        _validate_backend_target_columns(
+            backend_name=normalized_backend,
+            task_type=task_type,
+            target_columns=list(normalized_target_columns),
+        )
 
         if normalized_backend == "chemprop":
             result = self.chemprop_toolkit.train_model(
@@ -1052,7 +1081,7 @@ class QSARTrainingToolkit(Toolkit):
             result["backend_name"] = normalized_backend
             result["representation_name"] = resolved_representation
             result["candidate_train_csv"] = working_train_csv
-            result["feature_columns"] = list(normalized_feature_columns or [])
+            result.setdefault("feature_columns", list(normalized_feature_columns or []))
             result["feature_preparation"] = feature_preparation
             result["feature_preparation_durations"] = feature_preparation["durations"]
         else:
