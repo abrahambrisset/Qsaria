@@ -8,7 +8,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 from agno.agent import Agent
@@ -458,10 +458,14 @@ def _classification_metrics(
 class EnsembleToolkit(Toolkit):
     """Create and evaluate post-hoc catalog ensembles."""
 
-    def __init__(self, catalog: Optional[PredictionModelCatalog] = None):
+    def __init__(
+        self,
+        catalog: Optional[PredictionModelCatalog] = None,
+        backends: Optional[Mapping[str, Any]] = None,
+    ):
         super().__init__("ensemble_prediction")
         self.catalog = catalog or PredictionModelCatalog.load()
-        self.backends = {
+        self.backends = dict(backends) if backends is not None else {
             "chemprop": ChempropBackend(),
             "lightgbm": LightGBMBackend(),
             "tabicl": TabICLBackend(),
