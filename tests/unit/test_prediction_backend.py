@@ -18,6 +18,7 @@ from cs_copilot.tools.prediction.backend import (
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
+    backend_supports_multi_target,
     describe_backend_capabilities,
     get_backend_capabilities,
 )
@@ -66,6 +67,12 @@ def test_backend_capabilities_registry_core_contracts():
     assert lightgbm.gpu_support == "supported_when_available"
     assert ensemble.gpu_support == "not_applicable"
     assert tabicl.catalog_model_filename == "best.pkl"
+    assert chemprop.supports_multi_target is True
+    assert chemprop.multi_target_task_types == ("regression", "classification")
+    assert backend_supports_multi_target("chemprop", "regression") is True
+    assert backend_supports_multi_target("chemprop", "binary_classification") is True
+    assert backend_supports_multi_target("lightgbm", "regression") is False
+    assert backend_supports_multi_target("tabicl", "classification") is False
     assert "tabicl_training_summary.json" in tabicl.training_summary_filenames
 
 
@@ -369,6 +376,69 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
     assert normalized["prediction_std"].tolist() == [0.5, 0.5]
 
 
+def test_chemprop_toolkit_writes_multi_target_regression_predictions(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "multi_train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "pEC50": [5.0, 6.0, 4.0],
+            "solubility": [1.0, 2.0, 3.0],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_multi_run"
+    output_dir.mkdir()
+    (output_dir / "splits.json").write_text(json.dumps([{"train": [0], "val": [], "test": [1, 2]}]))
+    replicate_payloads = [
+        (0, [5.5, 4.5], [2.5, 3.5]),
+        (1, [6.5, 3.5], [1.5, 2.5]),
+    ]
+    for replicate_index, pec50_values, solubility_values in replicate_payloads:
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "best.pt").write_text("model")
+        pd.DataFrame(
+            {
+                "smiles": ["CCC", "CCN"],
+                "pEC50": pec50_values,
+                "solubility": solubility_values,
+            }
+        ).to_csv(replicate_dir / "test_predictions.csv", index=False)
+
+    task = PredictionTaskSpec(
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50", "solubility"],
+    )
+    result = toolkit._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=task,
+    )
+
+    normalized = pd.read_csv(result["test_predictions_path"])
+    assert result["multi_target"] is True
+    assert result["prediction_columns"] == ["pEC50_prediction", "solubility_prediction"]
+    assert "prediction" not in normalized.columns
+    assert normalized["pEC50_true"].tolist() == [6.0, 4.0]
+    assert normalized["pEC50_prediction"].tolist() == [6.0, 4.0]
+    assert normalized["pEC50_prediction_std"].tolist() == [0.5, 0.5]
+    assert normalized["solubility_true"].tolist() == [2.0, 3.0]
+    assert normalized["solubility_prediction"].tolist() == [2.0, 3.0]
+    assert normalized["solubility_prediction_std"].tolist() == [0.5, 0.5]
+
+    metrics = toolkit._compute_training_metrics(
+        train_csv=str(train_csv),
+        output_dir=str(output_dir),
+        task=task,
+    )
+    test_metrics = metrics["metrics"]["test"]
+    assert test_metrics["target_count"] == 2
+    assert test_metrics["target_metrics"]["pEC50"]["rmse"] == pytest.approx(0.0)
+    assert test_metrics["target_metrics"]["solubility"]["rmse"] == pytest.approx(0.0)
+
+
+
 def test_chemprop_toolkit_writes_normalized_classification_predictions(tmp_path):
     toolkit = ChempropToolkit(register_tools=False)
     train_csv = tmp_path / "classification_train.csv"
@@ -422,6 +492,82 @@ def test_chemprop_toolkit_writes_normalized_classification_predictions(tmp_path)
     assert metrics["metrics"]["test"]["balanced_accuracy"] == pytest.approx(0.75)
     assert metrics["metrics"]["test"]["roc_auc"] == pytest.approx(1.0)
     assert metrics["positive_class_label"] == "active"
+
+
+def test_chemprop_toolkit_writes_multi_target_classification_predictions(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "multi_classification_train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+            "activity": ["inactive", "active", "inactive", "active"],
+            "toxic": ["no", "yes", "yes", "no"],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_multi_classification_run"
+    output_dir.mkdir()
+    (output_dir / "splits.json").write_text(
+        json.dumps([{"train": [], "val": [], "test": [0, 1, 2, 3]}])
+    )
+    replicate_payloads = [
+        (0, [0.2, 0.7, 0.4, 0.8], [0.1, 0.8, 0.7, 0.2]),
+        (1, [0.1, 0.9, 0.6, 0.6], [0.2, 0.9, 0.6, 0.3]),
+    ]
+    for replicate_index, activity_probabilities, toxic_probabilities in replicate_payloads:
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "best.pt").write_text("model")
+        pd.DataFrame(
+            {
+                "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+                "activity": activity_probabilities,
+                "toxic": toxic_probabilities,
+            }
+        ).to_csv(replicate_dir / "test_predictions.csv", index=False)
+
+    task = PredictionTaskSpec(
+        task_type="classification",
+        smiles_columns=["smiles"],
+        target_columns=["activity", "toxic"],
+    )
+    result = toolkit._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=task,
+    )
+
+    normalized = pd.read_csv(result["test_predictions_path"])
+    assert result["multi_target"] is True
+    assert result["class_labels_by_target"] == {
+        "activity": ["inactive", "active"],
+        "toxic": ["no", "yes"],
+    }
+    assert "prediction" not in normalized.columns
+    assert "positive_class_probability" not in normalized.columns
+    assert normalized["activity_prediction"].tolist() == [
+        "inactive",
+        "active",
+        "active",
+        "active",
+    ]
+    assert normalized["activity_positive_class_probability"].tolist() == pytest.approx(
+        [0.15, 0.8, 0.5, 0.7]
+    )
+    assert normalized["toxic_prediction"].tolist() == ["no", "yes", "yes", "no"]
+    assert normalized["toxic_positive_class_probability"].tolist() == pytest.approx(
+        [0.15, 0.85, 0.65, 0.25]
+    )
+
+    metrics = toolkit._compute_training_metrics(
+        train_csv=str(train_csv),
+        output_dir=str(output_dir),
+        task=task,
+    )
+    test_metrics = metrics["metrics"]["test"]
+    assert test_metrics["target_count"] == 2
+    assert test_metrics["target_metrics"]["activity"]["accuracy"] == pytest.approx(0.75)
+    assert test_metrics["target_metrics"]["toxic"]["accuracy"] == pytest.approx(1.0)
+
 
 
 def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):

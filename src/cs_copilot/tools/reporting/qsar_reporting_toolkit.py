@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
@@ -230,18 +229,39 @@ class QSARReportingToolkit(Toolkit):
         ad_columns = latest.get("applicability_domain_columns") or []
         ad_summary = latest.get("applicability_domain") or {}
 
-        target_column = None
-        if record and record.task.target_columns:
-            candidate = record.task.target_columns[0]
-            if candidate in df.columns:
-                target_column = candidate
+        target_columns = list(getattr(getattr(record, "task", None), "target_columns", []) or [])
+        prediction_column_labels: Dict[str, str] = {}
+        for target in target_columns:
+            explicit_prediction = f"{target}_prediction"
+            if explicit_prediction in df.columns:
+                label = f"Y predit ({target})" if len(target_columns) > 1 else "Y predit"
+                prediction_column_labels[explicit_prediction] = label
+            elif target in df.columns:
+                label = f"Y predit ({target})" if len(target_columns) > 1 else "Y predit"
+                prediction_column_labels[target] = label
+        if not prediction_column_labels:
+            inferred_prediction_columns = [
+                column for column in df.columns if str(column).endswith("_prediction")
+            ]
+            for column in inferred_prediction_columns:
+                target = str(column).removesuffix("_prediction")
+                label = f"Y predit ({target})" if len(inferred_prediction_columns) > 1 else "Y predit"
+                prediction_column_labels[column] = label
+        target_column = next(iter(prediction_column_labels), None)
         if target_column is None:
+            auxiliary_columns = {"smiles", "source_row_index", *ad_columns}
             non_aux = [
                 column
                 for column in df.columns
-                if column not in {"smiles", *ad_columns}
+                if column not in auxiliary_columns
+                and not str(column).endswith("_true")
+                and not str(column).endswith("_residual")
+                and not str(column).endswith("_absolute_error")
+                and "replicate" not in str(column)
             ]
             target_column = non_aux[0] if non_aux else None
+            if target_column:
+                prediction_column_labels[target_column] = "Y predit"
 
         reliability_map = {
             "in_domain": "Elevee",
@@ -279,7 +299,10 @@ class QSARReportingToolkit(Toolkit):
         ]
         if record and record.task.task_type:
             model_items.append(["Type de tache", record.task.task_type])
-        if target_column:
+        if target_columns:
+            label = "Cibles" if len(target_columns) > 1 else "Cible"
+            model_items.append([label, ", ".join(target_columns)])
+        elif target_column:
             model_items.append(["Cible", target_column])
         metadata_payload: Dict[str, Any] = {}
         if record and record.metadata_path and Path(record.metadata_path).exists():
@@ -321,15 +344,16 @@ class QSARReportingToolkit(Toolkit):
             preview_df["Fiabilite"] = preview_df["ad_status"].map(reliability_map).fillna("")
         if "smiles" in preview_df.columns:
             preview_df = preview_df.rename(columns={"smiles": "SMILES"})
-        if target_column and target_column in preview_df.columns:
-            preview_df = preview_df.rename(columns={target_column: "Y predit"})
+        if prediction_column_labels:
+            preview_df = preview_df.rename(columns=prediction_column_labels)
         if "ad_status" in preview_df.columns:
             preview_df = preview_df.rename(columns={"ad_status": "Statut AD"})
         preview_columns: List[str] = []
         if "SMILES" in preview_df.columns:
             preview_columns.append("SMILES")
-        if "Y predit" in preview_df.columns:
-            preview_columns.append("Y predit")
+        for prediction_label in prediction_column_labels.values():
+            if prediction_label in preview_df.columns:
+                preview_columns.append(prediction_label)
         if "Statut AD" in preview_df.columns:
             preview_columns.append("Statut AD")
         if "Fiabilite" in preview_df.columns:
