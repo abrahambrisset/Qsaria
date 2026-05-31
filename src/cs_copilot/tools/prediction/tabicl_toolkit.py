@@ -45,8 +45,8 @@ from .tabicl_backend import (
     TabICLBackend,
 )
 from .tabular_representations import (
-    AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
+    TABICL_AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
 )
 from .training_orchestration import (
     apply_training_profile,
@@ -237,16 +237,20 @@ class TabICLToolkit(Toolkit):
                 ],
                 "supported_split_families": ["random", "scaffold", "cluster_kmeans"],
                 "default_tabular_feature_policy": {
-                    "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+                    "automatic_representations": list(
+                        TABICL_AUTOMATIC_TABULAR_REPRESENTATION_NAMES
+                    ),
                     "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
-                    "default_single_representation": "morgan_rdkit_all",
+                    "default_single_representation": "chemeleon_rdkit_all",
+                    "preferred_representation": "chemeleon_rdkit_all",
                     "explicit_user_override": True,
                 },
                 "notes": [
                     "Supports the shared QSAR protocol names and split families.",
-                    "Modern comparative campaigns use RDKit all, Morgan binary, Morgan count, and the complete combined pack.",
+                    "Modern TabICL campaigns prefer CheMeleon + RDKit all and may use RDKit all as a low-dimensional fallback.",
+                    "Morgan/ECFP fingerprint representations are intentionally excluded from TabICL because they are high-dimensional.",
                     "RDKit basic representations are legacy-only and require explicit user override.",
-                    "If the user explicitly requests a representation, that override should win.",
+                    "If the user explicitly requests a compatible representation, that override should win.",
                     "The `.ckpt` checkpoint is a backend resource, not a trained model artifact.",
                     "`validate_tabicl_model_path` is intended for saved trained models such as `.pkl`.",
                 ],

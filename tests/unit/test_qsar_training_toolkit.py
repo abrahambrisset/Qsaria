@@ -7,7 +7,9 @@ import pytest
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
 
-def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name: str, validation_protocol: str):
+def _fake_train_result(
+    tmp_path: Path, *, backend_name: str, representation_name: str, validation_protocol: str
+):
     model_path = tmp_path / backend_name / representation_name / "model_0" / "best.pkl"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model_path.write_text("fake-model")
@@ -94,7 +96,9 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
     assert result["persistence_plan"]["persist_all_candidates"] is True
     assert result["persistence_plan"]["candidate_count"] == 4
     assert len(result["candidate_registry_payloads"]) == 4
-    assert all(item["registry_payload"].get("model_id") for item in result["candidate_registry_payloads"])
+    assert all(
+        item["registry_payload"].get("model_id") for item in result["candidate_registry_payloads"]
+    )
     assert result["campaign_duration_seconds"] >= 0
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
@@ -108,14 +112,14 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
     assert first_payload_profile["feature_columns_count"] == 64
 
 
-def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):
+def test_fast_local_tabicl_training_uses_chemeleon_rdkit_single_candidate(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     captured = {}
 
     def fake_prepare(**kwargs):
         captured.update(kwargs)
         return {
-            "train_csv": str(tmp_path / "rdkit_all.csv"),
+            "train_csv": str(tmp_path / "chemeleon_rdkit_all.csv"),
             "feature_columns": ["feature_a"],
             "feature_preparation": {
                 "representation_name": kwargs["representation_name"],
@@ -144,11 +148,89 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
     )
 
     assert "campaign_started" not in result
-    assert captured["representation_name"] == "rdkit_all"
-    assert result["representation_name"] == "rdkit_all"
+    assert captured["representation_name"] == "chemeleon_rdkit_all"
+    assert result["representation_name"] == "chemeleon_rdkit_all"
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
     assert "feature_columns" not in result["recommended_registry_payload"]["inference_profile"]
+
+
+def test_standard_qsar_tabicl_campaign_uses_chemeleon_and_rdkit_only(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    called_representations: list[str] = []
+
+    def fake_prepare(**kwargs):
+        called_representations.append(kwargs["representation_name"])
+        return {
+            "train_csv": str(tmp_path / f"{kwargs['representation_name']}.csv"),
+            "feature_columns": ["feature_a"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "feature_cache_key": f"cache-{kwargs['representation_name']}",
+                "feature_cache_status": "generated",
+                "cache_hits": 0,
+                "cache_misses": 2,
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        }
+
+    def fake_tabicl_train(**kwargs):
+        return _fake_train_result(
+            tmp_path,
+            backend_name="tabicl",
+            representation_name=called_representations[-1],
+            validation_protocol=kwargs["validation_protocol"],
+        )
+
+    monkeypatch.setattr(toolkit, "_prepare_tabular_training_dataset", fake_prepare)
+    monkeypatch.setattr(toolkit.tabicl_toolkit, "train_tabicl_model", fake_tabicl_train)
+
+    result = toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        backend_name="tabicl",
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        target_columns=["Y"],
+        validation_protocol="standard_qsar",
+    )
+
+    assert result["campaign_started"] is True
+    assert result["representations"] == ["chemeleon_rdkit_all", "rdkit_all"]
+    assert called_representations == result["representations"]
+    assert "morgan_count_only" not in result["representations"]
+    assert len(result["candidate_registry_payloads"]) == 2
+
+
+def test_tabicl_training_rejects_high_dimensional_morgan_representation(tmp_path):
+    toolkit = QSARTrainingToolkit()
+
+    with pytest.raises(ValueError, match="high-dimensional representation"):
+        toolkit.train_qsar_model(
+            train_csv=str(tmp_path / "train.csv"),
+            backend_name="tabicl",
+            task_type="regression",
+            output_dir=str(tmp_path / "out"),
+            target_columns=["Y"],
+            validation_protocol="fast_local",
+            representation_name="morgan_count_only",
+        )
+
+
+def test_tabicl_training_rejects_morgan_like_precomputed_feature_columns(tmp_path):
+    toolkit = QSARTrainingToolkit()
+    feature_columns = [f"cfp_{index:04d}" for index in range(256)]
+
+    with pytest.raises(ValueError, match="high-dimensional precomputed features"):
+        toolkit.train_qsar_model(
+            train_csv=str(tmp_path / "train.csv"),
+            backend_name="tabicl",
+            task_type="regression",
+            output_dir=str(tmp_path / "out"),
+            target_columns=["Y"],
+            validation_protocol="fast_local",
+            feature_columns=feature_columns,
+        )
+
 
 def test_qsar_training_facade_allows_multitask_chemprop(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()

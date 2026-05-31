@@ -88,7 +88,9 @@ def test_describe_backend_capabilities_is_serializable():
     assert payload["chemprop"]["backend_name"] == "chemprop"
     assert "morgan_rdkit_all" in payload["lightgbm"]["supported_representations"]
     assert "morgan_count_only" in payload["lightgbm"]["supported_representations"]
-    assert "morgan_binary_count_rdkit_all" in payload["tabicl"]["supported_representations"]
+    assert "chemeleon_rdkit_all" in payload["tabicl"]["supported_representations"]
+    assert "rdkit_all" in payload["tabicl"]["supported_representations"]
+    assert "morgan_binary_count_rdkit_all" not in payload["tabicl"]["supported_representations"]
     assert payload["lightgbm"]["gpu_support"] == "supported_when_available"
 
 
@@ -438,7 +440,6 @@ def test_chemprop_toolkit_writes_multi_target_regression_predictions(tmp_path):
     assert test_metrics["target_metrics"]["solubility"]["rmse"] == pytest.approx(0.0)
 
 
-
 def test_chemprop_toolkit_writes_normalized_classification_predictions(tmp_path):
     toolkit = ChempropToolkit(register_tools=False)
     train_csv = tmp_path / "classification_train.csv"
@@ -567,7 +568,6 @@ def test_chemprop_toolkit_writes_multi_target_classification_predictions(tmp_pat
     assert test_metrics["target_count"] == 2
     assert test_metrics["target_metrics"]["activity"]["accuracy"] == pytest.approx(0.75)
     assert test_metrics["target_metrics"]["toxic"]["accuracy"] == pytest.approx(1.0)
-
 
 
 def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):

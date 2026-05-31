@@ -102,8 +102,11 @@ def test_resolve_benchmark_protocol_contract():
     assert toolkit._resolve_benchmark_protocol("challenging_qsar") == "challenging_qsar"
 
 
-def test_expand_candidates_includes_heavy_tabicl_all():
+def test_expand_candidates_uses_tabicl_chemeleon_and_rdkit_only(monkeypatch):
     toolkit = BenchmarkToolkit()
+    monkeypatch.setattr(
+        toolkit.training_toolkit.tabicl_toolkit.backend, "is_available", lambda: True
+    )
     candidates = toolkit._expand_candidates(
         task_type="regression",
         target_columns=["Y"],
@@ -113,16 +116,17 @@ def test_expand_candidates_includes_heavy_tabicl_all():
         training_profile="heavy_validation",
     )
     candidate_ids = [item["candidate_id"] for item in candidates]
-    assert "tabicl_rdkit_all" in candidate_ids
-    assert "tabicl_morgan_only" in candidate_ids
-    assert "tabicl_morgan_count_only" in candidate_ids
-    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
-    assert "tabicl_rdkit_basic_only" not in candidate_ids
-    assert "tabicl_morgan_rdkit_basic" not in candidate_ids
+    assert candidate_ids == ["tabicl_chemeleon_rdkit_all", "tabicl_rdkit_all"]
+    assert "tabicl_morgan_only" not in candidate_ids
+    assert "tabicl_morgan_count_only" not in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" not in candidate_ids
 
 
-def test_expand_candidates_includes_heavy_lightgbm_all():
+def test_expand_candidates_includes_heavy_lightgbm_all(monkeypatch):
     toolkit = BenchmarkToolkit()
+    monkeypatch.setattr(
+        toolkit.training_toolkit.lightgbm_toolkit.backend, "is_available", lambda: True
+    )
     candidates = toolkit._expand_candidates(
         task_type="regression",
         target_columns=["Y"],
@@ -404,10 +408,11 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert "lightgbm_morgan_only" in candidate_ids
     assert "lightgbm_morgan_count_only" in candidate_ids
     assert "lightgbm_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "tabicl_chemeleon_rdkit_all" in candidate_ids
     assert "tabicl_rdkit_all" in candidate_ids
-    assert "tabicl_morgan_only" in candidate_ids
-    assert "tabicl_morgan_count_only" in candidate_ids
-    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "tabicl_morgan_only" not in candidate_ids
+    assert "tabicl_morgan_count_only" not in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" not in candidate_ids
 
     for item in result["persisted_model_mapping"]:
         model_root = Path(item["internal_model_root"])

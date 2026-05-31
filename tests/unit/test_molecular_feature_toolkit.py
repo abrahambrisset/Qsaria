@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
+import cs_copilot.tools.features.molecular_feature_toolkit as feature_module
 from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 
@@ -154,3 +156,44 @@ def test_rdkit_accepts_original_smiles_name_on_curated_lowercase_dataset(tmp_pat
     assert "smiles" in output_df.columns
     assert "SMILES" not in output_df.columns
     assert "Y" in output_df.columns
+
+
+def test_chemeleon_output_keeps_normalized_smiles_and_embedding_columns(tmp_path, monkeypatch):
+    class FakeCheMeleonFingerprint:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __call__(self, smiles):
+            return np.asarray(
+                [
+                    [float(index), float(len(value)), float(index + len(value))]
+                    for index, value in enumerate(smiles)
+                ]
+            )
+
+    monkeypatch.setattr(
+        feature_module,
+        "_load_chemeleon_fingerprint_class",
+        lambda: FakeCheMeleonFingerprint,
+    )
+
+    toolkit = MolecularFeatureToolkit()
+    input_csv = _sample_feature_input(tmp_path)
+    output_csv = tmp_path / "chemeleon.csv"
+
+    result = toolkit.smiles_to_chemeleon_fingerprints(
+        input_csv=str(input_csv),
+        smiles_column="SMILES",
+        output_csv=str(output_csv),
+        input_columns_to_keep=["Y"],
+        feature_prefix="chem_",
+        allow_auto_download=False,
+    )
+
+    output_df = pd.read_csv(output_csv)
+    feature_columns = [column for column in output_df.columns if column.startswith("chem_")]
+    assert result["num_features"] == 3
+    assert feature_columns == ["chem_0000", "chem_0001", "chem_0002"]
+    assert "smiles" in output_df.columns
+    assert "Y" in output_df.columns
+    assert output_df[feature_columns].dtypes.apply(lambda dtype: dtype.kind).isin(["f"]).all()

@@ -35,6 +35,7 @@ def _ensure_parent_dir(path: object) -> None:
         return
     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
+
 _OPERATION_ALIASES = {
     "summary": "describe",
     "stats": "describe",
@@ -102,7 +103,11 @@ _NULL_CHECK_OPS = {
 
 _CREATION_FUNCTIONS_MISUSED_AS_OPERATIONS = {"from_dict", "from_records", "dataframe"}
 _UNSUPPORTED_PSEUDO_OPERATIONS = {"import_subprocess", "subprocess", "shell", "exec", "execute"}
-_DEDICATED_TOOL_OPERATIONS = {"smiles_to_morgan_fingerprints", "smiles_to_rdkit_descriptors"}
+_DEDICATED_TOOL_OPERATIONS = {
+    "smiles_to_morgan_fingerprints",
+    "smiles_to_chemeleon_fingerprints",
+    "smiles_to_rdkit_descriptors",
+}
 
 
 def _preview(df: pd.DataFrame) -> str:
