@@ -31,12 +31,12 @@ from .qsar_training_policy import (
     describe_compute_environment,
     project_now,
     resolve_training_profile,
-    resolve_validation_protocol,
     safe_slug,
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
+from .qsar_validation_strategy import resolve_validation_strategy
 from .session_state import (
     bundle_artifacts,
     get_prediction_state,
@@ -460,9 +460,11 @@ class ChempropToolkit(Toolkit):
         seed_policy: Optional[Dict[str, Any]] = None,
         seed_policy_mode: str = "generated_per_run",
         base_seed: Optional[int] = None,
+        validation_strategy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return resolve_validation_protocol(
+        return resolve_validation_strategy(
             requested_protocol=requested_protocol,
+            validation_strategy=validation_strategy,
             training_profile=training_profile,
             seed_policy=seed_policy,
             seed_policy_mode=seed_policy_mode,
@@ -790,6 +792,7 @@ class ChempropToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        validation_strategy: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -812,6 +815,9 @@ class ChempropToolkit(Toolkit):
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
         cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_validation_strategy = (
+            validation_strategy if validation_strategy is not None else cleaned_extra_args.pop("validation_strategy", None)
+        )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,
@@ -828,7 +834,14 @@ class ChempropToolkit(Toolkit):
             seed_policy=training_policy["extra_args"].get("seed_policy"),
             base_seed=training_policy["extra_args"].get("data_seed")
             or training_policy["extra_args"].get("random_state"),
+            validation_strategy=requested_validation_strategy,
         )
+        if any(split_run.get("requires_split_payload") for split_run in protocol_policy["split_runs"]):
+            raise ValueError(
+                "Chemprop configurable k-fold/nested CV requires explicit split-file support, "
+                "which is not implemented yet. Use standard_qsar, holdout/repeated_holdout, "
+                "or a tabular backend for k-fold/scaffold/cluster CV."
+            )
         protocol_override_note = self._apply_protocol_training_overrides(
             training_policy=training_policy,
             protocol_policy=protocol_policy,
@@ -898,6 +911,8 @@ class ChempropToolkit(Toolkit):
                 run_args = {
                     **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "split_type": split_run["backend_split_type"],
+                    "split_sizes": split_run.get("split_sizes")
+                    or training_policy["extra_args"].get("split_sizes"),
                     "data_seed": split_run["seed"],
                 }
 
@@ -917,7 +932,7 @@ class ChempropToolkit(Toolkit):
                 if "scaffold" in label:
                     strategy_name = "scaffold"
                     strategy_family = "scaffold"
-                elif "kmeans" in label:
+                elif "kmeans" in label or "cluster" in label:
                     strategy_name = "cluster_kmeans"
                     strategy_family = "cluster_kmeans"
                 elif "kennard" in label:
@@ -996,6 +1011,11 @@ class ChempropToolkit(Toolkit):
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
             result["validation_protocol_reason"] = protocol_policy["reason"]
+            result["validation_strategy"] = protocol_policy.get("validation_strategy")
+            result["validation_strategy_type"] = protocol_policy.get("validation_strategy_type")
+            result["validation_aggregation"] = protocol_policy.get("aggregation")
+            result["selection_metric"] = protocol_policy.get("selection_metric")
+            result["final_refit"] = protocol_policy.get("final_refit")
             result["seed_policy"] = protocol_policy["seed_policy"]
             result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
             result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])

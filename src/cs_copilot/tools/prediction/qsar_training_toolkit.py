@@ -730,6 +730,7 @@ class QSARTrainingToolkit(Toolkit):
         smiles_column: str,
         target_columns: List[str],
         validation_protocol: str,
+        validation_strategy: Optional[Dict[str, Any]],
         activity_cliff_index: str,
         activity_cliff_feedback: bool,
         activity_cliff_feedback_loops: int,
@@ -757,6 +758,7 @@ class QSARTrainingToolkit(Toolkit):
                 smiles_column=smiles_column,
                 target_columns=list(target_columns),
                 validation_protocol=validation_protocol,
+                validation_strategy=validation_strategy,
                 representation_name=representation_name,
                 activity_cliff_index=activity_cliff_index,
                 activity_cliff_feedback=activity_cliff_feedback,
@@ -804,6 +806,7 @@ class QSARTrainingToolkit(Toolkit):
             "backend_name": backend_name,
             "task_type": task_type,
             "validation_protocol": validation_protocol,
+            "validation_strategy": validation_strategy,
             "representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             "feature_cache_dir": feature_cache_dir,
             "campaign_duration_seconds": round(time.monotonic() - campaign_started_at, 3),
@@ -862,6 +865,7 @@ class QSARTrainingToolkit(Toolkit):
         smiles_column: str = "smiles",
         target_columns: Optional[List[str] | str] = None,
         validation_protocol: str = "standard_qsar",
+        validation_strategy: Optional[Dict[str, Any]] = None,
         representation_name: Optional[str] = None,
         feature_columns: Optional[List[str] | str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
@@ -889,15 +893,21 @@ class QSARTrainingToolkit(Toolkit):
             argument_name="categorical_feature_columns",
         )
         requested_extra_args = dict(extra_args or {})
+        requested_validation_strategy = (
+            validation_strategy if validation_strategy is not None else requested_extra_args.pop("validation_strategy", None)
+        )
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
 
         if normalized_backend == "chemprop":
+            if requested_validation_strategy is not None:
+                requested_extra_args["validation_strategy"] = requested_validation_strategy
             result = self.chemprop_toolkit.train_model(
                 train_csv=train_csv,
                 task_type=task_type,
                 output_dir=output_dir,
                 smiles_columns=[smiles_column],
                 target_columns=list(normalized_target_columns),
+                validation_strategy=requested_validation_strategy,
                 activity_cliff_index=activity_cliff_index,
                 activity_cliff_feedback=activity_cliff_feedback,
                 activity_cliff_feedback_loops=activity_cliff_feedback_loops,
@@ -914,7 +924,10 @@ class QSARTrainingToolkit(Toolkit):
             if (
                 not representation_name
                 and not normalized_feature_columns
-                and validation_protocol in {"standard_qsar", "robust_qsar"}
+                and (
+                    requested_validation_strategy is not None
+                    or validation_protocol in {"standard_qsar", "robust_qsar"}
+                )
             ):
                 return self._train_tabular_representation_campaign(
                     train_csv=train_csv,
@@ -924,6 +937,7 @@ class QSARTrainingToolkit(Toolkit):
                     smiles_column=smiles_column,
                     target_columns=list(normalized_target_columns),
                     validation_protocol=validation_protocol,
+                    validation_strategy=requested_validation_strategy,
                     activity_cliff_index=activity_cliff_index,
                     activity_cliff_feedback=activity_cliff_feedback,
                     activity_cliff_feedback_loops=activity_cliff_feedback_loops,
@@ -971,6 +985,7 @@ class QSARTrainingToolkit(Toolkit):
                     feature_columns=normalized_feature_columns,
                     categorical_feature_columns=normalized_categorical_feature_columns,
                     validation_protocol=validation_protocol,
+                    validation_strategy=requested_validation_strategy,
                     activity_cliff_index=activity_cliff_index,
                     activity_cliff_feedback=activity_cliff_feedback,
                     activity_cliff_feedback_loops=activity_cliff_feedback_loops,
@@ -988,6 +1003,7 @@ class QSARTrainingToolkit(Toolkit):
                     target_columns=list(normalized_target_columns),
                     feature_columns=normalized_feature_columns,
                     validation_protocol=validation_protocol,
+                    validation_strategy=requested_validation_strategy,
                     activity_cliff_index=activity_cliff_index,
                     activity_cliff_feedback=activity_cliff_feedback,
                     activity_cliff_feedback_loops=activity_cliff_feedback_loops,
@@ -1046,6 +1062,7 @@ class QSARTrainingToolkit(Toolkit):
         smiles_column: str = "smiles",
         target_columns: Optional[List[str] | str] = None,
         validation_protocol: str = "standard_qsar",
+        validation_strategy: Optional[Dict[str, Any]] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -1064,6 +1081,7 @@ class QSARTrainingToolkit(Toolkit):
             smiles_column=smiles_column,
             target_columns=target_columns,
             validation_protocol=validation_protocol,
+            validation_strategy=validation_strategy,
             activity_cliff_index=activity_cliff_index,
             activity_cliff_feedback=activity_cliff_feedback,
             activity_cliff_feedback_loops=activity_cliff_feedback_loops,
@@ -1085,6 +1103,7 @@ class QSARTrainingToolkit(Toolkit):
         feature_columns: Optional[List[str] | str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
         validation_protocol: str = "standard_qsar",
+        validation_strategy: Optional[Dict[str, Any]] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -1103,6 +1122,7 @@ class QSARTrainingToolkit(Toolkit):
             smiles_column=smiles_column,
             target_columns=target_columns,
             validation_protocol=validation_protocol,
+            validation_strategy=validation_strategy,
             representation_name=representation_name,
             feature_columns=feature_columns,
             categorical_feature_columns=categorical_feature_columns,
@@ -1126,6 +1146,7 @@ class QSARTrainingToolkit(Toolkit):
         representation_name: Optional[str] = None,
         feature_columns: Optional[List[str] | str] = None,
         validation_protocol: str = "standard_qsar",
+        validation_strategy: Optional[Dict[str, Any]] = None,
         activity_cliff_index: str = "sali",
         activity_cliff_feedback: bool = False,
         activity_cliff_feedback_loops: int = 0,
@@ -1144,6 +1165,7 @@ class QSARTrainingToolkit(Toolkit):
             smiles_column=smiles_column,
             target_columns=target_columns,
             validation_protocol=validation_protocol,
+            validation_strategy=validation_strategy,
             representation_name=representation_name,
             feature_columns=feature_columns,
             activity_cliff_index=activity_cliff_index,

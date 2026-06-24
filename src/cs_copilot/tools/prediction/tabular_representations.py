@@ -56,8 +56,8 @@ TABULAR_REPRESENTATIONS: Dict[str, TabularRepresentationSpec] = {
         use_morgan_count=True,
         use_rdkit=True,
         descriptor_set="all",
-        automatic=True,
-        description="Modern complete tabular pack combining binary fingerprints, count fingerprints, and RDKit descriptors.",
+        automatic=False,
+        description="Explicit advanced combined representation. Use only when requested.",
     ),
     "morgan_rdkit_all": TabularRepresentationSpec(
         name="morgan_rdkit_all",

@@ -57,9 +57,12 @@ consumed by training, benchmark, and backend capability reporting.
 
 Modern automatic pack:
 
-- `rdkit_all`
 - `morgan_only`
+- `rdkit_all`
 - `morgan_count_only`
+
+Explicit advanced representation:
+
 - `morgan_binary_count_rdkit_all`
 
 Legacy explicit-only representations:
@@ -78,11 +81,16 @@ or candidate.
 - `fast_local`: quick smoke test. Tabular backends use `rdkit_all`; Chemprop
   uses molecular graphs.
 - `standard_qsar`: Chemprop trains one graph candidate; LightGBM/TabICL train
-  the full modern tabular pack with one random and one scaffold split.
-- `robust_qsar`: same candidates as `standard_qsar`, with three random splits
-  plus one scaffold split.
+  exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`, each with one
+  random and one scaffold split.
+- Advanced validation: callers pass `validation_strategy` for custom holdout
+  ratios, repeated holdout, random/scaffold/cluster cross-validation, or nested
+  cross-validation.
+- `robust_qsar` and `challenging_qsar`: compatibility protocols retained for
+  existing workflows, but advanced users should prefer explicit
+  `validation_strategy`.
 - `benchmark_standard_qsar`: multi-backend comparison over Chemprop graph plus
-  the modern LightGBM/TabICL pack using the standard protocol.
+  the simple modern LightGBM/TabICL pack using the standard protocol.
 - `benchmark_robust_qsar`: the same benchmark candidates with the robust
   protocol. There is no top-N preselection yet.
 
@@ -165,7 +173,7 @@ Each model entry can include:
 ## Non-Goals
 
 - No registry or inference routing through `ChempropToolkit`.
-- No implicit benchmark launch for ordinary `standard_qsar` or `robust_qsar`
-  training requests.
+- No implicit benchmark launch for ordinary `standard_qsar`, `robust_qsar`, or
+  custom `validation_strategy` training requests.
 - No hidden training workflow guessed from user text without explicit dataset,
   target, task, and protocol metadata.

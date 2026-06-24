@@ -19,12 +19,12 @@ from .model_registry_toolkit import ModelRegistryToolkit
 from .qsar_training_toolkit import QSARTrainingToolkit
 from .qsar_training_policy import (
     describe_compute_environment,
-    resolve_seed_policy,
     resolve_training_profile,
     safe_slug,
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
+from .qsar_validation_strategy import resolve_validation_strategy
 from .tabular_representations import (
     tabular_candidates_for_backend,
     get_tabular_representation,
@@ -280,6 +280,7 @@ class BenchmarkToolkit(Toolkit):
         allow_heavy_compute: bool,
         training_profile: Optional[str],
         campaign_seed_policy: Dict[str, Any],
+        validation_strategy: Optional[Dict[str, Any]],
         agent: Agent,
     ) -> Dict[str, Any]:
         requested_extra_args: Dict[str, Any] = {
@@ -290,6 +291,8 @@ class BenchmarkToolkit(Toolkit):
         }
         if training_profile:
             requested_extra_args["training_profile"] = training_profile
+        if validation_strategy is not None:
+            requested_extra_args["validation_strategy"] = validation_strategy
 
         result = self.training_toolkit.train_qsar_model(
             train_csv=train_csv,
@@ -305,6 +308,7 @@ class BenchmarkToolkit(Toolkit):
                 else candidate["representation_name"]
             ),
             extra_args=requested_extra_args,
+            validation_strategy=validation_strategy,
             agent=agent,
         )
         result["representation_name"] = candidate["representation_name"]
@@ -676,6 +680,7 @@ class BenchmarkToolkit(Toolkit):
         output_dir: str = ".files/benchmark_output",
         allow_heavy_compute: bool = False,
         training_profile: Optional[str] = None,
+        validation_strategy: Optional[Dict[str, Any]] = None,
         benchmark_requested: bool = False,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -720,13 +725,17 @@ class BenchmarkToolkit(Toolkit):
         benchmark_protocol = self._resolve_benchmark_protocol(benchmark_mode)
         compute_payload = self._resolve_compute_profile()
         effective_training_profile = training_profile or compute_payload["training_profile"]
+        protocol_policy = resolve_validation_strategy(
+            requested_protocol=benchmark_protocol,
+            validation_strategy=validation_strategy,
+            training_profile=effective_training_profile,
+            seed_policy_mode="generated_per_benchmark_campaign",
+        )
+        benchmark_protocol = protocol_policy["protocol"]
         effective_include_candidate_variants = (
             include_candidate_variants if benchmark_protocol != "fast_local" else False
         )
-        campaign_seed_policy = resolve_seed_policy(
-            protocol=benchmark_protocol,
-            mode="generated_per_benchmark_campaign",
-        )
+        campaign_seed_policy = protocol_policy["seed_policy"]
 
         candidates = self._expand_candidates(
             task_type=task_type,
@@ -772,6 +781,7 @@ class BenchmarkToolkit(Toolkit):
                     allow_heavy_compute=allow_heavy_compute,
                     training_profile=training_profile,
                     campaign_seed_policy=campaign_seed_policy,
+                    validation_strategy=validation_strategy,
                     agent=agent,
                 )
             except Exception:
@@ -867,6 +877,10 @@ class BenchmarkToolkit(Toolkit):
             "compute_environment": compute_payload["compute_environment"],
             "training_profile": effective_training_profile,
             "campaign_seed_policy": campaign_seed_policy,
+            "validation_strategy": protocol_policy.get("validation_strategy"),
+            "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
+            "validation_aggregation": protocol_policy.get("aggregation"),
+            "selection_metric": protocol_policy.get("selection_metric"),
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
             "candidate_inventory": [
@@ -894,6 +908,10 @@ class BenchmarkToolkit(Toolkit):
             "benchmark_protocol": benchmark_protocol,
             "output_dir": str(campaign_root),
             "campaign_seed_policy": campaign_seed_policy,
+            "validation_strategy": protocol_policy.get("validation_strategy"),
+            "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
+            "validation_aggregation": protocol_policy.get("aggregation"),
+            "selection_metric": protocol_policy.get("selection_metric"),
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
             "candidate_results": compact_candidate_results,

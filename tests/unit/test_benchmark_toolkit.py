@@ -112,7 +112,7 @@ def test_expand_candidates_includes_heavy_tabicl_all():
     assert "tabicl_rdkit_all" in candidate_ids
     assert "tabicl_morgan_only" in candidate_ids
     assert "tabicl_morgan_count_only" in candidate_ids
-    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" not in candidate_ids
     assert "tabicl_rdkit_basic_only" not in candidate_ids
     assert "tabicl_morgan_rdkit_basic" not in candidate_ids
 
@@ -131,7 +131,7 @@ def test_expand_candidates_includes_heavy_lightgbm_all():
     assert "lightgbm_rdkit_all" in candidate_ids
     assert "lightgbm_morgan_only" in candidate_ids
     assert "lightgbm_morgan_count_only" in candidate_ids
-    assert "lightgbm_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "lightgbm_morgan_binary_count_rdkit_all" not in candidate_ids
     assert "lightgbm_rdkit_basic_only" not in candidate_ids
     assert "lightgbm_morgan_rdkit_basic" not in candidate_ids
 
@@ -372,11 +372,11 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert "lightgbm_rdkit_all" in candidate_ids
     assert "lightgbm_morgan_only" in candidate_ids
     assert "lightgbm_morgan_count_only" in candidate_ids
-    assert "lightgbm_morgan_binary_count_rdkit_all" in candidate_ids
     assert "tabicl_rdkit_all" in candidate_ids
     assert "tabicl_morgan_only" in candidate_ids
     assert "tabicl_morgan_count_only" in candidate_ids
-    assert "tabicl_morgan_binary_count_rdkit_all" in candidate_ids
+    assert "lightgbm_morgan_binary_count_rdkit_all" not in candidate_ids
+    assert "tabicl_morgan_binary_count_rdkit_all" not in candidate_ids
 
     for item in result["persisted_model_mapping"]:
         model_root = Path(item["internal_model_root"])

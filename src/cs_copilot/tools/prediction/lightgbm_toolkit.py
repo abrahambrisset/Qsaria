@@ -27,12 +27,12 @@ from .qsar_training_policy import (
     describe_compute_environment,
     project_now,
     resolve_training_profile,
-    resolve_validation_protocol,
     safe_slug,
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
     summarize_training_durations,
 )
+from .qsar_validation_strategy import resolve_validation_strategy
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
@@ -53,6 +53,7 @@ from .training_orchestration import (
     normalize_json_list_argument,
     write_training_summary,
 )
+from .tabular_splitters import materialize_tabular_split_payloads
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +90,11 @@ class LightGBMToolkit(Toolkit):
         seed_policy: Optional[Dict[str, Any]] = None,
         seed_policy_mode: str = "generated_per_run",
         base_seed: Optional[int] = None,
+        validation_strategy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return resolve_validation_protocol(
+        return resolve_validation_strategy(
             requested_protocol=requested_protocol,
+            validation_strategy=validation_strategy,
             training_profile=training_profile,
             seed_policy=seed_policy,
             seed_policy_mode=seed_policy_mode,
@@ -645,6 +648,7 @@ class LightGBMToolkit(Toolkit):
         feature_columns: Optional[List[str] | str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
         validation_protocol: Optional[str] = None,
+        validation_strategy: Optional[Dict[str, Any]] = None,
         split_type: str = "random",
         split_sizes: Optional[List[float] | str] = None,
         random_state: Optional[int] = None,
@@ -680,6 +684,9 @@ class LightGBMToolkit(Toolkit):
         root_output_path.mkdir(parents=True, exist_ok=True)
 
         requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_validation_strategy = (
+            validation_strategy if validation_strategy is not None else requested_extra_args.pop("validation_strategy", None)
+        )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,
@@ -727,6 +734,13 @@ class LightGBMToolkit(Toolkit):
             training_profile=training_policy["training_profile"],
             seed_policy=training_policy["extra_args"].get("seed_policy"),
             base_seed=training_policy["extra_args"].get("random_state"),
+            validation_strategy=requested_validation_strategy,
+        )
+        protocol_policy = materialize_tabular_split_payloads(
+            protocol_policy=protocol_policy,
+            train_csv=train_csv,
+            smiles_column="smiles",
+            feature_columns=normalized_feature_columns,
         )
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()
@@ -775,8 +789,9 @@ class LightGBMToolkit(Toolkit):
                     **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "feature_columns": normalized_feature_columns,
                     "categorical_feature_columns": normalized_categorical_feature_columns,
-                    "split_sizes": normalized_split_sizes,
+                    "split_sizes": split_run.get("split_sizes") or normalized_split_sizes,
                     "split_type": split_run["backend_split_type"],
+                    "split_payload": split_run.get("split_payload"),
                     "random_state": split_run["seed"],
                     "validation_protocol": protocol_policy["protocol"],
                 }
@@ -801,7 +816,7 @@ class LightGBMToolkit(Toolkit):
                 if "scaffold" in label:
                     strategy = "scaffold"
                     strategy_family = "scaffold"
-                elif "kmeans" in label:
+                elif "kmeans" in label or "cluster" in label:
                     strategy = "cluster_kmeans"
                     strategy_family = "cluster_kmeans"
                 elif "random_seed_" in label:
@@ -817,6 +832,7 @@ class LightGBMToolkit(Toolkit):
                 single_result["strategy_label"] = label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
+                single_result["split_payload"] = split_run.get("split_payload") or single_result.get("split_payload")
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
@@ -863,7 +879,7 @@ class LightGBMToolkit(Toolkit):
                         **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                         "feature_columns": normalized_feature_columns,
                         "categorical_feature_columns": normalized_categorical_feature_columns,
-                        "split_sizes": normalized_split_sizes,
+                        "split_sizes": baseline_result.get("split_sizes") or normalized_split_sizes,
                         "split_type": baseline_result.get("backend_split_type"),
                         "split_payload": baseline_result.get("split_payload"),
                         "excluded_train_indices": removed_indices,
@@ -991,6 +1007,11 @@ class LightGBMToolkit(Toolkit):
         result["selected_activity_cliff_variant"] = recommended_variant or "baseline_loop_0"
         result["validation_protocol"] = protocol_policy["protocol"]
         result["validation_protocol_reason"] = protocol_policy["reason"]
+        result["validation_strategy"] = protocol_policy.get("validation_strategy")
+        result["validation_strategy_type"] = protocol_policy.get("validation_strategy_type")
+        result["validation_aggregation"] = protocol_policy.get("aggregation")
+        result["selection_metric"] = protocol_policy.get("selection_metric")
+        result["final_refit"] = protocol_policy.get("final_refit")
         result["seed_policy"] = protocol_policy["seed_policy"]
         result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
         result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
