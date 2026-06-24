@@ -1319,21 +1319,13 @@ async def relay(stream):
     full_content = ""  # collect all content for final message
     qsar_mode = _is_qsar_team_mode()
     qsar_progress_msg = None
+    qsar_heartbeat_task: asyncio.Task | None = None
     active_tool_calls: dict[str, dict] = {}
     active_tool_name_queues: dict[str, list[str]] = {}
     tool_event_sequence = 0
 
     # Check if tool calls should be displayed
     show_tool_calls = cl.user_session.get("show_tool_calls", True)
-
-    if qsar_mode:
-        runtime_logger.info(
-            "QSAR workflow started | team=%s | thread=%s",
-            _get_runtime_context()["team"],
-            _get_runtime_context()["thread"],
-        )
-        qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
-        await qsar_progress_msg.send()
 
     def _extract_tool_name(tool) -> str:
         if tool is None:
@@ -1386,58 +1378,128 @@ async def relay(stream):
         ]
         return entry
 
-    async for chunk in stream:
-        # ── tool events → COT sidebar as Steps ───────────────────────────────
-        ev = getattr(chunk, "event", None)
-        if ev == "ToolCallStarted":
-            t = chunk.tool
-            tool_name = _extract_tool_name(t)
-            tool_args = t.tool_args or getattr(t, "arguments", {})
-            call_id = _extract_tool_call_id(chunk, t)
-            if call_id is None:
-                tool_event_sequence += 1
-                call_id = f"{tool_name}#{tool_event_sequence}"
-            _log_tool_event("started", tool_name, tool_args)
-            step = None
-            if show_tool_calls:
-                step = cl.Step(name=tool_name, type="tool")
-                step.input = tool_args
-                await step.send()
-            _remember_active_tool(call_id, tool_name, step)
-            continue
+    def _current_qsar_progress_text(elapsed_seconds: int) -> str:
+        session_agent = cl.user_session.get("agent")
+        session_state = getattr(session_agent, "session_state", None) or {}
+        prediction_state = session_state.get("prediction_models") or {}
+        active_run = prediction_state.get("active_training_run")
+        if not active_run:
+            active_run = (session_state.get("qsar_training") or {}).get("active_run")
 
-        if ev and ev.endswith("Completed"):
-            tool = getattr(chunk, "tool", None)
-            call_id = _extract_tool_call_id(chunk, tool)
-            hinted_name = _extract_tool_name(tool) if tool is not None else None
-            active_entry = _pop_active_tool(call_id, hinted_name)
-            tool_name = active_entry["tool_name"] if active_entry else (hinted_name or "tool")
-            payload = chunk.content or getattr(chunk, "text", "") or "done"
-            _log_tool_event("completed", tool_name, payload)
-            if show_tool_calls and active_entry and active_entry.get("step") is not None:
-                active_entry["step"].output = chunk.content or "✅ done"
-                await active_entry["step"].update()
-            continue
+        lines = ["Workflow QSAR en cours..."]
+        if isinstance(active_run, dict) and active_run:
+            progress = active_run.get("progress_message")
+            label = active_run.get("current_split_label")
+            protocol = active_run.get("validation_protocol")
+            profile = active_run.get("training_profile")
+            if progress:
+                lines.append(str(progress))
+            elif label:
+                lines.append(f"Etape active : {label}")
+            if protocol or profile:
+                details = " | ".join(
+                    item
+                    for item in (
+                        f"validation={protocol}" if protocol else "",
+                        f"profile={profile}" if profile else "",
+                    )
+                    if item
+                )
+                if details:
+                    lines.append(details)
+        lines.append(f"Toujours actif ({elapsed_seconds}s).")
+        return "\n".join(lines)
 
-        # ── plain text from the LLM / agent ─────────────────────────────────
-        text = (
-            chunk
-            if isinstance(chunk, str)
-            else getattr(chunk, "content", "") or getattr(chunk, "text", "")
+    async def _qsar_progress_heartbeat() -> None:
+        elapsed = 0
+        consecutive_errors = 0
+        while True:
+            await asyncio.sleep(30)
+            elapsed += 30
+            if qsar_progress_msg is None:
+                continue
+            try:
+                qsar_progress_msg.content = _current_qsar_progress_text(elapsed)
+                await qsar_progress_msg.update()
+                consecutive_errors = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                consecutive_errors += 1
+                logger.debug("QSAR progress heartbeat update failed: %s", exc)
+                if consecutive_errors >= 3:
+                    return
+
+    if qsar_mode:
+        runtime_logger.info(
+            "QSAR workflow started | team=%s | thread=%s",
+            _get_runtime_context()["team"],
+            _get_runtime_context()["thread"],
         )
-        if not text:
-            continue
+        qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
+        await qsar_progress_msg.send()
+        qsar_heartbeat_task = asyncio.create_task(_qsar_progress_heartbeat())
 
-        # Collect for persistence
-        full_content += text
+    try:
+        async for chunk in stream:
+            # ── tool events → COT sidebar as Steps ───────────────────────────────
+            ev = getattr(chunk, "event", None)
+            if ev == "ToolCallStarted":
+                t = chunk.tool
+                tool_name = _extract_tool_name(t)
+                tool_args = t.tool_args or getattr(t, "arguments", {})
+                call_id = _extract_tool_call_id(chunk, t)
+                if call_id is None:
+                    tool_event_sequence += 1
+                    call_id = f"{tool_name}#{tool_event_sequence}"
+                _log_tool_event("started", tool_name, tool_args)
+                step = None
+                if show_tool_calls:
+                    step = cl.Step(name=tool_name, type="tool")
+                    step.input = tool_args
+                    await step.send()
+                _remember_active_tool(call_id, tool_name, step)
+                continue
 
-        if qsar_mode:
-            continue
+            if ev and ev.endswith("Completed"):
+                tool = getattr(chunk, "tool", None)
+                call_id = _extract_tool_call_id(chunk, tool)
+                hinted_name = _extract_tool_name(tool) if tool is not None else None
+                active_entry = _pop_active_tool(call_id, hinted_name)
+                tool_name = active_entry["tool_name"] if active_entry else (hinted_name or "tool")
+                payload = chunk.content or getattr(chunk, "text", "") or "done"
+                _log_tool_event("completed", tool_name, payload)
+                if show_tool_calls and active_entry and active_entry.get("step") is not None:
+                    active_entry["step"].output = chunk.content or "✅ done"
+                    await active_entry["step"].update()
+                continue
 
-        buf += text
-        while "\n" in buf:  # process complete lines
-            line, buf = buf.split("\n", 1)
-            assistant = await _stream_line_with_elements(line, assistant, append_newline=True)
+            # ── plain text from the LLM / agent ─────────────────────────────────
+            text = (
+                chunk
+                if isinstance(chunk, str)
+                else getattr(chunk, "content", "") or getattr(chunk, "text", "")
+            )
+            if not text:
+                continue
+
+            # Collect for persistence
+            full_content += text
+
+            if qsar_mode:
+                continue
+
+            buf += text
+            while "\n" in buf:  # process complete lines
+                line, buf = buf.split("\n", 1)
+                assistant = await _stream_line_with_elements(line, assistant, append_newline=True)
+    finally:
+        if qsar_heartbeat_task is not None:
+            qsar_heartbeat_task.cancel()
+            try:
+                await qsar_heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
     # ── flush tail (no final newline) ────────────────────────────────────────
     if buf and not qsar_mode:
