@@ -72,6 +72,15 @@ def _coerce_split_family(raw: Any) -> str:
     return family
 
 
+def _infer_split_family(strategy: Mapping[str, Any]) -> str:
+    if strategy.get("split_family") is not None:
+        return _coerce_split_family(strategy.get("split_family"))
+    for family in ("random", "scaffold", "cluster", "kmeans", "cluster_kmeans"):
+        if any(key in strategy for key in (f"{family}_split", f"{family}_holdout")):
+            return _coerce_split_family(family)
+    return "random"
+
+
 def _coerce_split_sizes(raw: Any) -> List[float]:
     if raw is None:
         return list(DEFAULT_SPLIT_SIZES)
@@ -82,6 +91,35 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
     if any(item <= 0 for item in values) or abs(total - 1.0) > 1e-6:
         raise ValueError("validation_strategy.split_sizes must be positive and sum to 1.0.")
     return values
+
+
+def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]:
+    val_ratio = config.get("validation_ratio", config.get("val_ratio"))
+    test_ratio = config.get("test_ratio")
+    train_ratio = config.get("train_ratio")
+    if val_ratio is None and test_ratio is None and train_ratio is None:
+        return None
+    if train_ratio is None and val_ratio is not None and test_ratio is not None:
+        train_ratio = round(1.0 - float(val_ratio) - float(test_ratio), 12)
+    return _coerce_split_sizes([train_ratio, val_ratio, test_ratio])
+
+
+def _coerce_strategy_split_sizes(strategy: Mapping[str, Any], family: str) -> List[float]:
+    aliases = [f"{family}_split", f"{family}_holdout"]
+    if family == "cluster":
+        aliases.extend(["kmeans_split", "kmeans_holdout", "cluster_kmeans_split", "cluster_kmeans_holdout"])
+    for alias in aliases:
+        split_config = strategy.get(alias)
+        if isinstance(split_config, Mapping):
+            split_sizes = _split_sizes_from_ratios(split_config)
+            if split_sizes is not None:
+                return split_sizes
+    split_sizes = _split_sizes_from_ratios(strategy)
+    if split_sizes is not None:
+        return split_sizes
+    if strategy.get("split_sizes") is not None:
+        return _coerce_split_sizes(strategy.get("split_sizes"))
+    return _coerce_split_sizes(None)
 
 
 def _coerce_positive_int(raw: Any, *, default: int, name: str, minimum: int = 1) -> int:
@@ -177,18 +215,18 @@ def resolve_validation_strategy(
             base_seed=base_seed,
         )
 
-    strategy_type = str(strategy.get("type") or "holdout").strip().lower()
+    strategy_type = str(strategy.get("type") or strategy.get("strategy") or "holdout").strip().lower()
     selection_metric = str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
 
     if strategy_type == "holdout":
-        family = _coerce_split_family(strategy.get("split_family"))
-        split_sizes = _coerce_split_sizes(strategy.get("split_sizes"))
+        family = _infer_split_family(strategy)
+        split_sizes = _coerce_strategy_split_sizes(strategy, family)
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name=f"{family}_holdout",
             run_count=1,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or base_seed,
+            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
         )
         seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])]
         seed = seeds[0] if seeds else int(seed_payload.get("model_seed") or 42)
@@ -211,15 +249,15 @@ def resolve_validation_strategy(
         )
 
     if strategy_type == "repeated_holdout":
-        family = _coerce_split_family(strategy.get("split_family"))
+        family = _infer_split_family(strategy)
         n_repeats = _coerce_positive_int(strategy.get("n_repeats"), default=3, name="n_repeats", minimum=2)
-        split_sizes = _coerce_split_sizes(strategy.get("split_sizes"))
+        split_sizes = _coerce_strategy_split_sizes(strategy, family)
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name=f"repeated_{family}_holdout",
             run_count=n_repeats,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or base_seed,
+            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
         )
         seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])][:n_repeats]
         if len(seeds) < n_repeats:
