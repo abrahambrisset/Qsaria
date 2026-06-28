@@ -267,6 +267,37 @@ def detect_physical_memory_bytes() -> Optional[int]:
     return None
 
 
+def detect_cpu_count() -> int:
+    host_cpu_count = os.cpu_count() or 1
+    quota_cpu_count: Optional[int] = None
+
+    try:
+        cpu_max = Path("/sys/fs/cgroup/cpu.max")
+        if cpu_max.exists():
+            quota_raw, period_raw = cpu_max.read_text().strip().split()[:2]
+            if quota_raw != "max":
+                quota = int(quota_raw)
+                period = int(period_raw)
+                if quota > 0 and period > 0:
+                    quota_cpu_count = max(1, math.ceil(quota / period))
+    except Exception:
+        quota_cpu_count = None
+
+    if quota_cpu_count is None:
+        try:
+            quota_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+            period_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+            if quota_path.exists() and period_path.exists():
+                quota = int(quota_path.read_text().strip())
+                period = int(period_path.read_text().strip())
+                if quota > 0 and period > 0:
+                    quota_cpu_count = max(1, math.ceil(quota / period))
+        except Exception:
+            quota_cpu_count = None
+
+    return max(1, min(host_cpu_count, quota_cpu_count or host_cpu_count))
+
+
 def detect_disk_usage(base_path: Optional[Path] = None) -> Dict[str, Optional[float]]:
     target = (base_path or Path.cwd()).resolve()
     try:
@@ -282,7 +313,7 @@ def detect_disk_usage(base_path: Optional[Path] = None) -> Dict[str, Optional[fl
 
 
 def describe_compute_environment() -> Dict[str, Any]:
-    cpu_count = os.cpu_count() or 1
+    cpu_count = detect_cpu_count()
     memory_limit_bytes = detect_memory_limit_bytes()
     physical_memory_bytes = detect_physical_memory_bytes()
     memory_bytes_total = memory_limit_bytes or physical_memory_bytes
@@ -337,6 +368,29 @@ def describe_compute_environment() -> Dict[str, Any]:
         "suggested_profile": profile["profile"],
         "profile_reason": profile["reason"],
     }
+
+
+def resolve_backend_n_jobs(
+    compute_env: Mapping[str, Any],
+    *,
+    backend_name: str,
+    profile: str,
+    requested_n_jobs: Optional[Any] = None,
+) -> int:
+    cpu_count = max(1, int(compute_env.get("cpu_count") or 1))
+    if requested_n_jobs is not None:
+        try:
+            return max(1, min(cpu_count, int(requested_n_jobs)))
+        except (TypeError, ValueError):
+            return max(1, min(cpu_count, 1))
+
+    caps = {
+        "lightgbm": {"local_light": 2, "local_standard": 8, "heavy_validation": 16},
+        "tabicl": {"local_light": 1, "local_standard": 4, "heavy_validation": 8},
+    }
+    backend_caps = caps.get(backend_name.lower(), {})
+    cap = backend_caps.get(profile, backend_caps.get("local_standard", cpu_count))
+    return max(1, min(cpu_count, cap))
 
 
 def resolve_training_profile(compute_env: Dict[str, Any]) -> Dict[str, Any]:

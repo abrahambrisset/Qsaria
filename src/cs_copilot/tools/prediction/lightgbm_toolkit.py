@@ -26,6 +26,7 @@ from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
     project_now,
+    resolve_backend_n_jobs,
     resolve_training_profile,
     safe_slug,
     seed_policy_reporting_text,
@@ -136,6 +137,9 @@ class LightGBMToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        compute_env = self.describe_compute_environment()
+        requested_n_jobs = (extra_args or {}).get("n_jobs")
+
         def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
@@ -144,7 +148,12 @@ class LightGBMToolkit(Toolkit):
                         int(merged.get("early_stopping_rounds", 50)),
                         50,
                     )
-                    merged["n_jobs"] = max(int(merged.get("n_jobs", 8)), 8)
+                    merged["n_jobs"] = resolve_backend_n_jobs(
+                        compute_env,
+                        backend_name="lightgbm",
+                        profile=profile,
+                        requested_n_jobs=requested_n_jobs,
+                    )
                 return merged
             if profile == "local_light":
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 300)), 300)
@@ -152,21 +161,25 @@ class LightGBMToolkit(Toolkit):
                     int(merged.get("early_stopping_rounds", 30)),
                     30,
                 )
-                merged["n_jobs"] = max(1, int(merged.get("n_jobs", 1)))
             elif profile == "local_standard":
                 merged["n_estimators"] = min(int(merged.get("n_estimators", 500)), 500)
                 merged["early_stopping_rounds"] = min(
                     int(merged.get("early_stopping_rounds", 50)),
                     50,
                 )
-                merged["n_jobs"] = max(1, int(merged.get("n_jobs", 4)))
+            merged["n_jobs"] = resolve_backend_n_jobs(
+                compute_env,
+                backend_name="lightgbm",
+                profile=profile,
+                requested_n_jobs=requested_n_jobs,
+            )
             return merged
 
         return apply_training_profile(
             extra_args,
             defaults_for_profile=self._training_defaults_for_profile,
             limit_profile_args=_limit,
-            compute_environment=self.describe_compute_environment(),
+            compute_environment=compute_env,
             protected_profiles=("heavy_validation",),
         )
 

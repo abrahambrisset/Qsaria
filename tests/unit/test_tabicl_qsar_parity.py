@@ -5,6 +5,7 @@ import pytest
 
 from cs_copilot.tools.io.pointer_pandas_tools import PointerPandasTools
 from cs_copilot.tools.prediction.qsar_training_policy import (
+    resolve_backend_n_jobs,
     resolve_seed_policy,
     resolve_training_profile,
     resolve_validation_protocol,
@@ -143,6 +144,27 @@ def test_training_profile_resolution_keeps_shared_names():
 
     assert local["profile"] == "local_light"
     assert heavy["profile"] == "heavy_validation"
+
+
+def test_backend_n_jobs_follow_visible_compute_without_exceeding_it():
+    compute_env = {"cpu_count": 8}
+
+    assert resolve_backend_n_jobs(
+        compute_env,
+        backend_name="lightgbm",
+        profile="local_standard",
+    ) == 8
+    assert resolve_backend_n_jobs(
+        compute_env,
+        backend_name="tabicl",
+        profile="local_standard",
+    ) == 4
+    assert resolve_backend_n_jobs(
+        compute_env,
+        backend_name="lightgbm",
+        profile="heavy_validation",
+        requested_n_jobs=99,
+    ) == 8
 
 
 def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
