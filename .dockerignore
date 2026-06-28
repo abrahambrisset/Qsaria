@@ -45,6 +45,7 @@ htmlcov/
 
 # Data and models (large files)
 data/
+models/
 *.db
 *.db-journal
 *.sqlite
@@ -81,7 +82,3 @@ docs/
 # Backup files
 *.backup
 *.bak
-
-# Large model files (uncomment if you don't want to include them)
-# models/*.pt
-# models/*.pth

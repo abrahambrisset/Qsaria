@@ -44,11 +44,15 @@ RUN uv sync --frozen --no-dev \
     && uv pip install --python /app/.venv/bin/python "chemprop>=2.2.0" "lightgbm>=4.5.0" "tabicl>=2.0.3"
 
 # Application source
-COPY . .
+COPY chainlit.md chainlit.toml chainlit_app.py .modelconf ./
+COPY src ./src
+COPY public ./public
+COPY examples ./examples
 
 # Prisma / Node dependencies
 COPY package.json ./
-COPY prisma ./prisma
+COPY prisma/schema.prisma ./prisma/schema.prisma
+COPY prisma/migrations ./prisma/migrations
 
 RUN npm install \
     && npx prisma generate
