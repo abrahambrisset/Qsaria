@@ -117,6 +117,23 @@ def test_morgan_count_fingerprints_are_tabular_counts(tmp_path):
     assert output_df[feature_columns].dtypes.apply(lambda dtype: dtype.kind).isin(["i", "u"]).all()
 
 
+def test_morgan_fingerprints_accept_parallel_jobs(tmp_path):
+    toolkit = MolecularFeatureToolkit()
+    input_csv = _sample_feature_input(tmp_path)
+    output_csv = tmp_path / "morgan_parallel.csv"
+
+    result = toolkit.smiles_to_morgan_fingerprints(
+        input_csv=str(input_csv),
+        smiles_column="SMILES",
+        output_csv=str(output_csv),
+        n_bits=64,
+        n_jobs=2,
+    )
+
+    assert result["n_jobs"] == 2
+    assert pd.read_csv(output_csv).shape[0] == 2
+
+
 def test_rdkit_output_keeps_normalized_smiles_for_future_joins(tmp_path):
     toolkit = MolecularFeatureToolkit()
     input_csv = _sample_feature_input(tmp_path)
@@ -154,3 +171,20 @@ def test_rdkit_accepts_original_smiles_name_on_curated_lowercase_dataset(tmp_pat
     assert "smiles" in output_df.columns
     assert "SMILES" not in output_df.columns
     assert "Y" in output_df.columns
+
+
+def test_rdkit_descriptors_accept_parallel_jobs(tmp_path):
+    toolkit = MolecularFeatureToolkit()
+    input_csv = _sample_feature_input(tmp_path)
+    output_csv = tmp_path / "rdkit_parallel.csv"
+
+    result = toolkit.smiles_to_rdkit_descriptors(
+        input_csv=str(input_csv),
+        smiles_column="SMILES",
+        output_csv=str(output_csv),
+        descriptor_set="basic",
+        n_jobs=2,
+    )
+
+    assert result["n_jobs"] == 2
+    assert pd.read_csv(output_csv).shape[0] == 2

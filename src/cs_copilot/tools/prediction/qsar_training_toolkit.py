@@ -85,6 +85,15 @@ def _storage_path_exists(path: Path | str) -> bool:
         return False
 
 
+def _resolve_feature_n_jobs(raw: Optional[Any] = None) -> int:
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return 1
+    return max(1, min(int(describe_compute_environment().get("cpu_count") or 1), 16))
+
+
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with S3.open(str(path), "w") as fh:
@@ -311,8 +320,10 @@ class QSARTrainingToolkit(Toolkit):
         target_columns: List[str],
         representation_name: str,
         feature_cache_dir: Optional[str] = None,
+        feature_n_jobs: Optional[int] = None,
     ) -> Dict[str, Any]:
         spec = get_tabular_representation(representation_name)
+        resolved_feature_n_jobs = _resolve_feature_n_jobs(feature_n_jobs)
 
         total_started_at = time.monotonic()
         duration_steps: List[Dict[str, Any]] = []
@@ -417,6 +428,7 @@ class QSARTrainingToolkit(Toolkit):
                     input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
                     feature_prefix="fp_",
                     fingerprint_kind="binary",
+                    n_jobs=resolved_feature_n_jobs,
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
@@ -439,6 +451,7 @@ class QSARTrainingToolkit(Toolkit):
                     "radius": result.get("radius", 2),
                     "n_bits": result.get("n_bits", 2048),
                     "fingerprint_kind": "binary",
+                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
                 }
             )
 
@@ -459,6 +472,7 @@ class QSARTrainingToolkit(Toolkit):
                     input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
                     feature_prefix="cfp_",
                     fingerprint_kind="count",
+                    n_jobs=resolved_feature_n_jobs,
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
@@ -481,6 +495,7 @@ class QSARTrainingToolkit(Toolkit):
                     "radius": result.get("radius", 2),
                     "n_bits": result.get("n_bits", 2048),
                     "fingerprint_kind": "count",
+                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
                 }
             )
 
@@ -500,6 +515,7 @@ class QSARTrainingToolkit(Toolkit):
                     descriptor_set=descriptor_set,
                     include_input_columns=True,
                     input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    n_jobs=resolved_feature_n_jobs,
                 )
                 persist_component_cache(component, result)
                 duration_seconds = float(
@@ -520,6 +536,7 @@ class QSARTrainingToolkit(Toolkit):
                     "output_csv": component["output_csv"],
                     "descriptor_set": result.get("descriptor_set", descriptor_set),
                     "num_descriptors": result.get("num_descriptors"),
+                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
                 }
             )
 
@@ -606,6 +623,7 @@ class QSARTrainingToolkit(Toolkit):
             "feature_cache_dir": str(cache_root),
             "feature_cache_key": tabular_cache_key,
             "feature_cache_status": tabular_cache_status,
+            "feature_n_jobs": resolved_feature_n_jobs,
             "cache_hits": len(cache_hits),
             "cache_misses": len(cache_misses),
             "feature_count": len(feature_columns),
@@ -961,6 +979,7 @@ class QSARTrainingToolkit(Toolkit):
                     target_columns=list(normalized_target_columns),
                     representation_name=resolved_representation,
                     feature_cache_dir=requested_extra_args.get("feature_cache_dir"),
+                    feature_n_jobs=requested_extra_args.get("feature_n_jobs") or requested_extra_args.get("n_jobs"),
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]

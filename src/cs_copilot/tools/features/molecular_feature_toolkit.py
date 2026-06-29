@@ -7,6 +7,7 @@ Toolkit for explicit molecular feature generation from curated QSAR datasets.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -83,6 +84,34 @@ def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
     raise ValueError(
         "Unsupported descriptor_set. Supported values are 'basic' and 'all'."
     )
+
+
+def _coerce_n_jobs(n_jobs: Optional[int]) -> int:
+    try:
+        return max(1, int(n_jobs or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _morgan_row_worker(args: tuple[str, int, int, str]) -> List[int]:
+    smiles, radius, n_bits, fingerprint_kind = args
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}")
+    fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    if fingerprint_kind == "count":
+        fingerprint = fp_generator.GetCountFingerprintAsNumPy(mol)
+    else:
+        fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
+    return fingerprint.astype(int).tolist()
+
+
+def _rdkit_descriptor_row_worker(args: tuple[str, str]) -> List[float]:
+    smiles, descriptor_set = args
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"Could not compute RDKit descriptors for standardized SMILES: {smiles}")
+    return [float(func(mol)) for func in _resolve_rdkit_descriptor_funcs(descriptor_set).values()]
 
 
 def _build_base_output_dataframe(
@@ -214,6 +243,7 @@ class MolecularFeatureToolkit(Toolkit):
         input_columns_to_keep: Optional[List[str]] = None,
         feature_prefix: str = "fp_",
         fingerprint_kind: str = "binary",
+        n_jobs: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Transform a SMILES column into a tabular CSV of Morgan fingerprints.
@@ -224,6 +254,7 @@ class MolecularFeatureToolkit(Toolkit):
         """
         started_at = time.monotonic()
         normalized_fingerprint_kind = _normalize_fingerprint_kind(fingerprint_kind)
+        resolved_n_jobs = _coerce_n_jobs(n_jobs)
         if radius != 2:
             raise ValueError(
                 "The current Morgan helper supports radius=2 only in this V1 implementation."
@@ -255,19 +286,15 @@ class MolecularFeatureToolkit(Toolkit):
             )
 
         feature_columns = _feature_column_names(feature_prefix, n_bits)
-        fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
-        fingerprint_rows: List[Any] = []
-        for smiles in working["smiles"].tolist():
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                raise ValueError(
-                    f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}"
-                )
-            if normalized_fingerprint_kind == "count":
-                fingerprint = fp_generator.GetCountFingerprintAsNumPy(mol)
-            else:
-                fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
-            fingerprint_rows.append(fingerprint.astype(int).tolist())
+        worker_args = [
+            (smiles, radius, n_bits, normalized_fingerprint_kind)
+            for smiles in working["smiles"].tolist()
+        ]
+        if resolved_n_jobs == 1:
+            fingerprint_rows = [_morgan_row_worker(args) for args in worker_args]
+        else:
+            with ProcessPoolExecutor(max_workers=resolved_n_jobs) as executor:
+                fingerprint_rows = list(executor.map(_morgan_row_worker, worker_args))
 
         feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
 
@@ -294,6 +321,7 @@ class MolecularFeatureToolkit(Toolkit):
             "radius": radius,
             "n_bits": n_bits,
             "fingerprint_kind": normalized_fingerprint_kind,
+            "n_jobs": resolved_n_jobs,
             "num_features": len(feature_columns),
             "feature_prefix": feature_prefix,
             "feature_columns_sample": feature_columns[:5],
@@ -309,6 +337,7 @@ class MolecularFeatureToolkit(Toolkit):
         descriptor_set: str = "basic",
         include_input_columns: bool = False,
         input_columns_to_keep: Optional[List[str]] = None,
+        n_jobs: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Transform a SMILES column into a tabular CSV of RDKit descriptors.
@@ -318,6 +347,7 @@ class MolecularFeatureToolkit(Toolkit):
         - `all`: full RDKit descriptor list exposed by `Descriptors._descList`
         """
         started_at = time.monotonic()
+        resolved_n_jobs = _coerce_n_jobs(n_jobs)
         descriptor_funcs = _resolve_rdkit_descriptor_funcs(descriptor_set)
 
         with S3.open(input_csv, "r") as fh:
@@ -341,23 +371,15 @@ class MolecularFeatureToolkit(Toolkit):
                 f"Cannot generate RDKit descriptors: {invalid_rows} row(s) have invalid or missing standardized SMILES."
             )
 
-        descriptor_rows: List[Dict[str, float]] = []
         descriptor_names = list(descriptor_funcs.keys())
         descriptor_columns = [f"desc_{name}" for name in descriptor_names]
 
-        for smiles in working["smiles"].tolist():
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                raise ValueError(
-                    f"Could not compute RDKit descriptors for standardized SMILES: {smiles}"
-                )
-            descriptor_rows.append(
-                {
-                    f"desc_{name}": float(func(mol))
-                    for name, func in descriptor_funcs.items()
-                }
-            )
-
+        worker_args = [(smiles, descriptor_set) for smiles in working["smiles"].tolist()]
+        if resolved_n_jobs == 1:
+            descriptor_rows = [_rdkit_descriptor_row_worker(args) for args in worker_args]
+        else:
+            with ProcessPoolExecutor(max_workers=resolved_n_jobs) as executor:
+                descriptor_rows = list(executor.map(_rdkit_descriptor_row_worker, worker_args))
         descriptor_df = pd.DataFrame(descriptor_rows, columns=descriptor_columns)
         base_df = _build_base_output_dataframe(
             working,
@@ -381,6 +403,7 @@ class MolecularFeatureToolkit(Toolkit):
             "smiles_column": "smiles",
             "source_smiles_column": resolved_smiles_column,
             "descriptor_set": descriptor_set,
+            "n_jobs": resolved_n_jobs,
             "num_descriptors": len(descriptor_columns),
             "descriptor_names": descriptor_names,
             "descriptor_columns_sample": descriptor_columns[:5],

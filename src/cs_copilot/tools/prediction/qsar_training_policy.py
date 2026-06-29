@@ -385,7 +385,7 @@ def resolve_backend_n_jobs(
             return max(1, min(cpu_count, 1))
 
     caps = {
-        "lightgbm": {"local_light": 2, "local_standard": 8, "heavy_validation": 16},
+        "lightgbm": {"local_light": 8, "local_standard": 24, "heavy_validation": 48},
         "tabicl": {"local_light": 1, "local_standard": 4, "heavy_validation": 8},
     }
     backend_caps = caps.get(backend_name.lower(), {})
