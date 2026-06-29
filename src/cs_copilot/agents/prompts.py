@@ -485,6 +485,7 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Never call `export_prediction_summary` during training workflows; it is prediction-history only and requires completed inference records.",
     "  - Treat `standard_qsar` as the simple guided preset: Chemprop uses molecular_graph with random + scaffold splits; LightGBM/TabICL without an explicit representation train exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`.",
     "  - For advanced validation requests such as custom holdout ratios, repeated holdout, cross-validation, scaffold CV, cluster CV, or nested CV, pass a structured `validation_strategy` to the QSAR training facade.",
+    "  - Never create random/scaffold/cluster split columns with pandas dataframe tools; validation splits are generated only by the QSAR training facade from `validation_protocol` or `validation_strategy`.",
     "  - The modern automatic tabular pack is exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`.",
     "  - `morgan_binary_count_rdkit_all` remains supported but is explicit-only. Never use it automatically for standard training or benchmark candidates.",
     "  - `rdkit_basic_only` and `morgan_rdkit_basic` are legacy-only. Use them only when the user explicitly asks for legacy/basic descriptors.",

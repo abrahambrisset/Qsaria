@@ -487,10 +487,10 @@ class ModelRegistryToolkit(Toolkit):
         recommended_for: Optional[List[str]] = None,
         not_recommended_for: Optional[List[str]] = None,
         known_metrics: Optional[Dict[str, Any]] = None,
+        applicability_domain: Optional[Dict[str, Any]] = None,
         training_data_summary: Optional[Dict[str, Any]] = None,
         inference_profile: Optional[Dict[str, Any]] = None,
         selection_hints: Optional[Dict[str, Any]] = None,
-        applicability_domain: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Register a prediction model in session state for later use."""
@@ -1077,6 +1077,7 @@ class ModelRegistryToolkit(Toolkit):
         recommended_for: Optional[List[str]] = None,
         not_recommended_for: Optional[List[str]] = None,
         known_metrics: Optional[Dict[str, Any]] = None,
+        applicability_domain: Optional[Dict[str, Any]] = None,
         training_data_summary: Optional[Dict[str, Any]] = None,
         inference_profile: Optional[Dict[str, Any]] = None,
         selection_hints: Optional[Dict[str, Any]] = None,
@@ -1110,7 +1111,7 @@ class ModelRegistryToolkit(Toolkit):
 
         governance_assessment = {}
         recommended_status = None
-        applicability_domain = {}
+        resolved_applicability_domain = dict(applicability_domain or {})
         summary_payload: Dict[str, Any] = {}
         summary_path: Optional[Path] = None
         if matching_training_run:
@@ -1137,14 +1138,17 @@ class ModelRegistryToolkit(Toolkit):
                 summary_payload = json.loads(summary_path.read_text())
                 summary_payload.setdefault("summary_path", str(summary_path))
                 train_csv = train_csv or summary_payload.get("train_csv")
-                applicability_domain = summary_payload.get("applicability_domain") or {}
+                resolved_applicability_domain = {
+                    **(summary_payload.get("applicability_domain") or {}),
+                    **resolved_applicability_domain,
+                }
                 governance_assessment = (
                     (summary_payload.get("validation_assessment") or {}).get("governance") or {}
                 )
                 recommended_status = governance_assessment.get("recommended_status")
             except Exception:
                 governance_assessment = {}
-                applicability_domain = {}
+                resolved_applicability_domain = dict(applicability_domain or {})
                 summary_payload = {}
 
         resolved_version = version or current.version or "1"
@@ -1213,9 +1217,9 @@ class ModelRegistryToolkit(Toolkit):
             "splits_path": summary_payload.get("splits_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
             "split_results": summary_payload.get("split_results") or [],
-            "reference_store_path": applicability_domain.get("reference_store_path"),
-            "reference_manifest_path": applicability_domain.get("reference_manifest_path"),
-            "applicability_domain_path": applicability_domain.get("applicability_domain_path"),
+            "reference_store_path": resolved_applicability_domain.get("reference_store_path"),
+            "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path"),
+            "applicability_domain_path": resolved_applicability_domain.get("applicability_domain_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": merged_curation,
@@ -1321,7 +1325,7 @@ class ModelRegistryToolkit(Toolkit):
             },
             applicability_domain={
                 **current.applicability_domain,
-                **(applicability_domain or {}),
+                **resolved_applicability_domain,
             },
         )
 
