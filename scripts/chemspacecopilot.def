@@ -1,0 +1,61 @@
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+%labels
+    Author abrisset
+    Project ChemSpaceCopilot
+    Description Dev-friendly Apptainer image for ChemSpaceCopilot with GPU support
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    export PATH=/opt/venv/bin:/usr/local/bin:$PATH
+    export PYTHONPATH=/app/src
+    export CS_COPILOT_AGENT_TEAM=main
+
+%files
+    pyproject.toml /opt/build/pyproject.toml
+    uv.lock /opt/build/uv.lock
+    README.md /opt/build/README.md
+
+%post
+    set -eux
+
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-pip \
+        git \
+        curl \
+        build-essential \
+        pkg-config \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libx11-6 \
+        ca-certificates
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+    python3 -m venv /opt/venv
+    /opt/venv/bin/python -m ensurepip --upgrade
+    /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+    mkdir -p /app /opt/build /app/data/model_assets/checkpoints/tabicl
+    export UV_PROJECT_ENVIRONMENT=/opt/venv
+
+    uv sync \
+        --frozen \
+        --no-install-project \
+        --extra prediction \
+        --project /opt/build
+
+    /opt/venv/bin/python -c "import chainlit, torch, lightgbm, tabicl; from agno.models.openrouter import OpenRouter; from chembl_structure_pipeline import checker, standardizer; print(chainlit.__file__); print(torch.__version__); print(lightgbm.__version__); print(tabicl.__file__); print('OpenRouter OK'); print('ChEMBL structure pipeline OK')"
+
+%runscript
+    exec /bin/bash "$@"
