@@ -46,8 +46,9 @@ From: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="/root/.local/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-    mkdir -p /app /opt/build /app/data/model_assets/checkpoints/tabicl
+    mkdir -p /app /opt/build /opt/build/uv-cache /app/data/model_assets/checkpoints/tabicl
     export UV_PROJECT_ENVIRONMENT=/opt/venv
+    export UV_CACHE_DIR=/opt/build/uv-cache
 
     uv sync \
         --frozen \
