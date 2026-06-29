@@ -56,6 +56,12 @@ From: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
         --extra prediction \
         --project /opt/build
 
+    uv pip install --python /opt/venv/bin/python \
+        "chemprop>=2.2.0" \
+        "lightgbm>=4.5.0" \
+        "tabicl>=2.0.3" \
+        "chembl-structure-pipeline>=1.2.4"
+
     /opt/venv/bin/python -c "import chainlit, torch, lightgbm, tabicl; from agno.models.openrouter import OpenRouter; from chembl_structure_pipeline import checker, standardizer; print(chainlit.__file__); print(torch.__version__); print(lightgbm.__version__); print(tabicl.__file__); print('OpenRouter OK'); print('ChEMBL structure pipeline OK')"
 
 %runscript
