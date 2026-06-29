@@ -16,9 +16,12 @@ services:
       # AI Model Configuration (override .modelconf via env vars)
       - MODEL_PROVIDER=${MODEL_PROVIDER:-}
       - MODEL_ID=${MODEL_ID:-}
+      - MODEL_MAX_TOKENS=${MODEL_MAX_TOKENS:-}
       - OLLAMA_HOST=${OLLAMA_HOST:-}
       # DeepSeek API Key (only required when MODEL_PROVIDER=deepseek or not set)
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # OpenRouter API Key (only required when MODEL_PROVIDER=openrouter)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - CS_COPILOT_AGENT_TEAM=${CS_COPILOT_AGENT_TEAM:-qsar}
 
       # Chainlit Auth
