@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.backend import InvalidPredictionInputError, PredictionTaskSpec
+import cs_copilot.tools.prediction.lightgbm_backend as lightgbm_backend_module
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 
 
@@ -63,3 +64,16 @@ def test_encode_categorical_frame_preserves_unseen_as_missing_code():
     )
 
     assert encoded_inference["series"].tolist() == [1, -1, -1]
+
+
+def test_lightgbm_defaults_to_cpu_even_when_gpu_is_detected(monkeypatch):
+    monkeypatch.setattr(
+        lightgbm_backend_module,
+        "describe_compute_environment",
+        lambda: {"gpu_available": True},
+    )
+
+    backend = LightGBMBackend()
+
+    assert backend._resolve_device_type({})[0] == "cpu"
+    assert backend._resolve_device_type({"use_gpu": True})[0] == "gpu"

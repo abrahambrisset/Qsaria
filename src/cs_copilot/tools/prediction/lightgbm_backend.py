@@ -353,8 +353,6 @@ class LightGBMBackend(PredictionBackend):
             return str(explicit_device).lower(), False, compute_env
         if explicit_use_gpu is not None:
             return ("gpu" if bool(explicit_use_gpu) else "cpu"), False, compute_env
-        if compute_env.get("gpu_available"):
-            return "gpu", True, compute_env
         return "cpu", False, compute_env
 
     def _fit_regressor(
