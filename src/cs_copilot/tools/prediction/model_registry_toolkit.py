@@ -107,6 +107,47 @@ def _compact_recommendation_for_response(payload: Dict[str, Any]) -> Dict[str, A
     return compacted
 
 
+def _compact_persisted_record_for_response(record: PredictionModelRecord) -> Dict[str, Any]:
+    return {
+        "model_id": record.model_id,
+        "backend_name": record.backend_name,
+        "status": record.status,
+        "model_path": record.model_path,
+        "metadata_path": record.metadata_path,
+        "display_name": record.display_name,
+        "version": record.version,
+        "known_metrics": record.known_metrics,
+        "training_data_summary": {
+            key: record.training_data_summary.get(key)
+            for key in (
+                "trained_at",
+                "trained_date",
+                "trained_time",
+                "endpoint_name",
+                "dataset_name",
+                "validation_protocol",
+                "seed_policy_report",
+                "feature_preparation_durations",
+            )
+            if record.training_data_summary.get(key) is not None
+        },
+        "inference_profile": _compact_inference_profile_for_response(record.inference_profile),
+        "applicability_domain": {
+            key: record.applicability_domain.get(key)
+            for key in (
+                "method",
+                "train_size",
+                "reference_size",
+                "prototype_count",
+                "in_domain_threshold",
+                "edge_of_domain_threshold",
+                "applicability_domain_path",
+            )
+            if record.applicability_domain.get(key) is not None
+        },
+    }
+
+
 def _hydrate_inference_profile_from_summary(
     *,
     current_profile: Dict[str, Any],
@@ -1353,7 +1394,7 @@ class ModelRegistryToolkit(Toolkit):
             "metadata_path": persisted_record.metadata_path,
             "governance_assessment": governance_assessment,
             "status_reason": status_reason,
-            "record": _compact_model_payload_for_response(persisted_record.as_dict()),
+            "record": _compact_persisted_record_for_response(persisted_record),
         }
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
