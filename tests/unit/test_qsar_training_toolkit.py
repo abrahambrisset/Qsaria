@@ -144,6 +144,7 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
     assert "campaign_started" not in result
     assert captured["representation_name"] == "morgan_binary_count_rdkit_all"
     assert result["representation_name"] == "morgan_binary_count_rdkit_all"
+    assert result["recommended_registry_payload"]["model_id"]
 
 
 def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):
@@ -186,4 +187,5 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
     assert result["representation_name"] == "rdkit_all"
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
+    assert result["recommended_registry_payload"]["model_id"]
     assert "feature_columns" not in result["recommended_registry_payload"]["inference_profile"]

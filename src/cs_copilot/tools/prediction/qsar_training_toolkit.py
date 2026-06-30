@@ -653,9 +653,15 @@ class QSARTrainingToolkit(Toolkit):
     ) -> Dict[str, Any]:
         summary_path = result.get("summary_path") or result.get("canonical_summary_path")
         feature_columns = list(result.get("feature_columns") or [])
+        model_path = result.get("best_model_path") or result.get("model_path")
+        model_id = (
+            f"{backend_name}_{result.get('representation_name') or 'model'}_"
+            f"{_cache_key({'model_path': model_path, 'validation_protocol': result.get('validation_protocol')})}"
+        )
         return {
+            "model_id": model_id,
             "backend_name": backend_name,
-            "model_path": result.get("best_model_path") or result.get("model_path"),
+            "model_path": model_path,
             "task_type": task_type,
             "smiles_columns": [smiles_column],
             "target_columns": list(target_columns),
