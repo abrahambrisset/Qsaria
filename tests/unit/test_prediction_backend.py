@@ -678,6 +678,75 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     assert "workflow_demo" in result["status_reason"]
 
 
+def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "scaffold_repeat_2_split" / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "pxr_challenge_train.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\n")
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-05-21T12:57:29+02:00",
+                "validation_protocol": "repeated_scaffold_holdout",
+                "representation_name": "rdkit_all",
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="workflow_demo",
+        training_data_summary={
+            "validation_protocol": "repeated_scaffold_holdout_scaffold_repeat_2",
+            "representation_name": "rdkit_all",
+        },
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        status="workflow_demo",
+        agent=agent,
+    )
+
+    assert "scaffold_repeat_2" in result["model_id"]
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    assert (
+        persisted_metadata["training_data_summary"]["validation_protocol"]
+        == "repeated_scaffold_holdout_scaffold_repeat_2"
+    )
+
+
 def test_prediction_registry_summarize_model_unknown_id_returns_guidance():
     catalog = SimpleNamespace(refresh_from_internal_store=lambda persist=True: None)
     toolkit = ModelRegistryToolkit(

@@ -1166,7 +1166,9 @@ class ModelRegistryToolkit(Toolkit):
         else:
             endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
         protocol_name = (
-            summary_payload.get("validation_protocol")
+            (current.training_data_summary or {}).get("validation_protocol")
+            or (training_data_summary or {}).get("validation_protocol")
+            or summary_payload.get("validation_protocol")
             or (matching_training_run.get("validation_protocol") if matching_training_run else None)
             or "protocol"
         )
