@@ -681,6 +681,49 @@ class QSARTrainingToolkit(Toolkit):
             "applicability_domain": result.get("applicability_domain") or {},
         }
 
+    def _split_registry_payloads(
+        self,
+        *,
+        backend_name: str,
+        task_type: str,
+        smiles_column: str,
+        target_columns: List[str],
+        result: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        payloads: List[Dict[str, Any]] = []
+        for index, split_result in enumerate(result.get("split_results") or [], start=1):
+            model_path = split_result.get("best_model_path") or split_result.get("model_path")
+            if not model_path:
+                continue
+            label = split_result.get("strategy_label") or split_result.get("strategy") or f"split_{index}"
+            split_context = {
+                **result,
+                **split_result,
+                "model_path": model_path,
+                "best_model_path": model_path,
+                "feature_columns": result.get("feature_columns") or [],
+                "feature_preparation": result.get("feature_preparation") or {},
+                "representation_name": result.get("representation_name"),
+                "validation_protocol": f"{result.get('validation_protocol')}_{label}",
+            }
+            payloads.append(
+                {
+                    "rank": index,
+                    "candidate_id": f"{backend_name}_{result.get('representation_name')}_{label}",
+                    "backend_name": backend_name,
+                    "representation_name": result.get("representation_name"),
+                    "split_label": label,
+                    "registry_payload": self._recommended_registry_payload(
+                        backend_name=backend_name,
+                        task_type=task_type,
+                        smiles_column=smiles_column,
+                        target_columns=target_columns,
+                        result=split_context,
+                    ),
+                }
+            )
+        return payloads
+
     def _refresh_enriched_training_artifacts(
         self,
         *,
@@ -1069,6 +1112,28 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
+        split_registry_payloads = self._split_registry_payloads(
+            backend_name=normalized_backend,
+            task_type=task_type,
+            smiles_column=smiles_column,
+            target_columns=list(normalized_target_columns),
+            result=result,
+        )
+        if len(split_registry_payloads) > 1:
+            result["candidate_registry_payloads"] = split_registry_payloads
+            result["recommended_registry_payloads"] = [
+                item["registry_payload"] for item in split_registry_payloads
+            ]
+            result["persistence_plan"] = {
+                "persist_all_candidates": True,
+                "candidate_count": len(split_registry_payloads),
+                "candidate_registry_payloads_key": "candidate_registry_payloads",
+                "required_tool_sequence": (
+                    "For each candidate_registry_payloads item: call register_model with "
+                    "`registry_payload`, then persist_registered_model with the returned "
+                    "temporary model_id. Report every persisted canonical catalog model_id."
+                ),
+            }
         if normalized_backend in {"lightgbm", "tabicl"} and isinstance(result.get("feature_columns"), list):
             full_feature_columns = list(result.pop("feature_columns") or [])
             result.update(

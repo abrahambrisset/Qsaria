@@ -41,6 +41,42 @@ def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name
     }
 
 
+def _fake_repeated_train_result(tmp_path: Path, *, backend_name: str, representation_name: str):
+    split_results = []
+    for index, seed in enumerate([101, 202, 303], start=1):
+        model_path = (
+            tmp_path
+            / backend_name
+            / representation_name
+            / f"random_repeat_{index}_split"
+            / "model_0"
+            / "best.pkl"
+        )
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text("fake-model")
+        split_results.append(
+            {
+                "model_path": str(model_path),
+                "best_model_path": str(model_path),
+                "metrics": {"test": {"r2": 0.5 + index / 100}},
+                "strategy_label": f"random_repeat_{index}",
+                "strategy": "random",
+                "strategy_family": "random",
+                "seed": seed,
+            }
+        )
+    result = dict(split_results[0])
+    result.update(
+        {
+            "backend_name": backend_name,
+            "representation_name": representation_name,
+            "validation_protocol": "repeated_random_holdout",
+            "split_results": split_results,
+        }
+    )
+    return result
+
+
 def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     called_representations: list[str] = []
@@ -145,6 +181,57 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
     assert captured["representation_name"] == "morgan_binary_count_rdkit_all"
     assert result["representation_name"] == "morgan_binary_count_rdkit_all"
     assert result["recommended_registry_payload"]["model_id"]
+
+
+def test_repeated_holdout_single_representation_returns_registry_payload_for_each_split(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+
+    monkeypatch.setattr(
+        toolkit,
+        "_prepare_tabular_training_dataset",
+        lambda **kwargs: {
+            "train_csv": str(tmp_path / "morgan.csv"),
+            "feature_columns": ["feature_a", "feature_b"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        toolkit.lightgbm_toolkit,
+        "train_lightgbm_model",
+        lambda **kwargs: _fake_repeated_train_result(
+            tmp_path,
+            backend_name="lightgbm",
+            representation_name="morgan_only",
+        ),
+    )
+
+    result = toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        backend_name="lightgbm",
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        target_columns=["Y"],
+        validation_strategy={
+            "type": "repeated_holdout",
+            "split_family": "random",
+            "n_repeats": 3,
+            "split_sizes": [0.7, 0.15, 0.15],
+        },
+        representation_name="morgan_only",
+    )
+
+    assert result["persistence_plan"]["persist_all_candidates"] is True
+    assert result["persistence_plan"]["candidate_count"] == 3
+    assert len(result["candidate_registry_payloads"]) == 3
+    assert [item["split_label"] for item in result["candidate_registry_payloads"]] == [
+        "random_repeat_1",
+        "random_repeat_2",
+        "random_repeat_3",
+    ]
+    assert len({item["registry_payload"]["model_id"] for item in result["candidate_registry_payloads"]}) == 3
 
 
 def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):

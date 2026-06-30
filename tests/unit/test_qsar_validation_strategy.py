@@ -138,6 +138,23 @@ def test_repeated_holdout_generates_replayable_runs():
     assert policy["seed_policy"]["split_runs"] == policy["split_runs"]
 
 
+def test_repeated_holdout_without_seed_generates_distinct_random_splits():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={
+            "type": "repeated_holdout",
+            "split_family": "random",
+            "n_repeats": 3,
+        },
+        training_profile="heavy_validation",
+    )
+
+    seeds = [run["seed"] for run in policy["split_runs"]]
+    assert len(seeds) == 3
+    assert len(set(seeds)) == 3
+    assert policy["seed_policy"]["mode"] == "generated_per_run"
+
+
 def test_repeated_holdout_accepts_holdout_ratio_alias():
     policy = resolve_validation_strategy(
         requested_protocol="standard_qsar",

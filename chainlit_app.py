@@ -211,11 +211,30 @@ TEAM_FOLLOW_UP_PATTERNS = [
     r"^lance\b",
 ]
 
+MODULE_TEAM_SHORTCUTS = {
+    "@latex": "qsar",
+    "@qsar": "qsar",
+    "@qsaria": "qsar",
+}
+
+
+def _leading_module_token(user_text: str) -> str:
+    first_token = (user_text or "").strip().split(maxsplit=1)[0:1]
+    return _normalize_router_text(first_token[0]) if first_token else ""
+
+
+def _strip_leading_module_token(user_text: str) -> str:
+    parts = (user_text or "").strip().split(maxsplit=1)
+    if parts and _normalize_router_text(parts[0]) in MODULE_TEAM_SHORTCUTS:
+        return parts[1] if len(parts) > 1 else ""
+    return user_text
+
 
 def _select_team_mode_for_message(user_text: str) -> str:
     text = _normalize_router_text(user_text)
-    if text == "@latex":
-        return "qsar"
+    shortcut_team = MODULE_TEAM_SHORTCUTS.get(_leading_module_token(user_text))
+    if shortcut_team:
+        return shortcut_team
 
     if any(re.search(pattern, text) for pattern in NON_QSAR_PATTERNS):
         return "main"
@@ -1565,9 +1584,11 @@ async def main(user_msg: cl.Message):
         # Get or create the agent matching this request's routing mode.
         session_agent = _get_or_create_session_agent(requested_team_mode)
 
-        if user_msg.content.strip() == "@Latex":
+        if _normalize_router_text(user_msg.content).lstrip("@") == "latex":
             await _handle_latex_shortcut(session_agent)
             return
+
+        agent_prompt = _strip_leading_module_token(user_msg.content)
 
         # Handle file uploads if present
         # Debug: Check multiple possible locations for files
@@ -1636,7 +1657,7 @@ async def main(user_msg: cl.Message):
             try:
                 stream = await arun_with_retry(
                     session_agent,
-                    user_msg.content,
+                    agent_prompt,
                     stream=True,
                     session_id=thread_id,  # Isolate memory per chat thread
                     max_retries=1,  # Light inner retry; outer loop is primary
