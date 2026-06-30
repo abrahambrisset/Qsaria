@@ -487,6 +487,8 @@ QSAR_TRAINING_INSTRUCTIONS = [
     "  - Never call `export_prediction_summary` during training workflows; it is prediction-history only and requires completed inference records.",
     "  - Treat `standard_qsar` as the simple guided preset: Chemprop uses molecular_graph with random + scaffold splits; LightGBM/TabICL without an explicit representation train exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`.",
     "  - For advanced validation requests such as custom holdout ratios, repeated holdout, cross-validation, scaffold CV, cluster CV, or nested CV, pass a structured `validation_strategy` to the QSAR training facade.",
+    "  - Use only this canonical validation vocabulary: `type` (`holdout`, `repeated_holdout`, `cross_validation`, `nested_cross_validation`), `split_family` (`random`, `scaffold`, `cluster`), `split_sizes` (`[train, validation, test]`), `n_repeats`, `n_folds`, and `selection_metric`.",
+    "  - Example for `split scaffold 60/20/20`: `validation_strategy={\"type\":\"holdout\",\"split_family\":\"scaffold\",\"split_sizes\":[0.6,0.2,0.2]}`.",
     "  - Never create random/scaffold/cluster split columns with pandas dataframe tools; validation splits are generated only by the QSAR training facade from `validation_protocol` or `validation_strategy`.",
     "  - The modern automatic tabular pack is exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`.",
     "  - `morgan_binary_count_rdkit_all` remains supported but is explicit-only. Never use it automatically for standard training or benchmark candidates.",

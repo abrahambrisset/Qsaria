@@ -55,6 +55,25 @@ def test_custom_holdout_accepts_backend_style_ratio_payload():
     assert policy["validation_strategy"]["split_sizes"] == [0.6, 0.2, 0.2]
 
 
+def test_custom_holdout_accepts_agent_aliases_from_natural_language():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={
+            "method": "holdout",
+            "split_type": "scaffold",
+            "train_fraction": 0.6,
+            "val_fraction": 0.2,
+            "test_fraction": 0.2,
+        },
+        training_profile="heavy_validation",
+    )
+
+    assert policy["protocol"] == "scaffold_holdout"
+    assert policy["split_runs"][0]["split_sizes"] == [0.6, 0.2, 0.2]
+    assert policy["split_runs"][0]["backend_split_type"] == "scaffold_balanced"
+    assert policy["validation_strategy"]["split_family"] == "scaffold"
+
+
 def test_custom_holdout_accepts_holdout_ratio_aliases_for_all_split_families():
     cases = [
         ("random_holdout", "random", "random"),

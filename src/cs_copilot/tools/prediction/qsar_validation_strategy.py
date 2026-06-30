@@ -57,7 +57,12 @@ def _coerce_strategy(raw: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
         return _coerce_strategy(parsed)
     if not isinstance(raw, Mapping):
         raise ValueError("validation_strategy must be a dictionary/object.")
-    return dict(raw)
+    strategy = dict(raw)
+    if "type" not in strategy and strategy.get("method") is not None:
+        strategy["type"] = strategy["method"]
+    if "split_family" not in strategy and strategy.get("split_type") is not None:
+        strategy["split_family"] = strategy["split_type"]
+    return strategy
 
 
 def _coerce_split_family(raw: Any) -> str:
@@ -94,9 +99,9 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
 
 
 def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]:
-    val_ratio = config.get("validation_ratio", config.get("val_ratio"))
-    test_ratio = config.get("test_ratio")
-    train_ratio = config.get("train_ratio")
+    val_ratio = config.get("validation_ratio", config.get("val_ratio", config.get("val_fraction")))
+    test_ratio = config.get("test_ratio", config.get("test_fraction"))
+    train_ratio = config.get("train_ratio", config.get("train_fraction"))
     if val_ratio is None and test_ratio is None and train_ratio is None:
         return None
     if train_ratio is None and val_ratio is not None and test_ratio is not None:
