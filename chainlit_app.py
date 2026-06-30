@@ -1459,6 +1459,7 @@ async def relay(stream):
         await qsar_progress_msg.send()
         qsar_heartbeat_task = asyncio.create_task(_qsar_progress_heartbeat())
 
+    stream_error = None
     try:
         async for chunk in stream:
             # ── tool events → COT sidebar as Steps ───────────────────────────────
@@ -1512,6 +1513,11 @@ async def relay(stream):
             while "\n" in buf:  # process complete lines
                 line, buf = buf.split("\n", 1)
                 assistant = await _stream_line_with_elements(line, assistant, append_newline=True)
+    except Exception as exc:
+        if not qsar_mode or not full_content.strip():
+            raise
+        stream_error = exc
+        logger.warning("QSAR stream interrupted after partial output; returning fallback report: %s", exc)
     finally:
         if qsar_heartbeat_task is not None:
             qsar_heartbeat_task.cancel()
@@ -1526,8 +1532,17 @@ async def relay(stream):
 
     if qsar_mode:
         final_report = _store_latest_qsar_report(full_content)
+        if stream_error is not None:
+            final_report = (
+                f"Le workflow QSAR a produit des resultats, mais le fournisseur LLM a interrompu "
+                f"la redaction finale: {stream_error}\n\n{final_report}"
+            ).strip()
         if qsar_progress_msg is not None:
-            qsar_progress_msg.content = "Workflow QSAR terminé."
+            qsar_progress_msg.content = (
+                "Workflow QSAR terminé, rapport final interrompu par le fournisseur LLM."
+                if stream_error is not None
+                else "Workflow QSAR terminé."
+            )
             await qsar_progress_msg.update()
         runtime_logger.info(
             "QSAR workflow completed | team=%s | thread=%s",
