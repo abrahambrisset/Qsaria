@@ -72,6 +72,7 @@ def _fake_repeated_train_result(tmp_path: Path, *, backend_name: str, representa
             "representation_name": representation_name,
             "validation_protocol": "repeated_random_holdout",
             "split_results": split_results,
+            "baseline_split_results": split_results,
         }
     )
     return result
@@ -194,6 +195,8 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
             "feature_columns": ["feature_a", "feature_b"],
             "feature_preparation": {
                 "representation_name": kwargs["representation_name"],
+                "input_csv": str(tmp_path / "train.csv"),
+                "feature_csvs": [str(tmp_path / "morgan_features.csv")],
                 "durations": {"total_duration_seconds": 0.1, "steps": []},
             },
         },
@@ -226,6 +229,9 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
     assert result["persistence_plan"]["persist_all_candidates"] is True
     assert result["persistence_plan"]["candidate_count"] == 3
     assert len(result["candidate_registry_payloads"]) == 3
+    assert "baseline_split_results" not in result
+    assert "feature_csvs" not in result["feature_preparation"]
+    assert "input_csv" not in result["feature_preparation"]
     assert [item["split_label"] for item in result["candidate_registry_payloads"]] == [
         "random_repeat_1",
         "random_repeat_2",

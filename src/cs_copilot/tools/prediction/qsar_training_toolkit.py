@@ -217,6 +217,139 @@ def _compact_feature_preparation(feature_preparation: Dict[str, Any]) -> Dict[st
     } | {"durations": _compact_feature_preparation_durations(feature_preparation)}
 
 
+def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = split_result.get("metrics") or {}
+    return {
+        key: split_result.get(key)
+        for key in (
+            "strategy_label",
+            "strategy",
+            "strategy_family",
+            "backend_split_type",
+            "seed",
+            "model_path",
+            "best_model_path",
+            "test_predictions_path",
+            "splits_path",
+            "output_dir",
+            "source_train_count",
+            "effective_train_count",
+            "validation_count",
+            "test_count",
+            "duration_seconds",
+        )
+        if split_result.get(key) is not None
+    } | {"metrics": metrics}
+
+
+def _compact_activity_cliffs(activity_cliffs: Dict[str, Any]) -> Dict[str, Any]:
+    if not activity_cliffs:
+        return {}
+    return {
+        key: activity_cliffs.get(key)
+        for key in (
+            "enabled",
+            "mode",
+            "index_name",
+            "flagged_count",
+            "priority_counts",
+            "recommended_variant",
+            "summary_path",
+            "annotated_training_csv",
+            "plot_artifacts",
+            "reporting_handoff",
+        )
+        if activity_cliffs.get(key) is not None
+    }
+
+
+def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    keep_keys = (
+        "campaign_started",
+        "campaign_type",
+        "backend_name",
+        "task_type",
+        "representation_name",
+        "validation_protocol",
+        "validation_protocol_reason",
+        "validation_strategy",
+        "validation_strategy_type",
+        "validation_aggregation",
+        "selection_metric",
+        "final_refit",
+        "training_profile",
+        "profile_reason",
+        "compute_environment",
+        "training_resources",
+        "training_durations",
+        "training_duration_seconds",
+        "metrics",
+        "validation_assessment",
+        "model_path",
+        "best_model_path",
+        "summary_path",
+        "canonical_summary_path",
+        "config_path",
+        "splits_path",
+        "test_predictions_path",
+        "bundle_file_ref",
+        "training_bundle",
+        "bundle_download_tag",
+        "train_csv",
+        "candidate_train_csv",
+        "target_columns",
+        "trained_at",
+        "trained_date",
+        "trained_time",
+        "applicability_domain",
+        "plot_artifacts",
+        "recommended_registry_payload",
+        "candidate_registry_payloads",
+        "recommended_registry_payloads",
+        "persistence_plan",
+        "candidate_results",
+        "ranking",
+        "recommended_candidate",
+        "recommended_representation_name",
+        "representations",
+        "campaign_duration_seconds",
+        "feature_cache",
+        "feature_cache_dir",
+    )
+    compact = {key: result.get(key) for key in keep_keys if result.get(key) is not None}
+    compact.update(
+        {
+            key: result[key]
+            for key in (
+                "feature_columns_count",
+                "feature_columns_sample",
+                "feature_columns_omitted_count",
+                "feature_columns_source",
+                "feature_columns_note",
+            )
+            if key in result
+        }
+    )
+    if result.get("seed_policy"):
+        compact["seed_policy"] = result["seed_policy"]
+    if result.get("split_results"):
+        compact["split_results"] = [
+            _compact_split_result_for_response(item) for item in result.get("split_results") or []
+        ]
+    if result.get("feature_preparation"):
+        compact["feature_preparation"] = _compact_feature_preparation(result["feature_preparation"])
+        compact["feature_preparation_durations"] = compact["feature_preparation"].get("durations")
+    if result.get("curation"):
+        compact["curation"] = {
+            key: (result["curation"] or {}).get(key)
+            for key in ("dataset_id", "status", "ready_for_qsar", "artifacts")
+            if (result["curation"] or {}).get(key) is not None
+        }
+    if result.get("activity_cliffs"):
+        compact["activity_cliffs"] = _compact_activity_cliffs(result["activity_cliffs"])
+    return compact
+
+
 def _candidate_registry_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     payload = _compact_registry_payload(result.get("recommended_registry_payload")) or {}
     if not payload.get("model_id"):
@@ -933,7 +1066,9 @@ class QSARTrainingToolkit(Toolkit):
             "train_csv": train_csv,
             "candidate_train_csv": best_result.get("candidate_train_csv"),
             **_feature_columns_summary_from_result(best_result),
-            "feature_preparation": best_result.get("feature_preparation") or {},
+            "feature_preparation": _compact_feature_preparation(
+                best_result.get("feature_preparation") or {}
+            ),
             "feature_preparation_durations": _compact_feature_preparation_durations(
                 best_result.get("feature_preparation") or {}
             ),
@@ -945,7 +1080,7 @@ class QSARTrainingToolkit(Toolkit):
         summary_path = campaign_root / "qsar_training_campaign_summary.json"
         write_training_summary(summary_path, campaign_result)
         campaign_result["summary_path"] = str(summary_path)
-        return campaign_result
+        return _compact_training_tool_result(campaign_result)
 
     def train_qsar_model(
         self,
@@ -1166,7 +1301,7 @@ class QSARTrainingToolkit(Toolkit):
                     source=result.get("summary_path") or result.get("canonical_summary_path"),
                 )
             )
-        return result
+        return _compact_training_tool_result(result)
 
     def train_chemprop_model(
         self,
