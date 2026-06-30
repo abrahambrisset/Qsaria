@@ -259,7 +259,7 @@ def get_qsar_agent_team(
             "You coordinate only the isolated QSAR agents in this team.",
             "Never route work to non-QSAR agents.",
             "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
-            "For training requests, orchestrate: dataset_curation -> qsar_training -> model_registry -> qsar_report.",
+            "For training requests, orchestrate: dataset_curation -> qsar_training, then route directly to qsar_report when qsar_training already completed register_model + persist_registered_model. Use model_registry after training only when persistence is still missing, blocked, or explicitly requested by the user.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
             "For QSAR backend/capability inventory requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
             "For QSAR catalog listing, catalog search, model recommendation, model summary, or model comparison requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
