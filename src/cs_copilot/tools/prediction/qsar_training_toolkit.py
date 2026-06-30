@@ -195,6 +195,28 @@ def _compact_feature_preparation_durations(feature_preparation: Dict[str, Any]) 
     }
 
 
+def _compact_feature_preparation(feature_preparation: Dict[str, Any]) -> Dict[str, Any]:
+    if not feature_preparation:
+        return {}
+    return {
+        key: feature_preparation.get(key)
+        for key in (
+            "mode",
+            "representation_name",
+            "representation_display_name",
+            "representation_legacy",
+            "prepared_train_csv",
+            "feature_cache_key",
+            "feature_cache_status",
+            "feature_n_jobs",
+            "cache_hits",
+            "cache_misses",
+            "feature_count",
+        )
+        if feature_preparation.get(key) is not None
+    } | {"durations": _compact_feature_preparation_durations(feature_preparation)}
+
+
 def _candidate_registry_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     payload = _compact_registry_payload(result.get("recommended_registry_payload")) or {}
     if not payload.get("model_id"):
@@ -671,7 +693,9 @@ class QSARTrainingToolkit(Toolkit):
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),
-                "feature_preparation": result.get("feature_preparation") or {},
+                "feature_preparation": _compact_feature_preparation(
+                    result.get("feature_preparation") or {}
+                ),
                 "training_summary_path": summary_path,
             },
             "inference_profile": {
