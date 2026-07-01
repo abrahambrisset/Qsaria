@@ -27,7 +27,8 @@ from .chemistry import (
     AutoencoderToolkit,
     BaseChemistryToolkit,
     ChemicalSimilarityToolkit,
-    PeptideWAEToolkit,
+    MolecularDesignerToolkit,
+    PeptideDesignerToolkit,
     SynPlannerToolkit,
 )
 from .curation import DatasetCurationToolkit
@@ -49,7 +50,7 @@ from .prediction import (
 
 # GTM Toolkit
 from .chemography.gtm import GTMToolkit
-from .chemography.gtm_operations import save_gtm_plot
+from .chemography.gtm_operations import save_gtm_landscape_plot, save_gtm_plot
 from .constants import *  # noqa: F403
 
 # ChEMBL toolkit now accessed via ChemblToolkit class
@@ -57,7 +58,10 @@ from .databases.chembl import ChemblToolkit
 
 # Import all the main classes and functions for the public API
 from .io.pointer_pandas_tools import PointerPandasTools
+from .io.report_export import save_markdown_report, save_rich_report
+from .io.session_memory import SessionMemoryToolkit
 from .io.session_toolkit import SessionToolkit
+from .io.skill_toolkit import SkillToolkit
 from .reporting import QSARReportingToolkit
 
 # Backwards compatibility alias
@@ -68,6 +72,8 @@ __all__ = [
     # Classes
     "PointerPandasTools",
     "SessionToolkit",
+    "SessionMemoryToolkit",
+    "SkillToolkit",
     "QSARReportingToolkit",
     "GTMToolkit",
     "BaseChemistryToolkit",
@@ -76,7 +82,8 @@ __all__ = [
     "ActivityCliffToolkit",
     "MolecularFeatureToolkit",
     "AutoencoderToolkit",
-    "PeptideWAEToolkit",
+    "MolecularDesignerToolkit",
+    "PeptideDesignerToolkit",
     "SynPlannerToolkit",
     "ChempropBackend",
     "EnsembleToolkit",
@@ -94,6 +101,10 @@ __all__ = [
     "RobustnessAnalysisToolkit",
     # Visualization functions
     "save_gtm_plot",
+    "save_gtm_landscape_plot",
+    # Report I/O functions
+    "save_markdown_report",
+    "save_rich_report",
     # I/O functions
     "image_to_base64",
     # Utility functions

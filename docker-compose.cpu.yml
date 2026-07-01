@@ -1,0 +1,17 @@
+version: '3.8'
+
+# Explicit CPU override. The base compose file is already CPU-safe; use this
+# when you want to force CPU execution on a GPU-capable host.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+#
+# This override:
+#   - Sets CUDA_VISIBLE_DEVICES=-1 so PyTorch reports no CUDA devices and
+#     gracefully falls back to CPU
+#   - Sets NVIDIA_VISIBLE_DEVICES=void so the NVIDIA Container Toolkit (if
+#     present) does not attempt to inject GPU devices into the container
+
+services:
+  chainlit-app:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=void
+      - CUDA_VISIBLE_DEVICES=-1

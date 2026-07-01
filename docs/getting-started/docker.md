@@ -18,14 +18,25 @@ docker compose build chainlit-app
 cp .env.example .env && docker-compose up -d  # Edit .env first
 ```
 
-**Access:** [App](http://localhost:8000) | PostgreSQL: localhost:5432
+CPU mode is the default for direct Compose runs. `./docker-start.sh` auto-adds
+`docker-compose.gpu.yml` only when a working NVIDIA runtime is detected.
+
+```bash
+# Force CPU
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+
+# Opt into NVIDIA GPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+**Access:** [App](http://localhost:8000) | [MinIO Console](http://localhost:9001) (cs_copilot / chempwd123) | PostgreSQL: localhost:5432
 
 ## Services
 
 | Service | Purpose | Ports |
 |---------|---------|-------|
 | chainlit-app | Main application | 8000 |
-| minio | Optional S3-compatible storage (`COMPOSE_PROFILES=minio`) | 9000, 9001 |
+| minio | S3-compatible storage | 9000, 9001 |
 | postgres | Chat history DB | 5432 |
 | minio-setup | One-time bucket init | - |
 | chainlit-db-init | Prisma migrations | - |
@@ -59,21 +70,13 @@ docker compose build chainlit-app
 # Complete reset
 docker compose down -v --remove-orphans --rmi all
 
-# Local storage is the default; artifacts are persisted under ./.files
-USE_S3=false  # in .env, optional because this is already the Docker default
-
-# Optional MinIO/S3 mode
-USE_S3=true COMPOSE_PROFILES=minio docker compose up -d
+# Local storage only (no MinIO)
+USE_S3=false  # in .env
 ```
 
 ## Dependencies
 
 Uses [uv](https://docs.astral.sh/uv/) for reproducible builds from `uv.lock`.
-The Docker image installs the QSAR runtime backends (`chemprop`, `lightgbm`,
-`tabicl`) into `/app/.venv` during build and starts Chainlit from that virtual
-environment directly. Avoid replacing the Docker command with `uv run ...` unless
-you also install/sync the QSAR backend extras, because a runtime sync can remove
-additive backend packages.
 
 ```bash
 uv sync                              # Update deps on host
@@ -97,10 +100,10 @@ docker-compose exec postgres psql -U postgres -d chainlit  # DB shell
 | Issue | Solution |
 |-------|----------|
 | App won't start | `docker-compose logs chainlit-app`, check `DEEPSEEK_API_KEY` |
-| QSAR backends missing | Rebuild without cache, then check `/app/.venv/bin/python -c "import chemprop, lightgbm, tabicl; print('QSAR_BACKENDS_OK')"` inside `chainlit-app` |
 | Port conflict | Use `./docker-start.sh` (auto-detects free ports) |
 | DB error "relation User does not exist" | `docker-compose up -d chainlit-db-init && docker-compose restart chainlit-app` |
 | MinIO issues | `docker-compose logs minio-setup` |
+| `could not select device driver "nvidia"` | Run CPU mode or use `./docker-start.sh`; only use `docker-compose.gpu.yml` on hosts with NVIDIA Container Toolkit |
 | Out of memory | Docker Desktop > Settings > Resources > Memory >= 4 GB |
 | Disk space | `docker system prune` |
 

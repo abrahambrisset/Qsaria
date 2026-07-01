@@ -28,6 +28,7 @@ from cs_copilot.utils.logging import compact_log_data, get_logger, setup_logging
 
 load_dotenv()
 setup_logging()
+Path("data").mkdir(exist_ok=True)
 
 # Set up logger
 logger = get_logger(__name__)

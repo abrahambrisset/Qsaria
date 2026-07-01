@@ -6,6 +6,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Selects the base image inside Dockerfile:
+        #   amd64 -> python:3.11-slim (CUDA torch from PyPI)
+        #   arm64 -> nvcr.io/nvidia/pytorch (CUDA torch for DGX Spark / GB10)
+        # docker-start.sh detects the host arch and exports TARGETARCH;
+        # direct `docker compose build` on x86_64 hosts defaults to amd64.
+        TARGETARCH: ${TARGETARCH:-amd64}
     image: cs_copilot_chainlit-app
     container_name: cs_copilot-app
     ports:
@@ -16,7 +23,6 @@ services:
       # AI Model Configuration (override .modelconf via env vars)
       - MODEL_PROVIDER=${MODEL_PROVIDER:-}
       - MODEL_ID=${MODEL_ID:-}
-      - MODEL_MAX_TOKENS=${MODEL_MAX_TOKENS:-}
       - OLLAMA_HOST=${OLLAMA_HOST:-}
       # DeepSeek API Key (only required when MODEL_PROVIDER=deepseek or not set)
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
@@ -27,46 +33,42 @@ services:
       # Chainlit Auth
       - CHAINLIT_AUTH_SECRET=${CHAINLIT_AUTH_SECRET:-default-secret-change-in-production}
 
-      # Local artifact storage (default Docker mode; no MinIO required)
-      - USE_S3=${USE_S3:-false}
-      - CS_COPILOT_STORAGE_ROOT=/app/.files
-
-      # Optional S3/MinIO Configuration. These are inert while USE_S3=false.
-      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-http://minio:9000}
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      # S3/MinIO Configuration
+      - USE_S3=true
+      - MINIO_ENDPOINT=http://minio:9000
+      - S3_ENDPOINT_URL=http://minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
       - ASSETS_BUCKET=${ASSETS_BUCKET:-chatbot-assets}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-chatbot-assets}
-
-      # Previous always-on S3/MinIO Configuration (kept commented for reference)
-      # - USE_S3=true
-      # - MINIO_ENDPOINT=http://minio:9000
-      # - S3_ENDPOINT_URL=http://minio:9000
-      # - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
-      # - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
-      # - ASSETS_BUCKET=${ASSETS_BUCKET:-chatbot-assets}
-      # - S3_BUCKET_NAME=${S3_BUCKET_NAME:-chatbot-assets}
       - AWS_REGION=${AWS_REGION:-us-east-1}
 
       # Database Configuration (for Chainlit history)
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/chainlit
+
+      # Chainlit storage client (MinIO) – required for persistent file/image elements
+      # These mirror the MinIO credentials above but use the env var names that
+      # Chainlit's ChainlitDataLayer reads (APP_AWS_* / DEV_AWS_ENDPOINT / BUCKET_NAME).
+      - BUCKET_NAME=${ASSETS_BUCKET:-chatbot-assets}
+      - APP_AWS_REGION=${AWS_REGION:-us-east-1}
+      - APP_AWS_ACCESS_KEY=${MINIO_ACCESS_KEY:-cs_copilot}
+      - APP_AWS_SECRET_KEY=${MINIO_SECRET_KEY:-chempwd123}
+      - DEV_AWS_ENDPOINT=${S3_ENDPOINT_URL:-http://minio:9000}
+
+      # GPU is opt-in via docker-compose.gpu.yml. Keep direct compose runs CPU-safe.
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-void}
     volumes:
       # Persistent storage for SQLite databases
       - ./data:/app/data
       # Models directory
       - ./models:/app/models
-      # Local session uploads and generated artifacts
-      - ./.files:/app/.files
     depends_on:
-      # MinIO dependencies are disabled by default for local Docker runs.
-      # Uncomment together with the MinIO services below to require S3 storage.
-      # minio:
-      #   condition: service_healthy
+      minio:
+        condition: service_healthy
       postgres:
         condition: service_healthy
-      # minio-setup:
-      #   condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
       chainlit-db-init:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -91,7 +93,6 @@ services:
 
   # MinIO (S3-compatible storage)
   minio:
-    profiles: ["minio"]
     image: minio/minio:latest
     container_name: cs_copilot-minio
     ports:
@@ -115,7 +116,6 @@ services:
 
   # MinIO Setup (Create bucket on first run)
   minio-setup:
-    profiles: ["minio"]
     image: minio/mc:latest
     container_name: cs_copilot-minio-setup
     depends_on:

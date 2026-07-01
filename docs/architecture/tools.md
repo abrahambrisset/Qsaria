@@ -10,7 +10,8 @@ Tools are organized as **Toolkit classes** that inherit from `Toolkit` (Agno fra
 tools/
 ├── databases/          Database integrations
 │   ├── base.py        BaseDatabaseToolkit (abstract)
-│   ├── chembl.py      ChemblToolkit (ChEMBL REST API)
+│   ├── chembl.py      ChemblToolkit (REST API + MySQL backends)
+│   ├── chembl_fetcher.py  RestChemblFetcher / SqlChemblFetcher strategies
 │   └── types.py       Query types and configurations
 │
 ├── chemography/       Dimensionality reduction
@@ -51,6 +52,29 @@ representation lists. They consume `tabular_representations.py`, while
 `MolecularFeatureToolkit` generates and caches RDKit all descriptors, Morgan
 binary fingerprints, and Morgan count fingerprints for LightGBM/TabICL and any
 future tabular backend.
+
+## ChEMBL Backends
+
+The `ChemblToolkit` supports two pluggable data backends via a strategy pattern (`chembl_fetcher.py`):
+
+| Backend | Trigger | Dependency | Use case |
+|---------|---------|------------|----------|
+| **REST API** | Default (no config needed) | `chembl_webresource_client` (included) | Quick setup, always-on access |
+| **MySQL** | Set `CHEMBL_MYSQL_HOST` env var | `pymysql` (included in `uv sync`) | Faster queries, offline use, full SQL |
+
+Backend is auto-detected: MySQL when `CHEMBL_MYSQL_HOST` is present, REST otherwise. The REST API is always reported as available regardless of active backend.
+
+Download the MySQL dump from the [ChEMBL downloads page](https://chembl.gitbook.io/chembl-interface-documentation/downloads) or the [EBI FTP](https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/latest/).
+
+## Optional SynPlanner Backend
+
+`SynPlannerToolkit` is part of the codebase, but the external `SynPlanner` package is an optional dependency because its `cgrtools-stable` dependency only ships wheels for selected platforms. Install it on supported systems with:
+
+```bash
+uv sync --extra synplanner
+```
+
+Without that extra, the SynPlanner agent/toolkit raises a clear install error when its backend is used; the rest of the ChemSpace tool stack and MCP server remain installable.
 
 ## Adding a New Tool
 

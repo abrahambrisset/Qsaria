@@ -11,6 +11,10 @@ from agno.db.sqlite import SqliteDb  # ✅ v2.1.x style DB import
 from agno.models.base import Model  # Agno v2 base class
 from agno.team import Team
 
+from cs_copilot.routing import render_routing_rules
+from cs_copilot.tools import SessionMemoryToolkit, SkillToolkit
+from cs_copilot.utils.resources import analyze_resources
+
 from .config import CS_COPILOT_MEMORY_DB  # optional now; kept for compatibility
 from .factories import AgentCreationError
 from .prompts import AGENT_TEAM_INSTRUCTIONS
@@ -35,8 +39,8 @@ def get_cs_copilot_agent_team(
         markdown: Format output in markdown
         debug_mode: Enable debug logs
         show_members_responses: Print member responses during coordination
-        enable_memory: Enable persistent memory (default: True). Set to False for
-                      isolated testing to prevent state leakage between runs.
+        enable_memory: Enable persistent session history (default: True). Cross-session
+                      user/agentic memories stay disabled to prevent state leakage.
         db_file: Custom database file path. If not provided, uses CS_COPILOT_MEMORY_DB.
                 Use unique paths for session isolation in testing.
         enable_mlflow_tracking: Enable MLflow tracking for agents (default: True).
@@ -51,8 +55,9 @@ def get_cs_copilot_agent_team(
     logger = logging.getLogger(__name__)
     logger.info("Creating Cs_copilot Agent Team")
 
-    # ✅ Single DB handles session storage + user memories in v2.1.x
-    # For testing, either disable memory or use unique DB files per session
+    # ✅ Single DB handles session storage/history in v2.1.x.
+    # Cross-session memories are intentionally disabled below; only per-thread
+    # history/session state should persist.
     db = None
     if enable_memory:
         db = SqliteDb(
@@ -62,22 +67,30 @@ def get_cs_copilot_agent_team(
             # Agno manages its own tables for sessions/memories. Kept import for compat.
         )
 
+    # Probe runtime environment (GPU, CPU, RAM, databases, cached models)
+    resource_profile = analyze_resources()
+    logger.info("Resource profile: %s", resource_profile)
+    shared_session_state = {
+        "resource_profile": resource_profile,
+        "agent_scratch": {},
+    }
+
     # Common agent parameters supplied by the factory
     agent_params = {
         "markdown": markdown,
         "debug_mode": debug_mode,
         "enable_mlflow_tracking": enable_mlflow_tracking,
+        "session_state": shared_session_state,
     }
 
     # ============================================================================
-    # RUNTIME TEAM ARCHITECTURE
+    # 5-AGENT ARCHITECTURE
     # ============================================================================
     # Consolidation history:
     #   MERGED: GTM Optimization + Loading + Density + Activity → GTM Agent
     #   GENERALIZED: GTM Chemotype Analysis → Chemoinformatician (method-agnostic)
-    #   MERGED: Autoencoder + Autoencoder GTM Sampling → Autoencoder (mode-based)
+    #   TRANSFORMED: Autoencoder public agent → Molecular Designer (engine-based)
     #   ADDED: Report Generator (presentation layer)
-    #   REPLACED: Property Predictor was superseded by the isolated QSAR team
     #   REMOVED: Robustness Evaluator (not included in main team, invoked separately)
     # ============================================================================
 
@@ -93,8 +106,8 @@ def get_cs_copilot_agent_team(
             "Chemoinformatician",
         ),  # Comprehensive chemoinformatics (chemotype, clustering, SAR, similarity, QSAR)
         ("report_generator", "Report Generator"),  # Universal presentation layer
-        ("autoencoder", "Autoencoder"),  # SMILES molecule generation (LSTM autoencoder)
-        ("peptide_wae", "Peptide WAE"),  # Peptide sequence generation (Wasserstein autoencoder)
+        ("molecular_designer", "Molecular Designer"),  # Small-molecule design engines
+        ("peptide_designer", "Peptide Designer"),  # Peptide design engines
         ("synplanner", "SynPlanner"),
         # Note: Robustness Evaluator excluded from main team (invoked separately for testing)
     ]
@@ -120,12 +133,15 @@ def get_cs_copilot_agent_team(
         name="Cs_copilot Team",
         members=agents,
         model=model,
-        # ✅ Attach DB directly to the team (persists sessions/history/memories)
+        # ✅ Attach DB directly to the team (persists sessions/history)
         # If enable_memory=False, db=None prevents any persistence
         db=db,
-        # Team-level capabilities (disabled when enable_memory=False)
-        enable_agentic_memory=enable_memory,  # let the team manage memories
-        enable_user_memories=False,  # Disable cross-session user memories for session isolation
+        # Keep session history, but never inject cross-session memories. Agno
+        # defaults add_memories_to_context=True when agentic memory is enabled,
+        # which caused new chats to recall prior chemical-space analyses.
+        enable_agentic_memory=False,
+        enable_user_memories=False,
+        add_memories_to_context=False,
         add_history_to_context=enable_memory,  # include recent history in prompts
         num_history_runs=5 if enable_memory else 0,  # 🔧 LIMIT context to last 5 runs
         share_member_interactions=True,  # share member messages across team
@@ -133,35 +149,40 @@ def get_cs_copilot_agent_team(
         store_tool_messages=enable_memory,  # persist tool results
         store_media=enable_memory,  # persist any media if used
         # Session state (always enabled for within-session data passing)
+        session_state=shared_session_state,
         add_session_state_to_context=True,
         enable_agentic_state=True,
+        tools=[SessionMemoryToolkit(), SkillToolkit()],
         # Prompting
         description=(
             "You are an intelligent coordinator orchestrating a team of specialized cheminformatics agents. "
             "Your role is to understand user requests, select the appropriate agent(s) or workflows, "
             "and chain multiple agents when needed to complete complex analyses. "
-            "You are also aware of a separate isolated QSAR sub-system dedicated to curation, training, model governance, inference, and reporting.\n\n"
+            "QSAR curation, training, model governance, inference, and reporting belong to a separate isolated QSARIA team.\n\n"
             "• ChEMBL Downloader: Download bioactivity data from ChEMBL database\n"
             "• GTM Agent: All GTM operations (build/load/density/activity/project) with smart caching\n"
             "• Chemoinformatician: Downstream analysis (scaffold, SAR, similarity, clustering) - works with GTM output\n"
             "• Report Generator: Universal presentation layer for all analysis types\n"
-            "• Autoencoder: Small molecule generation via LSTM autoencoders (SMILES, standalone + GTM-guided)\n"
-            "• Peptide WAE: Peptide sequence generation + GTM on latent space + DBAASP antimicrobial activity landscapes\n"
-            "• SynPlanner: Retrosynthetic planning for target molecules\n"
-            "• QSAR Sub-system: Dataset Curation, QSAR Training, Model Registry, Model Inference, and QSAR Report\n\n"
-            "**Molecule vs Peptide Routing**:\n"
-            "  - 'peptide', 'amino acid', 'AMP', 'antimicrobial peptide' → Peptide WAE agent\n"
-            "  - 'SMILES', 'molecule', 'compound', 'small molecule' → Autoencoder agent\n"
-            "  - 'QSAR', 'Chemprop', 'predict lipophilicity', 'train a model', 'applicability domain' → isolated QSAR sub-system\n"
-            "  - DBAASP/antimicrobial landscapes → Peptide WAE agent (has GTM tools)\n"
-            "  - Unqualified 'generate' → Autoencoder (small molecules)\n\n"
+            "• Molecular Designer: Small-molecule design via autoencoder and LLM engines (SMILES, standalone + GTM-guided)\n"
+            "• Peptide Designer: Peptide design via WAE and LLM engines + GTM on latent space + DBAASP antimicrobial activity landscapes\n"
+            "• SynPlanner: Retrosynthetic planning for target molecules\n\n"
+            # Routing prose is generated from the workflow/skill catalog keywords
+            # so it can never drift from the deterministic MCP bootstrap routing.
+            + render_routing_rules() + "\n\n"
             "When coordinating: (1) Assess if a predefined workflow covers the request, (2) Select and chain "
             "specialized agents for multi-step tasks (GTM → Chemoinformatician → Report Generator is common), "
             "(3) For analysis requests, automatically add Report Generator unless user explicitly requests raw data only, "
             "(4) For ambiguous opening requests, apply the INITIAL CLARIFICATION FLOW (peptides vs molecules, then exploratory vs generative), (5) Synthesize insights from agent outputs into coherent analyses. "
-            "Do not attempt QSAR training or QSAR prediction inside this general team; those tasks belong to the isolated QSAR team."
+            "Do not attempt QSAR training or QSAR prediction inside this general team."
         ),
-        instructions=AGENT_TEAM_INSTRUCTIONS,
+        instructions=[
+            *AGENT_TEAM_INSTRUCTIONS,
+            (
+                "For multi-step scientific workflows, consult the Skills tools "
+                "(`list_skills`, `search_skills`, `fetch_skill`) before routing "
+                "specialized agents so the team follows reusable ChemSpace procedures."
+            ),
+        ],
         # UX & observability
         markdown=markdown,
         debug_mode=debug_mode,
@@ -183,13 +204,7 @@ def get_qsar_agent_team(
     db_file: str = None,
     enable_mlflow_tracking: bool = True,
 ) -> Team:
-    """
-    Create an isolated QSAR-only team.
-
-    This team is intentionally compartmentalized from the broader Cs_copilot
-    ecosystem so that dataset curation, training, model registration, and
-    inference can evolve independently with minimal prompt cross-talk.
-    """
+    """Create an isolated QSAR-only team."""
     logger = logging.getLogger(__name__)
     logger.info("Creating isolated QSAR Agent Team")
 
@@ -197,10 +212,15 @@ def get_qsar_agent_team(
     if enable_memory:
         db = SqliteDb(db_file=db_file or CS_COPILOT_MEMORY_DB)
 
+    shared_session_state = {
+        "resource_profile": analyze_resources(),
+        "agent_scratch": {},
+    }
     agent_params = {
         "markdown": markdown,
         "debug_mode": debug_mode,
         "enable_mlflow_tracking": enable_mlflow_tracking,
+        "session_state": shared_session_state,
     }
 
     agents_config: List[Tuple[str, str]] = [
@@ -213,12 +233,10 @@ def get_qsar_agent_team(
 
     agents = []
     failures = []
-
     for agent_type, agent_name in agents_config:
         try:
             logger.info("Creating %s agent", agent_name)
-            agent = create_agent(agent_type, model=model, **agent_params)
-            agents.append(agent)
+            agents.append(create_agent(agent_type, model=model, **agent_params))
             logger.info("Successfully created %s agent", agent_name)
         except Exception as e:
             logger.exception("Failed to create %s agent", agent_name)
@@ -233,27 +251,22 @@ def get_qsar_agent_team(
         members=agents,
         model=model,
         db=db,
-        enable_agentic_memory=enable_memory,
+        enable_agentic_memory=False,
         enable_user_memories=False,
+        add_memories_to_context=False,
         add_history_to_context=enable_memory,
         num_history_runs=5 if enable_memory else 0,
         share_member_interactions=True,
         store_history_messages=enable_memory,
         store_tool_messages=enable_memory,
         store_media=enable_memory,
+        session_state=shared_session_state,
         add_session_state_to_context=True,
         enable_agentic_state=True,
         description=(
             "You are the isolated coordinator of a dedicated QSAR sub-system. "
-            "You may only orchestrate the following QSAR specialists: "
-            "Dataset Curation, QSAR Training, Model Registry, Model Inference, and QSAR Report. "
-            "Do not involve unrelated cheminformatics agents. "
-            "Use Dataset Curation before any new training workflow. "
-            "Use QSAR Training only on curated QSAR-ready datasets. "
-            "Use Model Registry for catalog governance and persistence decisions. "
-            "Use Model Inference for explicit predictions or model-selection-driven predictions. "
-            "Use QSAR Report as the only final drafting agent for the user-facing answer. "
-            "Keep handoffs structured and concise."
+            "You may only orchestrate Dataset Curation, QSAR Training, Model Registry, "
+            "Model Inference, and QSAR Report."
         ),
         instructions=[
             "You coordinate only the isolated QSAR agents in this team.",
@@ -261,21 +274,12 @@ def get_qsar_agent_team(
             "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
             "For training requests, orchestrate: dataset_curation -> qsar_training, then route directly to qsar_report when qsar_training already completed register_model + persist_registered_model. Use model_registry after training only when persistence is still missing, blocked, or explicitly requested by the user.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
-            "For QSAR backend/capability inventory requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
-            "For QSAR catalog listing, catalog search, model recommendation, model summary, or model comparison requests, orchestrate: model_registry -> qsar_report. Do not answer directly from the coordinator or return the model_registry response directly.",
-            "For existing ensemble summary requests, orchestrate: model_registry -> qsar_report. Do not return the model_registry handoff directly to the user.",
-            "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@` and any casing (`@Latex`, `@latex`, `@LATEX`, `@LaTeX`, `Latex`, `latex`, `LaTeX`), orchestrate `model_inference` only and treat the task as a documentation export for the latest completed prediction state.",
-            "When the user asks only for LaTeX or payload export, do not rerun prediction and do not route to `qsar_report` unless the user also asked for a narrative report.",
-            "For export-only LaTeX or payload requests handled by `model_inference`, return the `model_inference` answer verbatim without adding any extra narrative.",
-            "Before routing, determine REPORT_LANGUAGE from the latest user message: English for English prompts, French for French prompts. Include `REPORT_LANGUAGE: English` or `REPORT_LANGUAGE: French` in every handoff, especially the final handoff to `qsar_report`.",
-            "The final QSAR report must use REPORT_LANGUAGE even if operational handoffs, tool outputs, catalog metadata, or prior conversation are in another language.",
+            "For QSAR backend/capability inventory, catalog listing, model recommendation, model summary, model comparison, or existing ensemble summary requests, orchestrate: model_registry -> qsar_report.",
+            "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@`, orchestrate `model_inference` only.",
+            "Before routing, determine REPORT_LANGUAGE from the latest user message and include it in every handoff.",
             "Only `qsar_report` may draft the final user-facing answer.",
-            "Treat the other QSAR agents as operational specialists that provide structured handoffs only.",
-            "If a member response contains useful information for the user, pass it to `qsar_report` for final drafting instead of exposing it yourself.",
             "When `qsar_report` has produced a final answer, return that answer verbatim without adding a preface, summary, duplication, or extra conclusion.",
-            "Do not expose intermediate agent narration to the user unless the workflow is blocked before `qsar_report` can run.",
             "For blocked workflows, stop early and summarize only completed steps, blockers, files, and next steps.",
-            "Prefer structured handoffs over long narrative summaries.",
         ],
         markdown=markdown,
         debug_mode=debug_mode,

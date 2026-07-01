@@ -5,7 +5,7 @@ Centralized model configuration for Cs_copilot.
 
 Reads the `.modelconf` file (simple key=value format) and returns
 the appropriate agno Model instance.  Environment variables
-MODEL_PROVIDER, MODEL_ID and OLLAMA_HOST take precedence over
+MODEL_PROVIDER, MODEL_ID, MODEL_MAX_TOKENS and OLLAMA_HOST take precedence over
 the config file, making it easy to override in Docker / CI.
 
 Also provides retry wrappers (`run_with_retry`, `arun_with_retry`)
@@ -130,6 +130,7 @@ def parse_modelconf(config_path: Optional[str] = None) -> Dict[str, str]:
 
 
 def _parse_positive_int(value: Optional[str], *, key: str) -> Optional[int]:
+    """Parse a positive integer config value."""
     if value is None or value == "":
         return None
     try:
@@ -142,6 +143,7 @@ def _parse_positive_int(value: Optional[str], *, key: str) -> Optional[int]:
 
 
 def _is_openrouter_deepseek_model(model_id: str) -> bool:
+    """Return true for DeepSeek model ids routed through OpenRouter."""
     return model_id.strip().lower().startswith("deepseek/")
 
 
@@ -167,7 +169,7 @@ def load_model_from_config(config_path: Optional[str] = None) -> Any:
         from agno.models.ollama import Ollama
 
         host = conf.get("ollama_host", DEFAULT_OLLAMA_HOST)
-        logger.info("Using Ollama model '%s' at %s", model_id, host)
+        logger.info(f"Using Ollama model '{model_id}' at {host}")
         return Ollama(id=model_id, host=host)
 
     if provider == "openrouter":
@@ -181,6 +183,8 @@ def load_model_from_config(config_path: Optional[str] = None) -> Any:
         logger.info("Using OpenRouter model '%s' with max_tokens=%s", model_id, max_tokens)
         model = OpenRouter(id=model_id, api_key=api_key, max_tokens=max_tokens)
         if _is_openrouter_deepseek_model(model_id):
+            # Match Agno's native DeepSeek model: structured outputs are not reliable
+            # for DeepSeek, even when accessed through the OpenRouter gateway.
             model.supports_native_structured_outputs = False
         return model
 
@@ -188,7 +192,7 @@ def load_model_from_config(config_path: Optional[str] = None) -> Any:
     from agno.models.deepseek import DeepSeek
 
     api_key = os.getenv("DEEPSEEK_API_KEY")
-    logger.info("Using DeepSeek model '%s'", model_id)
+    logger.info(f"Using DeepSeek model '{model_id}'")
     return DeepSeek(id=model_id, api_key=api_key)
 
 
