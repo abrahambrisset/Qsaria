@@ -445,15 +445,14 @@ class ChempropToolkit(Toolkit):
     ) -> Optional[str]:
         """Apply Chemprop-specific training overrides once the QSAR protocol is known."""
         extra_args = training_policy.setdefault("extra_args", {})
-        protocol = protocol_policy.get("protocol")
-        if protocol in {"fast_local", "standard_qsar", "robust_qsar", "challenging_qsar"}:
-            requested_replicates = int(extra_args.get("num_replicates") or 1)
-            extra_args["num_replicates"] = 1
-            if requested_replicates != 1:
-                return (
-                    f"Chemprop {protocol} protocols use one replicate per split. "
-                    "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
-                )
+        protocol = protocol_policy.get("protocol") or "qsar"
+        requested_replicates = int(extra_args.get("num_replicates") or 1)
+        extra_args["num_replicates"] = 1
+        if requested_replicates != 1:
+            return (
+                f"Chemprop {protocol} protocols use one replicate per split. "
+                "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
+            )
         return None
 
     def _resolve_validation_protocol(
@@ -498,7 +497,16 @@ class ChempropToolkit(Toolkit):
         backend_train_args = {
             key: value
             for key, value in train_args.items()
-            if key not in {"split_type", "split", "split_sizes", "data_seed"}
+            if key
+            not in {
+                "split_type",
+                "split",
+                "split_sizes",
+                "data_seed",
+                "validation_protocol",
+                "validation_strategy",
+                "seed_policy",
+            }
         }
         backend_train_args["splits_file"] = chemprop_input["chemprop_splits_file"]
         result = self.backend.train_model(

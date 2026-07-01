@@ -189,6 +189,10 @@ class ChempropBackend(PredictionBackend):
             "save_preds",
             "save_checkpoints",
             "dataset_id",
+            "validation_protocol",
+            "validation_strategy",
+            "seed_policy",
+            "training_profile",
         }
         dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_args:

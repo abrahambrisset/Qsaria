@@ -113,6 +113,7 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
             "split_type": "random",
             "split_sizes": [0.8, 0.1, 0.1],
             "data_seed": 42,
+            "validation_strategy": {"type": "repeated_holdout"},
         },
     )
 
@@ -122,3 +123,4 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     assert "--split-type" not in args
     assert "--split-sizes" not in args
     assert "--data-seed" not in args
+    assert "--validation-strategy" not in args

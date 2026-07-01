@@ -310,6 +310,19 @@ def test_chemprop_robust_qsar_forces_single_replicate():
     assert "split runs" in note
 
 
+def test_chemprop_repeated_holdout_forces_single_replicate():
+    toolkit = ChempropToolkit(register_tools=False)
+    training_policy = {"extra_args": {"num_replicates": 3}}
+
+    note = toolkit._apply_protocol_training_overrides(
+        training_policy=training_policy,
+        protocol_policy={"protocol": "repeated_scaffold_holdout"},
+    )
+
+    assert training_policy["extra_args"]["num_replicates"] == 1
+    assert "repeated_scaffold_holdout" in note
+
+
 def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
     toolkit = ChempropToolkit(register_tools=False)
     train_csv = tmp_path / "train.csv"
