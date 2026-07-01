@@ -31,3 +31,7 @@ ChemSpace Copilot is a multi-agent system powered by the [Agno](https://docs.agn
 ## Quick Start
 
 Get started with the [Installation Guide](getting-started/installation.md) or the [Docker Deployment Guide](getting-started/docker.md).
+
+For the QSARIA-specific workflow, launch, prompt, and troubleshooting guide, see
+the [QSARIA Guide](qsaria-guide.md) or the
+[English QSARIA Guide](qsaria-guide-en.md).

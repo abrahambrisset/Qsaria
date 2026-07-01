@@ -8,5 +8,5 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
 fi
 
 MODEL_PROVIDER=openrouter \
-MODEL_ID="${MODEL_ID:-deepseek/deepseek-chat-v3-0324}" \
+MODEL_ID="${MODEL_ID:-deepseek/deepseek-v4-flash}" \
 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/run_apptainer.sh"
