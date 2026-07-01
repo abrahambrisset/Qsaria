@@ -16,6 +16,7 @@ from rdkit.Chem.MolStandardize import rdMolStandardize
 logger = logging.getLogger(__name__)
 _STANDARDIZE_CACHE_SIZE = 16_384
 _DISABLE_PROCESS_POOL_VALUES = {"1", "true", "yes", "on"}
+_SMILES_COLUMN_CANDIDATES = ("smiles", "SMILES", "canonical_smiles", "smi", "structure")
 _STANDARDIZERS: Optional[
     tuple[
         rdMolStandardize.Uncharger,
@@ -218,3 +219,31 @@ def standardize_smiles_column(
     )
 
     return df
+
+
+def resolve_smiles_column_name(df: pd.DataFrame, requested_column: str = "smiles") -> str:
+    """Resolve a requested SMILES column against common QSAR column aliases.
+
+    Curated QSAR datasets use canonical lowercase ``smiles`` even when the
+    source dataset used ``SMILES``. This helper lets downstream tools recover
+    from that harmless source/curated naming drift without guessing via the LLM.
+    """
+    columns = list(df.columns)
+    if requested_column in columns:
+        return requested_column
+
+    requested_lower = str(requested_column).lower()
+    by_lower = {str(column).lower(): str(column) for column in columns}
+    if requested_lower in by_lower:
+        return by_lower[requested_lower]
+
+    for candidate in _SMILES_COLUMN_CANDIDATES:
+        if candidate in columns:
+            return candidate
+        candidate_lower = candidate.lower()
+        if candidate_lower in by_lower:
+            return by_lower[candidate_lower]
+
+    raise KeyError(
+        f"SMILES column '{requested_column}' not found. Available columns: {columns}"
+    )
