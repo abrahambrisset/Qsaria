@@ -48,7 +48,6 @@ from .training_orchestration import (
     normalize_json_list_argument,
     write_training_summary,
 )
-from .tabular_splitters import materialize_tabular_split_payloads
 from .tabicl_backend import (
     DEFAULT_TABICL_CHECKPOINT_DIR,
     DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
@@ -404,12 +403,6 @@ class TabICLToolkit(Toolkit):
             seed_policy=training_policy["extra_args"].get("seed_policy"),
             base_seed=training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
-        )
-        protocol_policy = materialize_tabular_split_payloads(
-            protocol_policy=protocol_policy,
-            train_csv=train_csv,
-            smiles_column="smiles",
-            feature_columns=feature_columns,
         )
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         task = PredictionTaskSpec(
@@ -785,12 +778,6 @@ class TabICLToolkit(Toolkit):
             seed_policy=training_policy["extra_args"].get("seed_policy"),
             base_seed=training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
-        )
-        protocol_policy = materialize_tabular_split_payloads(
-            protocol_policy=protocol_policy,
-            train_csv=train_csv,
-            smiles_column="smiles",
-            feature_columns=normalized_feature_columns,
         )
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()

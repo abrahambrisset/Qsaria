@@ -231,6 +231,9 @@ def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str
             "best_model_path",
             "test_predictions_path",
             "splits_path",
+            "chemprop_training_input_csv",
+            "chemprop_splits_file",
+            "chemprop_input_manifest_path",
             "output_dir",
             "source_train_count",
             "effective_train_count",
@@ -315,6 +318,9 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "campaign_duration_seconds",
         "feature_cache",
         "feature_cache_dir",
+        "chemprop_training_input_csv",
+        "chemprop_splits_file",
+        "chemprop_input_manifest_path",
     )
     compact = {key: result.get(key) for key in keep_keys if result.get(key) is not None}
     compact.update(
@@ -1258,12 +1264,6 @@ class QSARTrainingToolkit(Toolkit):
             if curation_artifacts:
                 result["curation"] = curation_artifacts
 
-        if normalized_backend in {"lightgbm", "tabicl"}:
-            self._refresh_enriched_training_artifacts(
-                result=result,
-                output_dir=output_dir,
-            )
-
         result["recommended_registry_payload"] = self._recommended_registry_payload(
             backend_name=normalized_backend,
             task_type=task_type,
@@ -1293,6 +1293,10 @@ class QSARTrainingToolkit(Toolkit):
                     "temporary model_id. Report every persisted canonical catalog model_id."
                 ),
             }
+        self._refresh_enriched_training_artifacts(
+            result=result,
+            output_dir=output_dir,
+        )
         if normalized_backend in {"lightgbm", "tabicl"} and isinstance(result.get("feature_columns"), list):
             full_feature_columns = list(result.pop("feature_columns") or [])
             result.update(

@@ -175,80 +175,14 @@ def test_repeated_holdout_accepts_holdout_ratio_alias():
     assert all(run["backend_split_type"] == "scaffold_balanced" for run in policy["split_runs"])
 
 
-def test_random_kfold_marks_runs_as_payload_required():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "cross_validation",
-            "split_family": "random",
-            "n_folds": 5,
-            "seed": 17,
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert policy["protocol"] == "random_5fold_cv"
-    assert policy["aggregation"] == "mean_std"
-    assert [run["fold_index"] for run in policy["split_runs"]] == [1, 2, 3, 4, 5]
-    assert all(run["requires_split_payload"] for run in policy["split_runs"])
-    assert len({run["split_seed"] for run in policy["split_runs"]}) == 1
-
-
-def test_scaffold_kfold_uses_scaffold_family():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "cross_validation",
-            "split_family": "scaffold",
-            "n_folds": 3,
-        },
-        training_profile="heavy_validation",
-        base_seed=19,
-    )
-
-    assert policy["protocol"] == "scaffold_3fold_cv"
-    assert all(run["split_family"] == "scaffold" for run in policy["split_runs"])
-    assert all(run["backend_split_type"] == "scaffold_balanced" for run in policy["split_runs"])
-
-
-def test_cluster_kfold_uses_kmeans_backend_split_type():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "cross_validation",
-            "split_family": "cluster",
-            "n_folds": 4,
-        },
-        training_profile="heavy_validation",
-        base_seed=23,
-    )
-
-    assert policy["protocol"] == "cluster_4fold_cv"
-    assert all(run["split_family"] == "cluster" for run in policy["split_runs"])
-    assert all(run["backend_split_type"] == "kmeans" for run in policy["split_runs"])
-
-
-def test_nested_cv_exposes_outer_runs_and_inner_strategy():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "nested_cross_validation",
-            "outer": {"split_family": "scaffold", "n_folds": 5},
-            "inner": {"split_family": "random", "n_folds": 3},
-            "selection_metric": "rmse",
-            "final_refit": True,
-        },
-        training_profile="heavy_validation",
-        base_seed=29,
-    )
-
-    assert policy["protocol"] == "nested_scaffold_5x3_cv"
-    assert policy["final_refit"] is True
-    assert len(policy["split_runs"]) == 5
-    assert policy["split_runs"][0]["inner_strategy"] == {
-        "type": "cross_validation",
-        "split_family": "random",
-        "n_folds": 3,
-        "seed": None,
-        "selection_metric": "rmse",
-    }
+def test_unknown_validation_strategy_is_rejected():
+    try:
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={"type": "unsupported_strategy"},
+            training_profile="heavy_validation",
+        )
+    except ValueError as exc:
+        assert "holdout, repeated_holdout" in str(exc)
+    else:
+        raise AssertionError("unsupported validation strategy should be rejected")

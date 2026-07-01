@@ -86,7 +86,7 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
         called_representations.append(kwargs["representation_name"])
         return {
             "train_csv": str(tmp_path / f"{kwargs['representation_name']}.csv"),
-            "feature_columns": ["feature_a"],
+            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
             "feature_preparation": {
                 "representation_name": kwargs["representation_name"],
                 "feature_cache_key": f"cache-{kwargs['representation_name']}",
@@ -150,7 +150,7 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
         captured.update(kwargs)
         return {
             "train_csv": str(tmp_path / "combined.csv"),
-            "feature_columns": ["feature_a"],
+            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
             "feature_preparation": {
                 "representation_name": kwargs["representation_name"],
                 "durations": {"total_duration_seconds": 0.1, "steps": []},
@@ -248,7 +248,7 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
         captured.update(kwargs)
         return {
             "train_csv": str(tmp_path / "rdkit_all.csv"),
-            "feature_columns": ["feature_a"],
+            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
             "feature_preparation": {
                 "representation_name": kwargs["representation_name"],
                 "durations": {"total_duration_seconds": 0.1, "steps": []},

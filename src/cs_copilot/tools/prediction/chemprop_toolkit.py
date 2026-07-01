@@ -18,11 +18,11 @@ import pandas as pd
 import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
-from scipy.stats import kendalltau, spearmanr
 
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .backend import PredictionTaskSpec
+from .chemprop_adapter import materialize_chemprop_inputs
 from .chemprop_backend import ChempropBackend
 from .qsar_training_policy import (
     QSAR_HARDEST_SPLIT_R2_MIN,
@@ -42,18 +42,21 @@ from .session_state import (
     get_prediction_state,
     write_active_training_marker,
 )
+from .tabular_splitters import build_tabular_split_payload
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
     build_training_plots_if_possible,
     collect_training_bundle_files,
+    compute_regression_metrics,
     normalize_json_list_argument,
+    strip_unnamed_columns,
     write_training_summary,
 )
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
-    return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
+    return strip_unnamed_columns(df)
 
 
 def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
@@ -167,6 +170,7 @@ class ChempropToolkit(Toolkit):
         train_csv: str,
         output_dir: Path,
         task: PredictionTaskSpec,
+        splits_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a self-contained Chemprop test-prediction CSV.
 
@@ -180,7 +184,7 @@ class ChempropToolkit(Toolkit):
             return {}
 
         output_path = output_dir.expanduser().resolve()
-        splits_path = output_path / "splits.json"
+        splits_path = Path(str(splits_file)).expanduser() if splits_file else output_path / "splits.json"
         if not splits_path.exists():
             return {}
 
@@ -447,7 +451,7 @@ class ChempropToolkit(Toolkit):
             extra_args["num_replicates"] = 1
             if requested_replicates != 1:
                 return (
-                    "Chemprop QSAR protocols use one replicate per split. "
+                    f"Chemprop {protocol} protocols use one replicate per split. "
                     "Robustness is measured through protocol split runs, not Chemprop replicate multiplication."
                 )
         return None
@@ -478,21 +482,81 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
         output_dir: str,
         train_args: Dict[str, Any],
+        split_payload: List[Dict[str, List[int]]],
+        split_label: str,
+        seed: Optional[int],
     ) -> Dict[str, Any]:
+        run_output_dir = Path(output_dir).expanduser().resolve()
+        chemprop_input = materialize_chemprop_inputs(
+            source_csv=train_csv,
+            output_dir=run_output_dir / "chemprop_inputs",
+            task=task,
+            split_payload=split_payload,
+            split_label=split_label,
+            seed=seed,
+        )
+        backend_train_args = {
+            key: value
+            for key, value in train_args.items()
+            if key not in {"split_type", "split", "split_sizes", "data_seed"}
+        }
+        backend_train_args["splits_file"] = chemprop_input["chemprop_splits_file"]
         result = self.backend.train_model(
-            train_csv=train_csv,
+            train_csv=chemprop_input["chemprop_training_input_csv"],
             output_dir=output_dir,
             task=task,
-            extra_args=train_args,
+            extra_args=backend_train_args,
         )
         result.update(
             self._compute_training_metrics(
-                train_csv=train_csv,
+                train_csv=chemprop_input["chemprop_training_input_csv"],
                 output_dir=output_dir,
                 task=task,
+                splits_file=chemprop_input["chemprop_splits_file"],
             )
         )
+        result["chemprop_input"] = chemprop_input
+        result["chemprop_training_input_csv"] = chemprop_input["chemprop_training_input_csv"]
+        result["chemprop_splits_file"] = chemprop_input["chemprop_splits_file"]
+        result["chemprop_input_manifest_path"] = chemprop_input["manifest_path"]
+        result["split_payload"] = split_payload
         return result
+
+    def _build_split_payload(
+        self,
+        *,
+        train_csv: str,
+        task: PredictionTaskSpec,
+        split_type: str,
+        split_sizes: List[float],
+        seed: int,
+    ) -> List[Dict[str, List[int]]]:
+        dataset = strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        normalized_split_sizes = normalize_json_list_argument(
+            split_sizes,
+            argument_name="split_sizes",
+            coerce_numbers=True,
+        )
+        if not normalized_split_sizes or len(normalized_split_sizes) != 3:
+            raise ValueError("Chemprop split_sizes must contain train, validation, and test fractions.")
+        if split_type == "kmeans":
+            raise ValueError(
+                "Chemprop graph training does not support cluster holdout without an explicit "
+                "graph-compatible cluster plan. Use random/scaffold holdout or a tabular backend."
+            )
+        feature_columns = [
+            column
+            for column in dataset.columns
+            if column not in set((task.smiles_columns or []) + (task.target_columns or []))
+        ]
+        return build_tabular_split_payload(
+            df=dataset,
+            split_type=split_type,
+            split_sizes=normalized_split_sizes,
+            random_state=seed,
+            smiles_column=(task.smiles_columns or ["smiles"])[0],
+            feature_columns=feature_columns,
+        )
 
     def _summarize_training_resources(
         self,
@@ -678,6 +742,7 @@ class ChempropToolkit(Toolkit):
         train_csv: str,
         output_dir: str,
         task: PredictionTaskSpec,
+        splits_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         output_path = Path(output_dir).expanduser()
         target_column = task.target_columns[0] if task.target_columns else None
@@ -688,9 +753,15 @@ class ChempropToolkit(Toolkit):
             train_csv=train_csv,
             output_dir=output_path,
             task=task,
+            splits_file=splits_file,
         )
         resolved_artifacts = self._resolve_chemprop_run_artifacts(output_path)
-        splits_path = resolved_artifacts["splits_path"]
+        explicit_splits_path = Path(str(splits_file)).expanduser() if splits_file else None
+        splits_path = (
+            explicit_splits_path
+            if explicit_splits_path is not None and explicit_splits_path.exists()
+            else resolved_artifacts["splits_path"]
+        )
         preds_path = Path(str(normalized_predictions.get("test_predictions_path") or resolved_artifacts["test_predictions_path"]))
 
         if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
@@ -716,35 +787,13 @@ class ChempropToolkit(Toolkit):
                 return {}
             actual_values = pd.to_numeric(actual[target_column], errors="coerce")
             predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
-        valid_mask = actual_values.notna() & predicted_values.notna()
-        if not valid_mask.any():
+        metric_values = compute_regression_metrics(
+            actual_values,
+            predicted_values,
+            target_column=target_column,
+        )
+        if not metric_values:
             return {}
-
-        y_true = actual_values[valid_mask].astype(float)
-        y_pred = predicted_values[valid_mask].astype(float)
-        residuals = y_true - y_pred
-        mse = float((residuals.pow(2)).mean())
-        mae = float(residuals.abs().mean())
-        rae_denom = float((y_true - float(y_true.mean())).abs().sum())
-        rae_num = float(residuals.abs().sum())
-        rae = float(rae_num / rae_denom) if rae_denom > 0 else None
-        rmse = float(math.sqrt(mse))
-        centered = y_true - float(y_true.mean())
-        ss_tot = float((centered.pow(2)).sum())
-        ss_res = float((residuals.pow(2)).sum())
-        r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
-        spearman = None
-        kendall = None
-        try:
-            spearman_stat = spearmanr(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            spearman = float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
-        except Exception:
-            spearman = None
-        try:
-            kendall_stat = kendalltau(y_true.to_numpy(), y_pred.to_numpy(), nan_policy="omit")
-            kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
-        except Exception:
-            kendall = None
 
         return {
             "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
@@ -763,19 +812,7 @@ class ChempropToolkit(Toolkit):
             "prediction_column": normalized_predictions.get("prediction_column") or target_column,
             "target_true_column": normalized_predictions.get("target_true_column") or target_column,
             "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
-            "metrics": {
-                "test": {
-                    "mse": mse,
-                    "mae": mae,
-                    "rae": rae,
-                    "rmse": rmse,
-                    "r2": r2,
-                    "spearman": spearman,
-                    "kendall": kendall,
-                    "n": int(valid_mask.sum()),
-                    "target_column": target_column,
-                }
-            },
+            "metrics": {"test": metric_values},
         }
 
     def train_model(
@@ -836,12 +873,6 @@ class ChempropToolkit(Toolkit):
             or training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
-        if any(split_run.get("requires_split_payload") for split_run in protocol_policy["split_runs"]):
-            raise ValueError(
-                "Chemprop configurable k-fold/nested CV requires explicit split-file support, "
-                "which is not implemented yet. Use standard_qsar, holdout/repeated_holdout, "
-                "or a tabular backend for k-fold/scaffold/cluster CV."
-            )
         protocol_override_note = self._apply_protocol_training_overrides(
             training_policy=training_policy,
             protocol_policy=protocol_policy,
@@ -915,6 +946,13 @@ class ChempropToolkit(Toolkit):
                     or training_policy["extra_args"].get("split_sizes"),
                     "data_seed": split_run["seed"],
                 }
+                split_payload = self._build_split_payload(
+                    train_csv=train_csv,
+                    task=task,
+                    split_type=split_run["backend_split_type"],
+                    split_sizes=run_args["split_sizes"],
+                    seed=int(split_run["seed"]),
+                )
 
                 active_run_record["current_split_label"] = label
                 if prediction_state is not None:
@@ -928,6 +966,9 @@ class ChempropToolkit(Toolkit):
                     task=task,
                     output_dir=str(run_output_dir),
                     train_args=run_args,
+                    split_payload=split_payload,
+                    split_label=label,
+                    seed=split_run["seed"],
                 )
                 if "scaffold" in label:
                     strategy_name = "scaffold"
@@ -951,6 +992,7 @@ class ChempropToolkit(Toolkit):
                 single_result["seed"] = split_run["seed"]
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["validation_protocol"] = protocol_policy["protocol"]
+                single_result["split_payload"] = split_payload
                 split_results.append(single_result)
 
                 if split_run.get("primary") or primary_run is None:

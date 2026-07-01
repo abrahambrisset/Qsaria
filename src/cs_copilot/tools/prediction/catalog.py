@@ -12,6 +12,8 @@ predictive assets.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -22,6 +24,7 @@ from .backend import PredictionModelRecord
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
 DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated")
+_CATALOG_IO_LOCK = threading.Lock()
 STATUS_WEIGHTS = {
     "production": 12,
     "robust_validated": 10,
@@ -169,7 +172,8 @@ class PredictionModelCatalog:
     @classmethod
     def load(cls, path: Optional[str] = None) -> "PredictionModelCatalog":
         source_path = Path(path).expanduser() if path else DEFAULT_MODEL_CATALOG_PATH
-        payload = json.loads(source_path.read_text())
+        raw = source_path.read_text()
+        payload = json.loads(raw) if raw.strip() else {"schema_version": 1, "models": []}
         records = [
             PredictionModelRecord.from_dict(record_payload)
             for record_payload in payload.get("models", [])
@@ -208,7 +212,11 @@ class PredictionModelCatalog:
             "schema_version": self.schema_version,
             "models": [record.as_dict() for record in self.records],
         }
-        self.source_path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.source_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.source_path.with_name(f".{self.source_path.name}.{os.getpid()}.tmp")
+        with _CATALOG_IO_LOCK:
+            tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
+            tmp_path.replace(self.source_path)
 
     def list_models(self) -> List[PredictionModelRecord]:
         return list(self.records)

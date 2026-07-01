@@ -660,6 +660,9 @@ class ModelRegistryToolkit(Toolkit):
             "training_summary_path": _first_existing_or_default(training_summary_candidates),
             "splits_path": run_dir / "splits.json",
             "test_predictions_path": _first_existing_or_default(test_prediction_candidates),
+            "chemprop_training_input_csv": run_dir / "chemprop_inputs" / "chemprop_training_input.csv",
+            "chemprop_splits_file": run_dir / "chemprop_inputs" / "chemprop_splits.json",
+            "chemprop_input_manifest_path": run_dir / "chemprop_inputs" / "chemprop_input_manifest.json",
             "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
             "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
@@ -678,6 +681,9 @@ class ModelRegistryToolkit(Toolkit):
             "training_summary_path",
             "splits_path",
             "test_predictions_path",
+            "chemprop_training_input_csv",
+            "chemprop_splits_file",
+            "chemprop_input_manifest_path",
             "reference_store_path",
             "reference_manifest_path",
             "applicability_domain_path",
@@ -782,8 +788,11 @@ class ModelRegistryToolkit(Toolkit):
                     target_path = artifacts_dir / "splits.json"
                 elif key == "test_predictions_path":
                     target_path = artifacts_dir / "test_predictions.csv"
+                elif key.startswith("chemprop_"):
+                    target_path = artifacts_dir / "chemprop_inputs" / source_path.name
                 else:
                     target_path = artifacts_dir / source_path.name
+                target_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source_path, target_path)
                 copied_files[key] = _relative_posix(target_path, model_root)
 
@@ -1259,6 +1268,9 @@ class ModelRegistryToolkit(Toolkit):
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
+            "chemprop_training_input_csv": summary_payload.get("chemprop_training_input_csv"),
+            "chemprop_splits_file": summary_payload.get("chemprop_splits_file"),
+            "chemprop_input_manifest_path": summary_payload.get("chemprop_input_manifest_path"),
             "split_results": summary_payload.get("split_results") or [],
             "reference_store_path": resolved_applicability_domain.get("reference_store_path"),
             "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path"),

@@ -12,11 +12,13 @@ writing, and bundle file collection.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import pandas as pd
+from scipy.stats import kendalltau, spearmanr
 
 from .ad_builder import build_applicability_domain_from_training_data
 from .backend import PredictionTaskSpec
@@ -159,6 +161,54 @@ def materialize_primary_protocol_artifacts(
         elif target_path.name == "splits.json":
             copied["splits_path"] = str(target_path)
     return copied
+
+
+def compute_regression_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    *,
+    target_column: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compute the standard QSAR regression metrics on aligned values."""
+    actual_values = pd.to_numeric(y_true, errors="coerce")
+    predicted_values = pd.to_numeric(y_pred, errors="coerce")
+    valid_mask = actual_values.notna() & predicted_values.notna()
+    if not valid_mask.any():
+        return {}
+
+    actual = actual_values[valid_mask].astype(float)
+    predicted = predicted_values[valid_mask].astype(float)
+    residuals = actual - predicted
+    mse = float((residuals.pow(2)).mean())
+    mae = float(residuals.abs().mean())
+    rae_denom = float((actual - float(actual.mean())).abs().sum())
+    rae_num = float(residuals.abs().sum())
+    centered = actual - float(actual.mean())
+    ss_tot = float((centered.pow(2)).sum())
+    ss_res = float((residuals.pow(2)).sum())
+    spearman = None
+    kendall = None
+    try:
+        spearman_stat = spearmanr(actual.to_numpy(), predicted.to_numpy(), nan_policy="omit")
+        spearman = float(spearman_stat.statistic) if spearman_stat.statistic is not None else None
+    except Exception:
+        pass
+    try:
+        kendall_stat = kendalltau(actual.to_numpy(), predicted.to_numpy(), nan_policy="omit")
+        kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
+    except Exception:
+        pass
+    return {
+        "mse": mse,
+        "mae": mae,
+        "rae": float(rae_num / rae_denom) if rae_denom > 0 else None,
+        "rmse": float(math.sqrt(mse)),
+        "r2": float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None,
+        "spearman": spearman,
+        "kendall": kendall,
+        "n": int(valid_mask.sum()),
+        **({"target_column": target_column} if target_column else {}),
+    }
 
 
 def build_applicability_domain_for_training(

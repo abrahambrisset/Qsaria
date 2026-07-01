@@ -84,8 +84,7 @@ or candidate.
   exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`, each with one
   random and one scaffold split.
 - Advanced validation: callers pass `validation_strategy` for custom holdout
-  ratios, repeated holdout, random/scaffold/cluster cross-validation, or nested
-  cross-validation.
+  ratios or repeated holdout.
 - `robust_qsar` and `challenging_qsar`: compatibility protocols retained for
   existing workflows, but advanced users should prefer explicit
   `validation_strategy`.

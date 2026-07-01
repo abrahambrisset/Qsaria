@@ -50,10 +50,35 @@ Agent Capabilities Breakdown:
   - QSAR-adjacent analysis: exploratory structural analyses that can support QSAR work, without replacing the isolated QSAR system
 """
 
-from .factories import AgentConfig, AgentCreationError, BaseAgentFactory
-from .registry import create_agent, get_registry, list_available_agent_types
-from .teams import get_cs_copilot_agent_team, get_qsar_agent_team
-from .utils import get_last_agent_reply
+def __getattr__(name):
+    if name in {"AgentConfig", "AgentCreationError", "BaseAgentFactory"}:
+        from .factories import AgentConfig, AgentCreationError, BaseAgentFactory
+
+        return {
+            "AgentConfig": AgentConfig,
+            "AgentCreationError": AgentCreationError,
+            "BaseAgentFactory": BaseAgentFactory,
+        }[name]
+    if name in {"create_agent", "get_registry", "list_available_agent_types"}:
+        from .registry import create_agent, get_registry, list_available_agent_types
+
+        return {
+            "create_agent": create_agent,
+            "get_registry": get_registry,
+            "list_available_agent_types": list_available_agent_types,
+        }[name]
+    if name in {"get_cs_copilot_agent_team", "get_qsar_agent_team"}:
+        from .teams import get_cs_copilot_agent_team, get_qsar_agent_team
+
+        return {
+            "get_cs_copilot_agent_team": get_cs_copilot_agent_team,
+            "get_qsar_agent_team": get_qsar_agent_team,
+        }[name]
+    if name == "get_last_agent_reply":
+        from .utils import get_last_agent_reply
+
+        return get_last_agent_reply
+    raise AttributeError(name)
 
 __all__ = [
     # Primary API

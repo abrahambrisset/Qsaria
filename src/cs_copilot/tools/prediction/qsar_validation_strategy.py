@@ -12,7 +12,6 @@ from .qsar_training_policy import resolve_seed_policy, resolve_validation_protoc
 
 
 DEFAULT_SPLIT_SIZES = [0.8, 0.1, 0.1]
-DEFAULT_N_FOLDS = 5
 DEFAULT_SELECTION_METRIC = "rmse"
 
 SPLIT_FAMILY_TO_BACKEND_TYPE = {
@@ -32,12 +31,6 @@ class SplitRun:
     primary: bool = False
     split_family: str = "random"
     split_sizes: Optional[List[float]] = None
-    fold_index: Optional[int] = None
-    n_folds: Optional[int] = None
-    split_seed: Optional[int] = None
-    outer_fold_index: Optional[int] = None
-    inner_strategy: Optional[Dict[str, Any]] = None
-    requires_split_payload: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -293,102 +286,7 @@ def resolve_validation_strategy(
             },
         )
 
-    if strategy_type == "cross_validation":
-        family = _coerce_split_family(strategy.get("split_family"))
-        n_folds = _coerce_positive_int(strategy.get("n_folds"), default=DEFAULT_N_FOLDS, name="n_folds", minimum=2)
-        seed_payload = _seed_policy_for_custom_strategy(
-            strategy_name=f"{family}_{n_folds}fold_cv",
-            run_count=n_folds,
-            seed_policy_mode=seed_policy_mode,
-            seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or base_seed,
-        )
-        seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])][:n_folds]
-        if len(seeds) < n_folds:
-            seeds = [int(seed_payload.get("model_seed") or 42) + idx for idx in range(n_folds)]
-        runs = [
-            SplitRun(
-                label=f"{family}_fold_{index}",
-                backend_split_type=SPLIT_FAMILY_TO_BACKEND_TYPE[family],
-                seed=seeds[index - 1],
-                primary=index == 1,
-                split_family=family,
-                fold_index=index,
-                n_folds=n_folds,
-                split_seed=seeds[0],
-                requires_split_payload=True,
-            )
-            for index in range(1, n_folds + 1)
-        ]
-        return _build_policy(
-            strategy_name=f"{family}_{n_folds}fold_cv",
-            strategy_type=strategy_type,
-            reason="Custom cross-validation strategy.",
-            split_runs=runs,
-            seed_policy=seed_payload,
-            selection_metric=selection_metric,
-            validation_strategy={**strategy, "split_family": family, "n_folds": n_folds},
-        )
-
-    if strategy_type == "nested_cross_validation":
-        outer = dict(strategy.get("outer") or {})
-        inner = dict(strategy.get("inner") or {})
-        outer_family = _coerce_split_family(outer.get("split_family") or "scaffold")
-        inner_family = _coerce_split_family(inner.get("split_family") or "random")
-        outer_folds = _coerce_positive_int(outer.get("n_folds"), default=DEFAULT_N_FOLDS, name="outer.n_folds", minimum=2)
-        inner_folds = _coerce_positive_int(inner.get("n_folds"), default=3, name="inner.n_folds", minimum=2)
-        final_refit = bool(strategy.get("final_refit", True))
-        seed_payload = _seed_policy_for_custom_strategy(
-            strategy_name=f"nested_{outer_family}_{outer_folds}x{inner_folds}_cv",
-            run_count=outer_folds,
-            seed_policy_mode=seed_policy_mode,
-            seed_policy=seed_policy,
-            base_seed=outer.get("seed") or strategy.get("seed") or base_seed,
-        )
-        seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])][:outer_folds]
-        if len(seeds) < outer_folds:
-            seeds = [int(seed_payload.get("model_seed") or 42) + idx for idx in range(outer_folds)]
-        inner_strategy = {
-            "type": "cross_validation",
-            "split_family": inner_family,
-            "n_folds": inner_folds,
-            "seed": inner.get("seed"),
-            "selection_metric": selection_metric,
-        }
-        runs = [
-            SplitRun(
-                label=f"outer_{outer_family}_fold_{index}",
-                backend_split_type=SPLIT_FAMILY_TO_BACKEND_TYPE[outer_family],
-                seed=seeds[index - 1],
-                primary=index == 1,
-                split_family=outer_family,
-                fold_index=index,
-                n_folds=outer_folds,
-                split_seed=seeds[0],
-                outer_fold_index=index,
-                inner_strategy=inner_strategy,
-                requires_split_payload=True,
-            )
-            for index in range(1, outer_folds + 1)
-        ]
-        return _build_policy(
-            strategy_name=f"nested_{outer_family}_{outer_folds}x{inner_folds}_cv",
-            strategy_type=strategy_type,
-            reason="Custom nested cross-validation strategy; outer folds define final performance.",
-            split_runs=runs,
-            seed_policy=seed_payload,
-            selection_metric=selection_metric,
-            validation_strategy={
-                **strategy,
-                "outer": {"split_family": outer_family, "n_folds": outer_folds, **({"seed": outer.get("seed")} if outer.get("seed") else {})},
-                "inner": {"split_family": inner_family, "n_folds": inner_folds, **({"seed": inner.get("seed")} if inner.get("seed") else {})},
-                "selection_metric": selection_metric,
-                "final_refit": final_refit,
-            },
-            final_refit=final_refit,
-        )
-
     raise ValueError(
         "Unsupported validation_strategy.type. Expected one of "
-        "holdout, repeated_holdout, cross_validation, nested_cross_validation."
+        "holdout, repeated_holdout."
     )

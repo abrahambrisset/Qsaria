@@ -157,6 +157,12 @@ class ChempropBackend(PredictionBackend):
             )
             sanitized.pop("save_dir", None)
 
+        if sanitized.get("splits_file"):
+            sanitized.pop("split_type", None)
+            sanitized.pop("split", None)
+            sanitized.pop("split_sizes", None)
+            sanitized.pop("data_seed", None)
+
         unsupported_args = {
             "gpus",
             "gpu",

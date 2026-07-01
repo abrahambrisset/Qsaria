@@ -458,6 +458,7 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             input_columns_to_keep,
             feature_prefix="fp_",
             fingerprint_kind="binary",
+            **kwargs,
         ):
             assert smiles_column == "smiles"
             assert fingerprint_kind == "binary"
@@ -482,8 +483,12 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             assert join_on == ["__qsar_row_id"]
             assembled = pd.read_csv(base_csv)[base_columns_to_keep].copy()
             for feature_csv in feature_csvs:
+                feature_df = pd.read_csv(feature_csv)
+                feature_df = feature_df[
+                    [column for column in feature_df.columns if column in join_on or column not in assembled.columns]
+                ]
                 assembled = assembled.merge(
-                    pd.read_csv(feature_csv),
+                    feature_df,
                     on=join_on,
                     how="left",
                     validate="one_to_one",
