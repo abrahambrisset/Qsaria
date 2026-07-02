@@ -82,12 +82,14 @@ def _infer_split_family(strategy: Mapping[str, Any]) -> str:
 def _coerce_split_sizes(raw: Any) -> List[float]:
     if raw is None:
         return list(DEFAULT_SPLIT_SIZES)
-    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
-        raise ValueError("validation_strategy.split_sizes must be a list of 3 numbers.")
+    if not isinstance(raw, (list, tuple)) or len(raw) not in (2, 3):
+        raise ValueError("validation_strategy.split_sizes must be [train, test] or [train, validation, test].")
     values = [float(item) for item in raw]
     total = sum(values)
-    if any(item <= 0 for item in values) or abs(total - 1.0) > 1e-6:
-        raise ValueError("validation_strategy.split_sizes must be positive and sum to 1.0.")
+    if values[0] <= 0 or values[-1] <= 0 or any(item < 0 for item in values) or abs(total - 1.0) > 1e-6:
+        raise ValueError("validation_strategy.split_sizes must sum to 1.0 with positive train/test ratios.")
+    if len(values) == 3 and values[1] == 0:
+        return [values[0], values[2]]
     return values
 
 
@@ -97,7 +99,15 @@ def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]
     train_ratio = config.get("train_ratio", config.get("train_fraction"))
     if val_ratio is None and test_ratio is None and train_ratio is None:
         return None
-    if train_ratio is None and val_ratio is not None and test_ratio is not None:
+    if val_ratio is None:
+        if test_ratio is None:
+            raise ValueError("validation_strategy requires test_ratio when validation_ratio is omitted.")
+        if train_ratio is None and test_ratio is not None:
+            train_ratio = round(1.0 - float(test_ratio), 12)
+        return _coerce_split_sizes([train_ratio, test_ratio])
+    if test_ratio is None:
+        raise ValueError("validation_strategy requires test_ratio when validation_ratio is provided.")
+    if train_ratio is None and test_ratio is not None:
         train_ratio = round(1.0 - float(val_ratio) - float(test_ratio), 12)
     return _coerce_split_sizes([train_ratio, val_ratio, test_ratio])
 

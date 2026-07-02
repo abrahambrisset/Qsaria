@@ -17,6 +17,7 @@ from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
@@ -219,6 +220,74 @@ def test_training_orchestration_applies_profile_with_backend_specific_limits():
 
     assert policy["training_profile"] == "heavy_validation"
     assert policy["extra_args"]["n_estimators"] == 9999
+
+
+def _fake_lightgbm_module():
+    calls = {"early_stopping": 0, "fit_kwargs": None}
+
+    class FakeRegressor:
+        def __init__(self, **params):
+            self.params = params
+
+        def fit(self, X_train, y_train, **kwargs):
+            calls["fit_kwargs"] = kwargs
+            return self
+
+    def early_stopping(*, stopping_rounds, verbose):
+        calls["early_stopping"] += 1
+        return {"callback": "early_stopping", "stopping_rounds": stopping_rounds, "verbose": verbose}
+
+    def log_evaluation(*, period):
+        return {"callback": "log_evaluation", "period": period}
+
+    return (
+        SimpleNamespace(
+            LGBMRegressor=FakeRegressor,
+            early_stopping=early_stopping,
+            log_evaluation=log_evaluation,
+        ),
+        calls,
+    )
+
+
+def test_lightgbm_fit_without_validation_disables_early_stopping(monkeypatch):
+    backend = LightGBMBackend()
+    fake_lgb, calls = _fake_lightgbm_module()
+    monkeypatch.setattr(backend, "_import_lightgbm", lambda: fake_lgb)
+
+    backend._fit_regressor(
+        model_params={"n_estimators": 10},
+        X_train=pd.DataFrame({"x": [1.0, 2.0]}),
+        y_train=pd.Series([1.0, 2.0]),
+        X_val=None,
+        y_val=None,
+        categorical_feature_columns=[],
+        early_stopping_rounds=50,
+    )
+
+    assert calls["early_stopping"] == 0
+    assert "eval_set" not in calls["fit_kwargs"]
+    assert calls["fit_kwargs"]["callbacks"] == [{"callback": "log_evaluation", "period": 0}]
+
+
+def test_lightgbm_fit_with_validation_uses_early_stopping(monkeypatch):
+    backend = LightGBMBackend()
+    fake_lgb, calls = _fake_lightgbm_module()
+    monkeypatch.setattr(backend, "_import_lightgbm", lambda: fake_lgb)
+
+    backend._fit_regressor(
+        model_params={"n_estimators": 10},
+        X_train=pd.DataFrame({"x": [1.0, 2.0]}),
+        y_train=pd.Series([1.0, 2.0]),
+        X_val=pd.DataFrame({"x": [3.0]}),
+        y_val=pd.Series([3.0]),
+        categorical_feature_columns=[],
+        early_stopping_rounds=50,
+    )
+
+    assert calls["early_stopping"] == 1
+    assert "eval_set" in calls["fit_kwargs"]
+    assert calls["fit_kwargs"]["callbacks"][1]["callback"] == "early_stopping"
 
 
 def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path):

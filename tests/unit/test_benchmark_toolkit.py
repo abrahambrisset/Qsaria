@@ -100,6 +100,11 @@ def test_resolve_benchmark_protocol_contract():
 
 def test_expand_candidates_includes_heavy_tabicl_all():
     toolkit = BenchmarkToolkit()
+    toolkit.training_toolkit.backend_mapping = lambda: {
+        "chemprop": SimpleNamespace(is_available=lambda: False),
+        "lightgbm": SimpleNamespace(is_available=lambda: False),
+        "tabicl": SimpleNamespace(is_available=lambda: True),
+    }
     candidates = toolkit._expand_candidates(
         task_type="regression",
         target_columns=["Y"],
@@ -119,6 +124,11 @@ def test_expand_candidates_includes_heavy_tabicl_all():
 
 def test_expand_candidates_includes_heavy_lightgbm_all():
     toolkit = BenchmarkToolkit()
+    toolkit.training_toolkit.backend_mapping = lambda: {
+        "chemprop": SimpleNamespace(is_available=lambda: False),
+        "lightgbm": SimpleNamespace(is_available=lambda: True),
+        "tabicl": SimpleNamespace(is_available=lambda: False),
+    }
     candidates = toolkit._expand_candidates(
         task_type="regression",
         target_columns=["Y"],

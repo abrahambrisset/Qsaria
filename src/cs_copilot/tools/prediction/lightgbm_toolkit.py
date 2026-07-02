@@ -11,9 +11,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.storage.client import S3
 from cs_copilot.tools.activity_cliffs import (
     build_activity_cliff_loop_comparison_plots,
     prepare_activity_cliff_context,
@@ -34,6 +36,7 @@ from .qsar_training_policy import (
     summarize_training_durations,
 )
 from .qsar_validation_strategy import resolve_validation_strategy
+from .qsar_splitters import build_qsar_split_payload
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
@@ -52,6 +55,7 @@ from .training_orchestration import (
     collect_training_bundle_files,
     materialize_primary_protocol_artifacts,
     normalize_json_list_argument,
+    strip_unnamed_columns,
     write_training_summary,
 )
 
@@ -258,6 +262,8 @@ class LightGBMToolkit(Toolkit):
             "effective_train_count": result.get("effective_train_count"),
             "validation_count": result.get("validation_count"),
             "test_count": result.get("test_count"),
+            "has_validation_split": result.get("has_validation_split"),
+            "split_metadata": result.get("split_metadata"),
             "removed_from_train_count": result.get("removed_from_train_count", 0),
             "requested_exclusion_count": result.get("requested_exclusion_count", 0),
             "duration_seconds": result.get("duration_seconds"),
@@ -776,6 +782,8 @@ class LightGBMToolkit(Toolkit):
             smiles_columns=["smiles"],
             target_columns=list(normalized_target_columns),
         )
+        with S3.open(train_csv, "r") as fh:
+            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         total_started_at = project_now()
@@ -791,13 +799,24 @@ class LightGBMToolkit(Toolkit):
                 )
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
+                split_payload = split_run.get("split_payload")
+                split_sizes_for_run = split_run.get("split_sizes") or normalized_split_sizes
+                if split_payload is None:
+                    split_payload = build_qsar_split_payload(
+                        df=split_source_df,
+                        split_type=split_run["backend_split_type"],
+                        split_sizes=split_sizes_for_run,
+                        random_state=int(split_run["seed"]),
+                        smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                        feature_columns=normalized_feature_columns,
+                    )
                 run_args = {
                     **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "feature_columns": normalized_feature_columns,
                     "categorical_feature_columns": normalized_categorical_feature_columns,
-                    "split_sizes": split_run.get("split_sizes") or normalized_split_sizes,
+                    "split_sizes": split_sizes_for_run,
                     "split_type": split_run["backend_split_type"],
-                    "split_payload": split_run.get("split_payload"),
+                    "split_payload": split_payload,
                     "random_state": split_run["seed"],
                     "validation_protocol": protocol_policy["protocol"],
                 }
@@ -838,7 +857,7 @@ class LightGBMToolkit(Toolkit):
                 single_result["strategy_label"] = label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
-                single_result["split_payload"] = split_run.get("split_payload") or single_result.get("split_payload")
+                single_result["split_payload"] = split_payload or single_result.get("split_payload")
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()

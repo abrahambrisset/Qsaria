@@ -42,7 +42,7 @@ from .session_state import (
     get_prediction_state,
     write_active_training_marker,
 )
-from .tabular_splitters import build_tabular_split_payload
+from .qsar_splitters import build_qsar_split_payload
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
@@ -545,8 +545,8 @@ class ChempropToolkit(Toolkit):
             argument_name="split_sizes",
             coerce_numbers=True,
         )
-        if not normalized_split_sizes or len(normalized_split_sizes) != 3:
-            raise ValueError("Chemprop split_sizes must contain train, validation, and test fractions.")
+        if not normalized_split_sizes or len(normalized_split_sizes) not in (2, 3):
+            raise ValueError("Chemprop split_sizes must contain [train, test] or [train, validation, test].")
         if split_type == "kmeans":
             raise ValueError(
                 "Chemprop graph training does not support cluster holdout without an explicit "
@@ -557,7 +557,7 @@ class ChempropToolkit(Toolkit):
             for column in dataset.columns
             if column not in set((task.smiles_columns or []) + (task.target_columns or []))
         ]
-        return build_tabular_split_payload(
+        return build_qsar_split_payload(
             df=dataset,
             split_type=split_type,
             split_sizes=normalized_split_sizes,

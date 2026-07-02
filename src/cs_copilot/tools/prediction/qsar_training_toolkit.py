@@ -239,6 +239,8 @@ def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str
             "effective_train_count",
             "validation_count",
             "test_count",
+            "has_validation_split",
+            "split_metadata",
             "duration_seconds",
         )
         if split_result.get(key) is not None

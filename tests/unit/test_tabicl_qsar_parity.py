@@ -12,6 +12,7 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
+from cs_copilot.tools.prediction.qsar_splitters import build_qsar_split_payload
 from cs_copilot.tools.prediction.tabular_splitters import build_tabular_split_payload
 
 
@@ -205,6 +206,34 @@ def test_random_split_payload_is_deterministic():
     assert set(split["train"]).isdisjoint(split["val"])
     assert set(split["train"]).isdisjoint(split["test"])
     assert set(split["val"]).isdisjoint(split["test"])
+
+
+def test_random_train_test_split_payload_has_no_hidden_validation():
+    df = _sample_tabular_df()
+
+    first = build_qsar_split_payload(
+        df=df,
+        split_type="random",
+        split_sizes=[0.8, 0.2],
+        random_state=42,
+        smiles_column="smiles",
+        feature_columns=["desc_a", "desc_b", "desc_c"],
+    )
+    second = build_qsar_split_payload(
+        df=df,
+        split_type="random",
+        split_sizes=[0.8, 0.2],
+        random_state=42,
+        smiles_column="smiles",
+        feature_columns=["desc_a", "desc_b", "desc_c"],
+    )
+
+    assert first == second
+    split = first[0]
+    assert "val" not in split
+    assert sorted(split["train"] + split["test"]) == list(range(len(df)))
+    assert split["metadata"]["has_validation"] is False
+    assert split["metadata"]["split_hash"] == second[0]["metadata"]["split_hash"]
 
 
 def test_scaffold_and_kmeans_splits_are_deterministic_and_complete():

@@ -63,7 +63,17 @@ do
   [ -e "$path" ] && rsync -a "$path" "$BUILD_CONTEXT/"
 done
 
-for path in public src examples; do
+# Apple container builds run CPU-only on local Macs. Avoid resolving the NGC
+# arm64 PyTorch base, which requires NVIDIA registry credentials and is only
+# useful for DGX-style GPU hosts.
+if [ -f "$BUILD_CONTEXT/Dockerfile" ]; then
+  sed -i.bak 's|^FROM nvcr.io/nvidia/pytorch:25.11-py3 AS base-arm64$|FROM python:3.11-slim AS base-arm64|' "$BUILD_CONTEXT/Dockerfile"
+  perl -0pi.bak -e 's|COPY prisma ./prisma\n|COPY prisma ./prisma\nCOPY schema.prisma ./prisma/schema.prisma\n|' "$BUILD_CONTEXT/Dockerfile"
+  perl -0pi.bak -e 's|npx prisma generate|ls -la /app/prisma && test -f /app/prisma/schema.prisma && ./node_modules/.bin/prisma generate --schema=/app/prisma/schema.prisma|' "$BUILD_CONTEXT/Dockerfile"
+  rm -f "$BUILD_CONTEXT/Dockerfile.bak"
+fi
+
+for path in public src examples skills workflow_catalog; do
   if [ -d "$path" ]; then
     mkdir -p "$BUILD_CONTEXT/$path"
     rsync -a "$path/" "$BUILD_CONTEXT/$path/"
@@ -73,6 +83,7 @@ done
 if [ -d prisma ]; then
   mkdir -p "$BUILD_CONTEXT/prisma"
   rsync -a prisma/ "$BUILD_CONTEXT/prisma/"
+  [ -f prisma/schema.prisma ] && rsync -a prisma/schema.prisma "$BUILD_CONTEXT/schema.prisma"
 fi
 
 container system start >/dev/null 2>&1 || true

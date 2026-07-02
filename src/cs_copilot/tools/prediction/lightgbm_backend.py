@@ -31,7 +31,7 @@ from .backend import (
 )
 from .backend_capabilities import enrich_backend_environment
 from .qsar_training_policy import describe_compute_environment, project_now
-from .tabular_splitters import build_tabular_split_payload
+from .qsar_splitters import build_qsar_split_payload
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +43,16 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
-    if len(split_sizes) != 3:
-        raise InvalidPredictionInputError("split_sizes must contain exactly 3 values: train, val, test.")
+    if len(split_sizes) not in (2, 3):
+        raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
     normalized = [float(value) / total for value in split_sizes]
-    if any(value <= 0 for value in normalized):
-        raise InvalidPredictionInputError("split_sizes must all be positive.")
+    if normalized[0] <= 0 or normalized[-1] <= 0 or any(value < 0 for value in normalized):
+        raise InvalidPredictionInputError("split_sizes require positive train/test and non-negative validation.")
+    if len(normalized) == 3 and normalized[1] == 0:
+        return [normalized[0], normalized[2]]
     return normalized
 
 
@@ -361,22 +363,22 @@ class LightGBMBackend(PredictionBackend):
         model_params: Dict[str, Any],
         X_train: pd.DataFrame,
         y_train: pd.Series,
-        X_val: pd.DataFrame,
-        y_val: pd.Series,
+        X_val: Optional[pd.DataFrame],
+        y_val: Optional[pd.Series],
         categorical_feature_columns: List[str],
         early_stopping_rounds: int,
     ):
         lgb = self._import_lightgbm()
         regressor = lgb.LGBMRegressor(**model_params)
         callbacks: List[Any] = [lgb.log_evaluation(period=0)]
-        if early_stopping_rounds > 0:
+        has_validation = X_val is not None and y_val is not None
+        if has_validation and early_stopping_rounds > 0:
             callbacks.append(
                 lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False)
             )
-        fit_kwargs: Dict[str, Any] = {
-            "eval_set": [(X_val, y_val)],
-            "callbacks": callbacks,
-        }
+        fit_kwargs: Dict[str, Any] = {"callbacks": callbacks}
+        if has_validation:
+            fit_kwargs["eval_set"] = [(X_val, y_val)]
         if categorical_feature_columns:
             fit_kwargs["categorical_feature"] = list(categorical_feature_columns)
         regressor.fit(X_train, y_train, **fit_kwargs)
@@ -505,7 +507,7 @@ class LightGBMBackend(PredictionBackend):
         encoded_working[feature_columns] = encoded_features
 
         if not split_payload:
-            split_payload = build_tabular_split_payload(
+            split_payload = build_qsar_split_payload(
                 df=encoded_working,
                 split_type=split_type,
                 split_sizes=split_sizes,
@@ -516,7 +518,7 @@ class LightGBMBackend(PredictionBackend):
 
         if not split_payload or "train" not in split_payload[0]:
             raise InvalidPredictionInputError(
-                "LightGBM split payload must provide non-empty train/val/test indices."
+                "LightGBM split payload must provide non-empty train/test indices."
             )
 
         split_indices = split_payload[0]
@@ -525,9 +527,9 @@ class LightGBMBackend(PredictionBackend):
         excluded_from_train = sorted(set(source_train_idx) & excluded_train_indices)
         val_idx = split_indices.get("val") or []
         test_idx = split_indices.get("test") or []
-        if not train_idx or not val_idx or not test_idx:
+        if not train_idx or not test_idx:
             raise InvalidPredictionInputError(
-                "LightGBM split payload must provide non-empty train/val/test indices."
+                "LightGBM split payload must provide non-empty train/test indices."
             )
         effective_split_payload = [
             {
@@ -539,8 +541,12 @@ class LightGBMBackend(PredictionBackend):
 
         X_train = encoded_working.iloc[train_idx][feature_columns].copy()
         y_train = pd.to_numeric(encoded_working.iloc[train_idx][target_column], errors="coerce").astype(float)
-        X_val = encoded_working.iloc[val_idx][feature_columns].copy()
-        y_val = pd.to_numeric(encoded_working.iloc[val_idx][target_column], errors="coerce").astype(float)
+        X_val = encoded_working.iloc[val_idx][feature_columns].copy() if val_idx else None
+        y_val = (
+            pd.to_numeric(encoded_working.iloc[val_idx][target_column], errors="coerce").astype(float)
+            if val_idx
+            else None
+        )
         X_test = encoded_working.iloc[test_idx][feature_columns].copy()
         y_test = pd.to_numeric(encoded_working.iloc[test_idx][target_column], errors="coerce").astype(float)
 
@@ -660,6 +666,8 @@ class LightGBMBackend(PredictionBackend):
             "target_column": target_column,
             "split_payload": split_payload,
             "effective_split_payload": effective_split_payload,
+            "split_metadata": split_indices.get("metadata") or {},
+            "has_validation_split": bool(val_idx),
             "excluded_train_indices": sorted(excluded_train_indices),
             "source_train_count": int(len(source_train_idx)),
             "effective_train_count": int(len(train_idx)),
@@ -677,6 +685,7 @@ class LightGBMBackend(PredictionBackend):
                 "device_type": actual_device_type,
                 "requested_device_type": requested_device_type,
                 "early_stopping_rounds": early_stopping_rounds,
+                "early_stopping_used": bool(val_idx and early_stopping_rounds > 0),
             },
             "started_at": started_at.isoformat(),
             "completed_at": completed_at.isoformat(),

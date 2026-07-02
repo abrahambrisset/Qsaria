@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pandas as pd
@@ -42,6 +43,29 @@ def test_chemprop_adapter_writes_minimal_aligned_inputs(tmp_path):
     assert list(clean.columns) == ["smiles", "pEC50"]
     assert result["split_counts"] == {"train": 1, "val": 1, "test": 1}
     assert result["row_count"] == 3
+
+
+def test_chemprop_adapter_accepts_train_test_without_hidden_validation(tmp_path):
+    source = tmp_path / "curated.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "pEC50": [5.1, 6.2, 4.9],
+        }
+    ).to_csv(source, index=False)
+
+    result = materialize_chemprop_inputs(
+        source_csv=str(source),
+        output_dir=tmp_path / "chemprop_inputs",
+        task=_task(),
+        split_payload=[{"train": [0, 1], "test": [2]}],
+        split_label="random_80_20",
+        seed=1,
+    )
+
+    splits = json.loads((tmp_path / "chemprop_inputs" / "chemprop_splits.json").read_text())
+    assert splits == [{"train": [0, 1], "test": [2]}]
+    assert result["split_counts"] == {"train": 2, "test": 1}
 
 
 def test_chemprop_adapter_rejects_bad_training_inputs(tmp_path):

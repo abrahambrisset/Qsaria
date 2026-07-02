@@ -32,12 +32,15 @@ def _file_fingerprint(path: Path) -> Dict[str, Any]:
 
 def _validate_split_payload(split_payload: Sequence[Mapping[str, Sequence[int]]], row_count: int) -> Dict[str, int]:
     if not split_payload or not isinstance(split_payload[0], Mapping):
-        raise InvalidPredictionInputError("Chemprop split payload must contain one train/val/test mapping.")
+        raise InvalidPredictionInputError("Chemprop split payload must contain one train/test or train/val/test mapping.")
     split_map = split_payload[0]
     counts: Dict[str, int] = {}
     seen: set[int] = set()
-    for split_name in ("train", "val", "test"):
+    split_names = ("train", "val", "test") if ("val" in split_map or "validation" in split_map) else ("train", "test")
+    for split_name in split_names:
         raw_indices = split_map.get(split_name)
+        if split_name == "val" and raw_indices is None:
+            raw_indices = split_map.get("validation")
         if raw_indices is None:
             raise InvalidPredictionInputError(f"Chemprop split payload is missing `{split_name}` indices.")
         indices = [int(index) for index in raw_indices]
@@ -104,10 +107,18 @@ def materialize_chemprop_inputs(
             clean[column] = numeric
 
     split_counts = _validate_split_payload(split_payload, len(clean))
+    split_map = split_payload[0]
     canonical_split = [
         {
-            split_name: [int(index) for index in split_payload[0][split_name]]
-            for split_name in ("train", "val", "test")
+            split_name: [
+                int(index)
+                for index in (
+                    split_map.get(split_name)
+                    if split_name != "val" or split_map.get(split_name) is not None
+                    else split_map.get("validation")
+                )
+            ]
+            for split_name in split_counts
         }
     ]
 

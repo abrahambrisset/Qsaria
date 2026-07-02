@@ -34,7 +34,7 @@ from .backend import (
 )
 from .backend_capabilities import enrich_backend_environment
 from .qsar_training_policy import project_now
-from .tabular_splitters import build_tabular_split_payload
+from .qsar_splitters import build_qsar_split_payload
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +72,16 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
-    if len(split_sizes) != 3:
-        raise InvalidPredictionInputError("split_sizes must contain exactly 3 values: train, val, test.")
+    if len(split_sizes) not in (2, 3):
+        raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
     normalized = [float(value) / total for value in split_sizes]
-    if any(value <= 0 for value in normalized):
-        raise InvalidPredictionInputError("split_sizes must all be positive.")
+    if normalized[0] <= 0 or normalized[-1] <= 0 or any(value < 0 for value in normalized):
+        raise InvalidPredictionInputError("split_sizes require positive train/test and non-negative validation.")
+    if len(normalized) == 3 and normalized[1] == 0:
+        return [normalized[0], normalized[2]]
     return normalized
 
 
@@ -389,7 +391,7 @@ class TabICLBackend(PredictionBackend):
             raise InvalidPredictionInputError("TabICL V1 requires at least 10 rows after target cleanup.")
 
         if split_payload is None:
-            split_payload = build_tabular_split_payload(
+            split_payload = build_qsar_split_payload(
                 df=working,
                 split_type=split_type,
                 split_sizes=split_sizes,
@@ -399,15 +401,15 @@ class TabICLBackend(PredictionBackend):
             )
         if not isinstance(split_payload, list) or not split_payload or not isinstance(split_payload[0], dict):
             raise InvalidPredictionInputError(
-                "TabICL split_payload must be a non-empty list with train/val/test index mappings."
+                "TabICL split_payload must be a non-empty list with train/test index mappings."
             )
 
         split_map = split_payload[0]
         train_indices = [int(idx) for idx in (split_map.get("train") or [])]
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
-        if not train_indices or not val_indices or not test_indices:
-            raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/val/test indices.")
+        if not train_indices or not test_indices:
+            raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/test indices.")
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
         test_df = working.iloc[test_indices].reset_index(drop=True)
@@ -583,6 +585,8 @@ class TabICLBackend(PredictionBackend):
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
+            "split_metadata": split_map.get("metadata") or {},
+            "has_validation_split": bool(val_indices),
             "random_state": random_state,
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
@@ -627,6 +631,8 @@ class TabICLBackend(PredictionBackend):
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,
+            "split_metadata": split_map.get("metadata") or {},
+            "has_validation_split": bool(val_indices),
             "train_rows": train_rows,
             "val_rows": val_rows,
             "test_rows": test_rows,

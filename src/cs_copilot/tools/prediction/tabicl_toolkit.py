@@ -14,9 +14,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.storage.client import S3
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .backend import PredictionExecutionError, PredictionTaskSpec
@@ -32,6 +34,7 @@ from .qsar_training_policy import (
     summarize_training_durations,
 )
 from .qsar_validation_strategy import resolve_validation_strategy
+from .qsar_splitters import build_qsar_split_payload
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
@@ -46,6 +49,7 @@ from .training_orchestration import (
     build_training_plots_if_possible,
     materialize_primary_protocol_artifacts,
     normalize_json_list_argument,
+    strip_unnamed_columns,
     write_training_summary,
 )
 from .tabicl_backend import (
@@ -410,6 +414,12 @@ class TabICLToolkit(Toolkit):
             smiles_columns=["smiles"],
             target_columns=list(target_columns),
         )
+        target_column = target_columns[0]
+        with S3.open(train_csv, "r") as fh:
+            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        if target_column in split_source_df.columns:
+            split_source_df[target_column] = pd.to_numeric(split_source_df[target_column], errors="coerce")
+            split_source_df = split_source_df.dropna(subset=[target_column]).reset_index(drop=True)
 
         marker_path = active_marker_path or (root_output_path / ".training_in_progress")
         active_run_record = self._build_active_run_record(
@@ -439,12 +449,23 @@ class TabICLToolkit(Toolkit):
                 )
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
+                split_payload = split_run.get("split_payload")
+                split_sizes_for_run = split_run.get("split_sizes") or split_sizes
+                if split_payload is None:
+                    split_payload = build_qsar_split_payload(
+                        df=split_source_df,
+                        split_type=split_run["backend_split_type"],
+                        split_sizes=split_sizes_for_run,
+                        random_state=int(split_run["seed"]),
+                        smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                        feature_columns=feature_columns,
+                    )
                 run_args = {
                     **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "feature_columns": feature_columns,
-                    "split_sizes": split_run.get("split_sizes") or split_sizes,
+                    "split_sizes": split_sizes_for_run,
                     "split_type": split_run["backend_split_type"],
-                    "split_payload": split_run.get("split_payload"),
+                    "split_payload": split_payload,
                     "random_state": split_run["seed"],
                     "validation_protocol": protocol_policy["protocol"],
                     "heartbeat_path": str(marker_path),
@@ -491,7 +512,7 @@ class TabICLToolkit(Toolkit):
                 single_result["strategy_label"] = label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
-                single_result["split_payload"] = split_run.get("split_payload") or single_result.get("split_payload")
+                single_result["split_payload"] = split_payload or single_result.get("split_payload")
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
