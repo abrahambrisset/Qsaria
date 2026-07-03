@@ -285,6 +285,120 @@ def build_training_plots_if_possible(
         return {}
 
 
+def _prediction_columns(frame: pd.DataFrame, target_column: str) -> tuple[Optional[str], Optional[str]]:
+    true_candidates = ["y_true", f"{target_column}_true", target_column]
+    pred_candidates = ["y_pred", f"{target_column}_prediction", "prediction", target_column]
+    true_col = next((column for column in true_candidates if column in frame.columns), None)
+    pred_col = next((column for column in pred_candidates if column in frame.columns and column != true_col), None)
+    return true_col, pred_col
+
+
+def build_cross_validation_artifacts(
+    *,
+    split_results: List[Dict[str, Any]],
+    output_dir: Path,
+    target_column: str,
+) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    for split_result in split_results:
+        predictions_path = split_result.get("test_predictions_path")
+        split_payload = split_result.get("split_payload") or []
+        if not predictions_path or not split_payload:
+            continue
+        path = Path(str(predictions_path)).expanduser()
+        if not path.exists():
+            continue
+        frame = pd.read_csv(path)
+        true_col, pred_col = _prediction_columns(frame, target_column)
+        test_indices = [int(idx) for idx in ((split_payload[0] or {}).get("test") or [])]
+        if not true_col or not pred_col or len(frame) != len(test_indices):
+            continue
+        metadata = (split_payload[0] or {}).get("metadata") or {}
+        repeat_index = int(metadata.get("cv_repeat") or split_result.get("repeat_index") or 1)
+        fold_index = int(metadata.get("cv_fold") or split_result.get("fold_index") or 1)
+        for row_index, source_row_index in enumerate(test_indices):
+            y_true = pd.to_numeric(pd.Series([frame.iloc[row_index][true_col]]), errors="coerce").iloc[0]
+            y_pred = pd.to_numeric(pd.Series([frame.iloc[row_index][pred_col]]), errors="coerce").iloc[0]
+            if pd.isna(y_true) or pd.isna(y_pred):
+                continue
+            residual = float(y_true) - float(y_pred)
+            rows.append(
+                {
+                    "repeat": repeat_index,
+                    "fold": fold_index,
+                    "fold_label": split_result.get("strategy_label"),
+                    "source_row_index": source_row_index,
+                    "y_true": float(y_true),
+                    "y_pred": float(y_pred),
+                    "residual": residual,
+                    "absolute_error": abs(residual),
+                }
+            )
+
+    if not rows:
+        return {}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fold_predictions = pd.DataFrame(rows)
+    fold_predictions_path = output_dir / "cv_fold_predictions.csv"
+    fold_predictions.to_csv(fold_predictions_path, index=False)
+
+    repeat_rows: List[Dict[str, Any]] = []
+    for repeat, group in fold_predictions.groupby("repeat", sort=True):
+        metrics = compute_regression_metrics(
+            group["y_true"],
+            group["y_pred"],
+            target_column=target_column,
+        )
+        metrics["repeat"] = int(repeat)
+        metrics["q2"] = metrics.get("r2")
+        repeat_rows.append(metrics)
+    repeat_metrics = pd.DataFrame(repeat_rows)
+    repeat_metrics_path = output_dir / "cv_repeat_metrics.csv"
+    repeat_metrics.to_csv(repeat_metrics_path, index=False)
+
+    metric_names = ("q2", "r2", "rmse", "mae", "mse", "rae", "spearman", "kendall")
+    summary: Dict[str, Any] = {
+        "n_repeats": int(fold_predictions["repeat"].nunique()),
+        "n_folds": int(fold_predictions["fold"].nunique()),
+        "n_predictions": int(len(fold_predictions)),
+        "metrics": {},
+    }
+    for metric_name in metric_names:
+        values = pd.to_numeric(repeat_metrics.get(metric_name), errors="coerce").dropna()
+        if values.empty:
+            continue
+        summary["metrics"][metric_name] = {
+            "mean": float(values.mean()),
+            "std": float(values.std(ddof=0)),
+            "min": float(values.min()),
+            "max": float(values.max()),
+        }
+
+    mean_rmse = (summary["metrics"].get("rmse") or {}).get("mean")
+    molecule_stats = (
+        fold_predictions.groupby("source_row_index", as_index=False)
+        .agg(y_true=("y_true", "first"), avg_pred=("y_pred", "mean"))
+    )
+    molecule_stats["abs_error"] = (molecule_stats["avg_pred"] - molecule_stats["y_true"]).abs()
+    if mean_rmse is not None:
+        molecule_stats["outlier"] = molecule_stats["abs_error"] >= (2.0 * float(mean_rmse))
+        summary["outlier_threshold_abs_error"] = 2.0 * float(mean_rmse)
+        summary["outlier_count"] = int(molecule_stats["outlier"].sum())
+    molecule_stats_path = output_dir / "cv_molecule_stats.csv"
+    molecule_stats.to_csv(molecule_stats_path, index=False)
+
+    summary_path = output_dir / "cv_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    return {
+        "fold_predictions_path": str(fold_predictions_path),
+        "repeat_metrics_path": str(repeat_metrics_path),
+        "summary_path": str(summary_path),
+        "molecule_stats_path": str(molecule_stats_path),
+        "summary": summary,
+    }
+
+
 def write_training_summary(summary_path: Path, payload: Mapping[str, Any]) -> Path:
     """Write a canonical JSON training summary."""
     summary_path.parent.mkdir(parents=True, exist_ok=True)

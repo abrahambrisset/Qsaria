@@ -12,7 +12,10 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
-from cs_copilot.tools.prediction.qsar_splitters import build_qsar_split_payload
+from cs_copilot.tools.prediction.qsar_splitters import (
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from cs_copilot.tools.prediction.tabular_splitters import build_tabular_split_payload
 
 
@@ -234,6 +237,37 @@ def test_random_train_test_split_payload_has_no_hidden_validation():
     assert sorted(split["train"] + split["test"]) == list(range(len(df)))
     assert split["metadata"]["has_validation"] is False
     assert split["metadata"]["split_hash"] == second[0]["metadata"]["split_hash"]
+
+
+def test_repeated_kfold_split_payloads_cover_each_repeat_once_without_validation():
+    df = _sample_tabular_df()
+
+    payloads = build_repeated_kfold_split_payloads(
+        df=df,
+        n_splits=4,
+        n_repeats=2,
+        random_state=42,
+    )
+    repeat_test_indices = {1: [], 2: []}
+
+    assert len(payloads) == 8
+    for label, payload in payloads.items():
+        split = payload[0]
+        metadata = split["metadata"]
+        assert label == f"cv_repeat_{metadata['cv_repeat']}_fold_{metadata['cv_fold']}"
+        assert "val" not in split
+        assert sorted(split["train"] + split["test"]) == list(range(len(df)))
+        assert set(split["train"]).isdisjoint(split["test"])
+        repeat_test_indices[int(metadata["cv_repeat"])].extend(split["test"])
+
+    assert sorted(repeat_test_indices[1]) == list(range(len(df)))
+    assert sorted(repeat_test_indices[2]) == list(range(len(df)))
+    assert payloads == build_repeated_kfold_split_payloads(
+        df=df,
+        n_splits=4,
+        n_repeats=2,
+        random_state=42,
+    )
 
 
 def test_scaffold_and_kmeans_splits_are_deterministic_and_complete():

@@ -159,6 +159,7 @@ class LightGBMBackend(PredictionBackend):
             "zero_as_missing",
             "use_missing",
             "deterministic",
+            "final_refit",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -473,6 +474,7 @@ class LightGBMBackend(PredictionBackend):
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
+        final_refit = bool(sanitized_args.get("final_refit", False))
         target_column = task.target_columns[0]
         started_at = project_now()
 
@@ -506,7 +508,19 @@ class LightGBMBackend(PredictionBackend):
         encoded_working = working.copy()
         encoded_working[feature_columns] = encoded_features
 
-        if not split_payload:
+        if final_refit:
+            split_payload = [
+                {
+                    "train": list(range(len(encoded_working))),
+                    "metadata": {
+                        "split_type": "final_refit",
+                        "split_counts": {"train": int(len(encoded_working))},
+                        "has_validation": False,
+                        "final_refit": True,
+                    },
+                }
+            ]
+        elif not split_payload:
             split_payload = build_qsar_split_payload(
                 df=encoded_working,
                 split_type=split_type,
@@ -527,7 +541,7 @@ class LightGBMBackend(PredictionBackend):
         excluded_from_train = sorted(set(source_train_idx) & excluded_train_indices)
         val_idx = split_indices.get("val") or []
         test_idx = split_indices.get("test") or []
-        if not train_idx or not test_idx:
+        if not train_idx or (not final_refit and not test_idx):
             raise InvalidPredictionInputError(
                 "LightGBM split payload must provide non-empty train/test indices."
             )
@@ -547,8 +561,12 @@ class LightGBMBackend(PredictionBackend):
             if val_idx
             else None
         )
-        X_test = encoded_working.iloc[test_idx][feature_columns].copy()
-        y_test = pd.to_numeric(encoded_working.iloc[test_idx][target_column], errors="coerce").astype(float)
+        X_test = encoded_working.iloc[test_idx][feature_columns].copy() if test_idx else None
+        y_test = (
+            pd.to_numeric(encoded_working.iloc[test_idx][target_column], errors="coerce").astype(float)
+            if test_idx
+            else None
+        )
 
         requested_device_type, auto_device, compute_env = self._resolve_device_type(sanitized_args)
         gpu_fallback_to_cpu = bool(sanitized_args.get("gpu_fallback_to_cpu", True))
@@ -592,12 +610,14 @@ class LightGBMBackend(PredictionBackend):
             else:
                 raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
-        try:
-            y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
-        except Exception as exc:
-            raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
+        y_pred = None
+        if X_test is not None and y_test is not None:
+            try:
+                y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
+            except Exception as exc:
+                raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
-        metrics = {"test": self._compute_regression_metrics(y_test, y_pred)}
+        metrics = {"test": self._compute_regression_metrics(y_test, y_pred)} if y_pred is not None else {}
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
@@ -622,16 +642,19 @@ class LightGBMBackend(PredictionBackend):
             pickle.dump(model_payload, fh)
 
         test_predictions_path = model_dir / "test_predictions.csv"
-        predictions_df = pd.DataFrame(
-            {
-                target_column: y_pred.reset_index(drop=True),
-                "prediction": y_pred.reset_index(drop=True),
-                "y_true": y_test.reset_index(drop=True),
-                "y_pred": y_pred.reset_index(drop=True),
-            }
-        )
-        with S3.open(str(test_predictions_path), "w") as fh:
-            predictions_df.to_csv(fh, index=False)
+        if y_pred is not None and y_test is not None:
+            predictions_df = pd.DataFrame(
+                {
+                    target_column: y_pred.reset_index(drop=True),
+                    "prediction": y_pred.reset_index(drop=True),
+                    "y_true": y_test.reset_index(drop=True),
+                    "y_pred": y_pred.reset_index(drop=True),
+                }
+            )
+            with S3.open(str(test_predictions_path), "w") as fh:
+                predictions_df.to_csv(fh, index=False)
+        else:
+            test_predictions_path = None
 
         splits_path = output_path / "splits.json"
         splits_path.write_text(json.dumps(effective_split_payload, indent=2) + "\n")
@@ -655,7 +678,7 @@ class LightGBMBackend(PredictionBackend):
         return {
             "model_path": str(model_path),
             "best_model_path": str(model_path),
-            "test_predictions_path": str(test_predictions_path),
+            "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "splits_path": str(splits_path),
             "config_path": str(config_path),
             "metrics": metrics,
@@ -673,6 +696,7 @@ class LightGBMBackend(PredictionBackend):
             "effective_train_count": int(len(train_idx)),
             "validation_count": int(len(val_idx)),
             "test_count": int(len(test_idx)),
+            "final_refit": final_refit,
             "removed_from_train_count": int(len(excluded_from_train)),
             "requested_exclusion_count": int(len(excluded_train_indices)),
             "activity_cliff_variant_id": activity_cliff_variant_id,

@@ -36,7 +36,11 @@ from .qsar_training_policy import (
     summarize_training_durations,
 )
 from .qsar_validation_strategy import resolve_validation_strategy
-from .qsar_splitters import build_qsar_split_payload
+from .qsar_splitters import (
+    build_full_train_split_payload,
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
@@ -51,6 +55,7 @@ from .session_state import (
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
+    build_cross_validation_artifacts,
     build_training_plots_if_possible,
     collect_training_bundle_files,
     materialize_primary_protocol_artifacts,
@@ -784,6 +789,16 @@ class LightGBMToolkit(Toolkit):
         )
         with S3.open(train_csv, "r") as fh:
             split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
+        cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
+        if is_cv_protocol:
+            cv_strategy = protocol_policy.get("validation_strategy") or {}
+            cv_split_payloads = build_repeated_kfold_split_payloads(
+                df=split_source_df,
+                n_splits=int(cv_strategy.get("n_folds") or cv_strategy.get("n_splits") or 5),
+                n_repeats=int(cv_strategy.get("n_repeats") or 1),
+                random_state=int(cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0),
+            )
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         total_started_at = project_now()
@@ -802,14 +817,17 @@ class LightGBMToolkit(Toolkit):
                 split_payload = split_run.get("split_payload")
                 split_sizes_for_run = split_run.get("split_sizes") or normalized_split_sizes
                 if split_payload is None:
-                    split_payload = build_qsar_split_payload(
-                        df=split_source_df,
-                        split_type=split_run["backend_split_type"],
-                        split_sizes=split_sizes_for_run,
-                        random_state=int(split_run["seed"]),
-                        smiles_column="smiles" if "smiles" in split_source_df.columns else None,
-                        feature_columns=normalized_feature_columns,
-                    )
+                    if label in cv_split_payloads:
+                        split_payload = cv_split_payloads[label]
+                    else:
+                        split_payload = build_qsar_split_payload(
+                            df=split_source_df,
+                            split_type=split_run["backend_split_type"],
+                            split_sizes=split_sizes_for_run,
+                            random_state=int(split_run["seed"]),
+                            smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                            feature_columns=normalized_feature_columns,
+                        )
                 run_args = {
                     **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
                     "feature_columns": normalized_feature_columns,
@@ -820,6 +838,8 @@ class LightGBMToolkit(Toolkit):
                     "random_state": split_run["seed"],
                     "validation_protocol": protocol_policy["protocol"],
                 }
+                if is_cv_protocol:
+                    run_args["early_stopping_rounds"] = 0
 
                 active_run_record["current_split_label"] = label
                 active_run_record["current_split_index"] = run_index
@@ -838,7 +858,10 @@ class LightGBMToolkit(Toolkit):
                     extra_args=run_args,
                 )
 
-                if "scaffold" in label:
+                if label.startswith("cv_repeat_"):
+                    strategy = label
+                    strategy_family = "cross_validation"
+                elif "scaffold" in label:
                     strategy = "scaffold"
                     strategy_family = "scaffold"
                 elif "kmeans" in label or "cluster" in label:
@@ -857,6 +880,10 @@ class LightGBMToolkit(Toolkit):
                 single_result["strategy_label"] = label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
+                single_result["repeat_index"] = split_run.get("repeat_index")
+                single_result["fold_index"] = split_run.get("fold_index")
+                single_result["n_folds"] = split_run.get("n_folds")
+                single_result["n_repeats"] = split_run.get("n_repeats")
                 single_result["split_payload"] = split_payload or single_result.get("split_payload")
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
@@ -880,7 +907,7 @@ class LightGBMToolkit(Toolkit):
             raise ValueError("LightGBM validation protocol did not produce a primary run.")
 
         activity_cliff_variant_split_results: Dict[str, List[Dict[str, Any]]] = {}
-        if activity_cliffs.get("mode") == "with_feedback_loops":
+        if not is_cv_protocol and activity_cliffs.get("mode") == "with_feedback_loops":
             trainable_variants = [
                 variant
                 for variant in (activity_cliffs.get("variants") or [])
@@ -976,11 +1003,58 @@ class LightGBMToolkit(Toolkit):
             except Exception:
                 logger.warning("Could not update activity-cliff summary with loop training results.")
 
+        cross_validation_artifacts: Dict[str, Any] = {}
+        final_refit_run: Optional[Dict[str, Any]] = None
+        if is_cv_protocol and target_column:
+            cross_validation_artifacts = build_cross_validation_artifacts(
+                split_results=split_results,
+                output_dir=root_output_path / "cross_validation",
+                target_column=target_column,
+            )
+        if is_cv_protocol and protocol_policy.get("final_refit", True):
+            final_output_dir = root_output_path / "final_refit"
+            final_output_dir.mkdir(parents=True, exist_ok=True)
+            final_started_at = project_now()
+            final_split_payload = build_full_train_split_payload(df=split_source_df)
+            final_args = {
+                **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                "feature_columns": normalized_feature_columns,
+                "categorical_feature_columns": normalized_categorical_feature_columns,
+                "split_type": "final_refit",
+                "split_payload": final_split_payload,
+                "random_state": protocol_policy["seed_policy"]["model_seed"],
+                "validation_protocol": protocol_policy["protocol"],
+                "final_refit": True,
+                "early_stopping_rounds": 0,
+            }
+            final_refit_run = self.backend.train_model(
+                train_csv=train_csv,
+                output_dir=str(final_output_dir),
+                task=task,
+                extra_args=final_args,
+            )
+            final_completed_at = project_now()
+            final_refit_run["strategy"] = "final_refit"
+            final_refit_run["strategy_family"] = "final_refit"
+            final_refit_run["strategy_label"] = "final_refit"
+            final_refit_run["backend_split_type"] = "final_refit"
+            final_refit_run["seed"] = protocol_policy["seed_policy"].get("model_seed")
+            final_refit_run["split_payload"] = final_split_payload
+            final_refit_run["validation_protocol"] = protocol_policy["protocol"]
+            final_refit_run["output_dir"] = str(final_output_dir)
+            final_refit_run["started_at"] = final_refit_run.get("started_at") or final_started_at.isoformat()
+            final_refit_run["completed_at"] = final_refit_run.get("completed_at") or final_completed_at.isoformat()
+            final_refit_run["duration_seconds"] = final_refit_run.get("duration_seconds") or round(
+                (final_completed_at - final_started_at).total_seconds(),
+                3,
+            )
+
         final_split_results = split_results
-        final_primary_run = primary_run
+        final_primary_run = final_refit_run or primary_run
         recommended_variant = activity_cliffs.get("recommended_variant")
         if (
-            recommended_variant
+            not is_cv_protocol
+            and recommended_variant
             and recommended_variant != "baseline_loop_0"
             and recommended_variant in activity_cliff_variant_split_results
         ):
@@ -1042,6 +1116,14 @@ class LightGBMToolkit(Toolkit):
         result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
         result["split_results"] = final_split_results
         result["baseline_split_results"] = split_results
+        result["cross_validation"] = cross_validation_artifacts
+        result["cv_artifacts"] = cross_validation_artifacts
+        result["final_refit_result"] = final_refit_run
+        result["catalog_model_policy"] = (
+            "final_refit_only_fold_models_are_artifacts"
+            if is_cv_protocol
+            else result.get("catalog_model_policy")
+        )
         result["validation_assessment"] = validation_assessment
         result["compute_environment"] = training_policy["compute_environment"]
         result["training_profile"] = training_policy["training_profile"]

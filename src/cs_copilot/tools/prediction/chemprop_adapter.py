@@ -36,7 +36,10 @@ def _validate_split_payload(split_payload: Sequence[Mapping[str, Sequence[int]]]
     split_map = split_payload[0]
     counts: Dict[str, int] = {}
     seen: set[int] = set()
-    split_names = ("train", "val", "test") if ("val" in split_map or "validation" in split_map) else ("train", "test")
+    if "test" not in split_map and "val" not in split_map and "validation" not in split_map:
+        split_names = ("train",)
+    else:
+        split_names = ("train", "val", "test") if ("val" in split_map or "validation" in split_map) else ("train", "test")
     for split_name in split_names:
         raw_indices = split_map.get(split_name)
         if split_name == "val" and raw_indices is None:

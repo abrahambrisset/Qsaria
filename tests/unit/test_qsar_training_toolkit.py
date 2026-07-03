@@ -78,6 +78,49 @@ def _fake_repeated_train_result(tmp_path: Path, *, backend_name: str, representa
     return result
 
 
+def _fake_cv_train_result(tmp_path: Path, *, backend_name: str, representation_name: str):
+    final_model_path = tmp_path / backend_name / representation_name / "final_refit" / "model_0" / "best.pkl"
+    final_model_path.parent.mkdir(parents=True, exist_ok=True)
+    final_model_path.write_text("fake-final-model")
+    split_results = []
+    for fold in range(1, 4):
+        model_path = tmp_path / backend_name / representation_name / f"cv_repeat_1_fold_{fold}" / "model_0" / "best.pkl"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text("fake-fold-model")
+        split_results.append(
+            {
+                "model_path": str(model_path),
+                "best_model_path": str(model_path),
+                "metrics": {"test": {"r2": 0.5 + fold / 100}},
+                "strategy_label": f"cv_repeat_1_fold_{fold}",
+                "strategy": f"cv_repeat_1_fold_{fold}",
+                "strategy_family": "cross_validation",
+                "seed": 123,
+            }
+        )
+    return {
+        "model_path": str(final_model_path),
+        "best_model_path": str(final_model_path),
+        "backend_name": backend_name,
+        "representation_name": representation_name,
+        "validation_protocol": "cross_validation",
+        "validation_strategy_type": "cross_validation",
+        "split_results": split_results,
+        "cross_validation": {
+            "summary": {
+                "n_repeats": 1,
+                "n_folds": 3,
+                "metrics": {"rmse": {"mean": 0.7, "std": 0.01}},
+            }
+        },
+        "final_refit_result": {
+            "model_path": str(final_model_path),
+            "best_model_path": str(final_model_path),
+            "strategy_label": "final_refit",
+        },
+    }
+
+
 def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     called_representations: list[str] = []
@@ -238,6 +281,52 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
         "random_repeat_3",
     ]
     assert len({item["registry_payload"]["model_id"] for item in result["candidate_registry_payloads"]}) == 3
+
+
+def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+
+    monkeypatch.setattr(
+        toolkit,
+        "_prepare_tabular_training_dataset",
+        lambda **kwargs: {
+            "train_csv": str(tmp_path / "morgan_count.csv"),
+            "feature_columns": ["feature_a", "feature_b"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        toolkit.lightgbm_toolkit,
+        "train_lightgbm_model",
+        lambda **kwargs: _fake_cv_train_result(
+            tmp_path,
+            backend_name="lightgbm",
+            representation_name="morgan_count_only",
+        ),
+    )
+
+    result = toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        backend_name="lightgbm",
+        task_type="regression",
+        output_dir=str(tmp_path / "out"),
+        target_columns=["Y"],
+        validation_strategy={
+            "type": "cross_validation",
+            "split_family": "random",
+            "n_folds": 3,
+            "n_repeats": 1,
+        },
+        representation_name="morgan_count_only",
+    )
+
+    assert "candidate_registry_payloads" not in result
+    assert "persistence_plan" not in result
+    assert result["recommended_registry_payload"]["model_path"].endswith("final_refit/model_0/best.pkl")
+    assert "cross_validation" in result["recommended_registry_payload"]["known_metrics"]
 
 
 def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):

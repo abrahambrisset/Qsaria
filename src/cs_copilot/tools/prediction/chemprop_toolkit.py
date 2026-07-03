@@ -19,6 +19,7 @@ import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.storage.client import S3
 from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
 
 from .backend import PredictionTaskSpec
@@ -42,10 +43,15 @@ from .session_state import (
     get_prediction_state,
     write_active_training_marker,
 )
-from .qsar_splitters import build_qsar_split_payload
+from .qsar_splitters import (
+    build_full_train_split_payload,
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
+    build_cross_validation_artifacts,
     build_training_plots_if_possible,
     collect_training_bundle_files,
     compute_regression_metrics,
@@ -506,6 +512,7 @@ class ChempropToolkit(Toolkit):
                 "validation_protocol",
                 "validation_strategy",
                 "seed_policy",
+                "final_refit",
             }
         }
         backend_train_args["splits_file"] = chemprop_input["chemprop_splits_file"]
@@ -523,6 +530,16 @@ class ChempropToolkit(Toolkit):
                 splits_file=chemprop_input["chemprop_splits_file"],
             )
         )
+        artifacts = self._resolve_chemprop_run_artifacts(run_output_dir)
+        if artifacts.get("best_model_path"):
+            result.setdefault("best_model_path", str(artifacts["best_model_path"]))
+            result.setdefault("model_path", str(artifacts["best_model_path"]))
+        if artifacts.get("config_path") and artifacts["config_path"].exists():
+            result.setdefault("config_path", str(artifacts["config_path"]))
+        if artifacts.get("splits_path") and artifacts["splits_path"].exists():
+            result.setdefault("splits_path", str(artifacts["splits_path"]))
+        if artifacts.get("test_predictions_path"):
+            result.setdefault("test_predictions_path", str(artifacts["test_predictions_path"]))
         result["chemprop_input"] = chemprop_input
         result["chemprop_training_input_csv"] = chemprop_input["chemprop_training_input_csv"]
         result["chemprop_splits_file"] = chemprop_input["chemprop_splits_file"]
@@ -938,6 +955,18 @@ class ChempropToolkit(Toolkit):
         total_started_at = project_now()
 
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
+        with S3.open(train_csv, "r") as fh:
+            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
+        cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
+        if is_cv_protocol:
+            cv_strategy = protocol_policy.get("validation_strategy") or {}
+            cv_split_payloads = build_repeated_kfold_split_payloads(
+                df=split_source_df,
+                n_splits=int(cv_strategy.get("n_folds") or cv_strategy.get("n_splits") or 5),
+                n_repeats=int(cv_strategy.get("n_repeats") or 1),
+                random_state=int(cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0),
+            )
 
         try:
             for split_run in protocol_policy["split_runs"]:
@@ -954,13 +983,16 @@ class ChempropToolkit(Toolkit):
                     or training_policy["extra_args"].get("split_sizes"),
                     "data_seed": split_run["seed"],
                 }
-                split_payload = self._build_split_payload(
-                    train_csv=train_csv,
-                    task=task,
-                    split_type=split_run["backend_split_type"],
-                    split_sizes=run_args["split_sizes"],
-                    seed=int(split_run["seed"]),
-                )
+                if label in cv_split_payloads:
+                    split_payload = cv_split_payloads[label]
+                else:
+                    split_payload = self._build_split_payload(
+                        train_csv=train_csv,
+                        task=task,
+                        split_type=split_run["backend_split_type"],
+                        split_sizes=run_args["split_sizes"],
+                        seed=int(split_run["seed"]),
+                    )
 
                 active_run_record["current_split_label"] = label
                 if prediction_state is not None:
@@ -978,7 +1010,10 @@ class ChempropToolkit(Toolkit):
                     split_label=label,
                     seed=split_run["seed"],
                 )
-                if "scaffold" in label:
+                if label.startswith("cv_repeat_"):
+                    strategy_name = label
+                    strategy_family = "cross_validation"
+                elif "scaffold" in label:
                     strategy_name = "scaffold"
                     strategy_family = "scaffold"
                 elif "kmeans" in label or "cluster" in label:
@@ -998,6 +1033,10 @@ class ChempropToolkit(Toolkit):
                 single_result["strategy_label"] = label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
+                single_result["repeat_index"] = split_run.get("repeat_index")
+                single_result["fold_index"] = split_run.get("fold_index")
+                single_result["n_folds"] = split_run.get("n_folds")
+                single_result["n_repeats"] = split_run.get("n_repeats")
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["split_payload"] = split_payload
@@ -1009,6 +1048,46 @@ class ChempropToolkit(Toolkit):
 
             if primary_run is None or primary_output_dir is None:
                 raise ValueError("Training protocol did not produce a primary run.")
+
+            cross_validation_artifacts: Dict[str, Any] = {}
+            final_refit_run: Optional[Dict[str, Any]] = None
+            final_refit_output_dir: Optional[Path] = None
+            if is_cv_protocol and task.target_columns:
+                cross_validation_artifacts = build_cross_validation_artifacts(
+                    split_results=split_results,
+                    output_dir=root_output_path / "cross_validation",
+                    target_column=task.target_columns[0],
+                )
+            if is_cv_protocol and protocol_policy.get("final_refit", True):
+                final_refit_output_dir = root_output_path / "final_refit"
+                final_split_payload = build_full_train_split_payload(df=split_source_df)
+                final_args = {
+                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    "split_type": "final_refit",
+                    "split_sizes": [1.0],
+                    "data_seed": protocol_policy["seed_policy"]["model_seed"],
+                    "final_refit": True,
+                }
+                final_refit_run = self._train_single_run(
+                    train_csv=train_csv,
+                    task=task,
+                    output_dir=str(final_refit_output_dir),
+                    train_args=final_args,
+                    split_payload=final_split_payload,
+                    split_label="final_refit",
+                    seed=protocol_policy["seed_policy"].get("model_seed"),
+                )
+                final_refit_run["strategy"] = "final_refit"
+                final_refit_run["strategy_family"] = "final_refit"
+                final_refit_run["strategy_label"] = "final_refit"
+                final_refit_run["backend_split_type"] = "final_refit"
+                final_refit_run["seed"] = protocol_policy["seed_policy"].get("model_seed")
+                final_refit_run["output_dir"] = str(final_refit_output_dir)
+                final_refit_run["validation_protocol"] = protocol_policy["protocol"]
+                final_refit_run["split_payload"] = final_split_payload
+
+            final_primary_run = final_refit_run or primary_run
+            final_primary_output_dir = final_refit_output_dir or primary_output_dir
 
             if prediction_state is not None:
                 prediction_state["training_runs"].append(
@@ -1035,13 +1114,13 @@ class ChempropToolkit(Toolkit):
 
             root_artifacts = self._materialize_primary_protocol_artifacts(
                 root_output_dir=root_output_path,
-                primary_output_dir=primary_output_dir,
+                primary_output_dir=final_primary_output_dir,
             )
             validation_assessment = self._assess_protocol_results(split_results)
             ad_summary = self._build_applicability_domain(
                 train_csv=train_csv,
-                primary_run=primary_run,
-                primary_output_dir=primary_output_dir,
+                primary_run=final_primary_run,
+                primary_output_dir=final_primary_output_dir,
                 model_id_hint=Path(resolved_output_dir).name,
                 task=task,
             )
@@ -1050,13 +1129,13 @@ class ChempropToolkit(Toolkit):
             plot_artifacts = build_training_plots_if_possible(
                 train_csv=train_csv,
                 split_results=split_results,
-                primary_run=primary_run,
+                primary_run=final_primary_run,
                 root_artifacts=root_artifacts,
                 root_output_dir=root_output_path,
                 target_column=target_column,
             )
 
-            result = dict(primary_run)
+            result = dict(final_primary_run)
             result["backend_name"] = self.backend.backend_name
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
@@ -1070,6 +1149,14 @@ class ChempropToolkit(Toolkit):
             result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
             result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
             result["split_results"] = split_results
+            result["cross_validation"] = cross_validation_artifacts
+            result["cv_artifacts"] = cross_validation_artifacts
+            result["final_refit_result"] = final_refit_run
+            result["catalog_model_policy"] = (
+                "final_refit_only_fold_models_are_artifacts"
+                if is_cv_protocol
+                else result.get("catalog_model_policy")
+            )
             result["validation_assessment"] = validation_assessment
             result["compute_environment"] = training_policy["compute_environment"]
             result["training_profile"] = training_policy["training_profile"]

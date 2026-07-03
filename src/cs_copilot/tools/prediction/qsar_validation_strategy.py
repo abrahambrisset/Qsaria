@@ -31,6 +31,10 @@ class SplitRun:
     primary: bool = False
     split_family: str = "random"
     split_sizes: Optional[List[float]] = None
+    repeat_index: Optional[int] = None
+    fold_index: Optional[int] = None
+    n_folds: Optional[int] = None
+    n_repeats: Optional[int] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
@@ -296,7 +300,67 @@ def resolve_validation_strategy(
             },
         )
 
+    if strategy_type in {"cross_validation", "cv", "repeated_kfold", "repeated_cross_validation"}:
+        family = _infer_split_family(strategy)
+        if family != "random":
+            raise ValueError("cross_validation currently supports split_family='random' only.")
+        n_folds = _coerce_positive_int(
+            strategy.get("n_folds", strategy.get("folds", strategy.get("n_splits"))),
+            default=5,
+            name="n_folds",
+            minimum=2,
+        )
+        n_repeats = _coerce_positive_int(
+            strategy.get("n_repeats"),
+            default=1,
+            name="n_repeats",
+            minimum=1,
+        )
+        seed_payload = _seed_policy_for_custom_strategy(
+            strategy_name="cross_validation",
+            run_count=1,
+            seed_policy_mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+        )
+        seed = int((seed_payload.get("generated_split_seeds") or [seed_payload.get("model_seed") or 0])[0])
+        runs: List[SplitRun] = []
+        for repeat_index in range(1, n_repeats + 1):
+            for fold_index in range(1, n_folds + 1):
+                runs.append(
+                    SplitRun(
+                        label=f"cv_repeat_{repeat_index}_fold_{fold_index}",
+                        backend_split_type="cross_validation",
+                        seed=seed,
+                        primary=repeat_index == 1 and fold_index == 1,
+                        split_family="random",
+                        repeat_index=repeat_index,
+                        fold_index=fold_index,
+                        n_folds=n_folds,
+                        n_repeats=n_repeats,
+                    )
+                )
+        return _build_policy(
+            strategy_name="cross_validation",
+            strategy_type="cross_validation",
+            reason="Repeated random K-fold cross-validation strategy.",
+            split_runs=runs,
+            seed_policy=seed_payload,
+            selection_metric=selection_metric,
+            validation_strategy={
+                **strategy,
+                "type": "cross_validation",
+                "split_family": "random",
+                "n_folds": n_folds,
+                "n_repeats": n_repeats,
+                "seed": seed,
+                "final_refit": bool(strategy.get("final_refit", True)),
+            },
+            aggregation="out_of_fold_mean_std",
+            final_refit=bool(strategy.get("final_refit", True)),
+        )
+
     raise ValueError(
         "Unsupported validation_strategy.type. Expected one of "
-        "holdout, repeated_holdout."
+        "holdout, repeated_holdout, cross_validation."
     )

@@ -206,6 +206,53 @@ def test_repeated_holdout_accepts_holdout_ratio_alias():
     assert all(run["backend_split_type"] == "scaffold_balanced" for run in policy["split_runs"])
 
 
+def test_cross_validation_generates_requested_fold_runs():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={
+            "type": "cross_validation",
+            "split_family": "random",
+            "n_folds": 5,
+            "n_repeats": 1,
+            "seed": 17,
+        },
+        training_profile="heavy_validation",
+    )
+
+    assert policy["protocol"] == "cross_validation"
+    assert policy["validation_strategy_type"] == "cross_validation"
+    assert len(policy["split_runs"]) == 5
+    assert [run["label"] for run in policy["split_runs"]] == [
+        "cv_repeat_1_fold_1",
+        "cv_repeat_1_fold_2",
+        "cv_repeat_1_fold_3",
+        "cv_repeat_1_fold_4",
+        "cv_repeat_1_fold_5",
+    ]
+    assert all(run["backend_split_type"] == "cross_validation" for run in policy["split_runs"])
+    assert all(run["split_family"] == "random" for run in policy["split_runs"])
+    assert policy["final_refit"] is True
+
+
+def test_cross_validation_accepts_fold_aliases_and_repeats():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={
+            "method": "cv",
+            "folds": 5,
+            "n_repeats": 5,
+            "seed": 0,
+        },
+        training_profile="heavy_validation",
+    )
+
+    assert len(policy["split_runs"]) == 25
+    assert policy["split_runs"][0]["label"] == "cv_repeat_1_fold_1"
+    assert policy["split_runs"][-1]["label"] == "cv_repeat_5_fold_5"
+    assert policy["validation_strategy"]["n_folds"] == 5
+    assert policy["validation_strategy"]["n_repeats"] == 5
+
+
 def test_unknown_validation_strategy_is_rejected():
     try:
         resolve_validation_strategy(
@@ -214,6 +261,6 @@ def test_unknown_validation_strategy_is_rejected():
             training_profile="heavy_validation",
         )
     except ValueError as exc:
-        assert "holdout, repeated_holdout" in str(exc)
+        assert "holdout, repeated_holdout, cross_validation" in str(exc)
     else:
         raise AssertionError("unsupported validation strategy should be rejected")

@@ -14,7 +14,7 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.cluster import KMeans
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RepeatedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from .backend import InvalidPredictionInputError
@@ -256,3 +256,74 @@ def build_qsar_split_payload(
 
 def build_tabular_split_payload(**kwargs: Any) -> List[Dict[str, Any]]:
     return build_qsar_split_payload(**kwargs)
+
+
+def build_repeated_kfold_split_payloads(
+    *,
+    df: pd.DataFrame,
+    n_splits: int,
+    n_repeats: int,
+    random_state: int,
+) -> Dict[str, List[Dict[str, Any]]]:
+    n_rows = len(df)
+    if n_rows < n_splits:
+        raise InvalidPredictionInputError("Cross-validation requires at least n_splits rows.")
+    if n_splits < 2:
+        raise InvalidPredictionInputError("Cross-validation requires n_splits >= 2.")
+    if n_repeats < 1:
+        raise InvalidPredictionInputError("Cross-validation requires n_repeats >= 1.")
+
+    payloads: Dict[str, List[Dict[str, Any]]] = {}
+    splitter = RepeatedKFold(
+        n_splits=int(n_splits),
+        n_repeats=int(n_repeats),
+        random_state=int(random_state),
+    )
+    for run_index, (train_idx, test_idx) in enumerate(splitter.split(np.arange(n_rows)), start=1):
+        repeat_index = ((run_index - 1) // n_splits) + 1
+        fold_index = ((run_index - 1) % n_splits) + 1
+        label = f"cv_repeat_{repeat_index}_fold_{fold_index}"
+        assigned = {
+            "train": [int(idx) for idx in train_idx.tolist()],
+            "test": [int(idx) for idx in test_idx.tolist()],
+        }
+        payload = _finalize_split(
+            assigned,
+            split_type="cross_validation",
+            split_sizes=[len(train_idx) / n_rows, len(test_idx) / n_rows],
+            random_state=random_state,
+        )
+        payload[0]["metadata"].update(
+            {
+                "cv_repeat": repeat_index,
+                "cv_fold": fold_index,
+                "cv_run_index": run_index,
+                "n_splits": int(n_splits),
+                "n_repeats": int(n_repeats),
+            }
+        )
+        payloads[label] = payload
+    return payloads
+
+
+def build_full_train_split_payload(*, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    n_rows = len(df)
+    if n_rows < 1:
+        raise InvalidPredictionInputError("Final refit requires at least one row.")
+    train_indices = list(range(n_rows))
+    split_hash = hashlib.sha256(
+        json.dumps({"train": train_indices}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return [
+        {
+            "train": train_indices,
+            "metadata": {
+                "split_type": "final_refit",
+                "split_sizes": [1.0],
+                "split_counts": {"train": int(n_rows)},
+                "has_validation": False,
+                "split_hash": split_hash,
+                "final_refit": True,
+            },
+        }
+    ]

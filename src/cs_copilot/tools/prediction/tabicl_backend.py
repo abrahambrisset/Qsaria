@@ -191,6 +191,7 @@ class TabICLBackend(PredictionBackend):
             "heartbeat_label",
             "heartbeat_run_index",
             "heartbeat_total_runs",
+            "final_refit",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -374,6 +375,7 @@ class TabICLBackend(PredictionBackend):
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
+        final_refit = bool(sanitized_args.get("final_refit", False))
         started_at = project_now()
 
         with S3.open(train_csv, "r") as fh:
@@ -390,7 +392,19 @@ class TabICLBackend(PredictionBackend):
         if len(working) < 10:
             raise InvalidPredictionInputError("TabICL V1 requires at least 10 rows after target cleanup.")
 
-        if split_payload is None:
+        if final_refit:
+            split_payload = [
+                {
+                    "train": list(range(len(working))),
+                    "metadata": {
+                        "split_type": "final_refit",
+                        "split_counts": {"train": int(len(working))},
+                        "has_validation": False,
+                        "final_refit": True,
+                    },
+                }
+            ]
+        elif split_payload is None:
             split_payload = build_qsar_split_payload(
                 df=working,
                 split_type=split_type,
@@ -408,7 +422,7 @@ class TabICLBackend(PredictionBackend):
         train_indices = [int(idx) for idx in (split_map.get("train") or [])]
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
-        if not train_indices or not test_indices:
+        if not train_indices or (not final_refit and not test_indices):
             raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/test indices.")
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
@@ -416,8 +430,8 @@ class TabICLBackend(PredictionBackend):
 
         X_train = train_df[feature_columns].copy()
         y_train = train_df[target_column].astype(float).copy()
-        X_test = test_df[feature_columns].copy()
-        y_test = test_df[target_column].astype(float).copy()
+        X_test = test_df[feature_columns].copy() if not test_df.empty else None
+        y_test = test_df[target_column].astype(float).copy() if not test_df.empty else None
 
         TabICLRegressor = self._import_tabicl_regressor()
         model_path_arg = str(checkpoint_cfg["checkpoint_path"])
@@ -515,7 +529,11 @@ class TabICLBackend(PredictionBackend):
             heartbeat_thread.start()
         try:
             estimator.fit(X_train, y_train)
-            y_pred = pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
+            y_pred = (
+                pd.Series(estimator.predict(X_test), index=X_test.index, dtype=float)
+                if X_test is not None
+                else None
+            )
         except Exception as exc:
             raise PredictionExecutionError(f"TabICL training failed: {exc}") from exc
         finally:
@@ -549,24 +567,28 @@ class TabICLBackend(PredictionBackend):
             with model_artifact_path.open("wb") as fh:
                 pickle.dump(estimator, fh)
 
-        predictions_df = pd.DataFrame(
-            {
-                **(
-                    {column: test_df[column].reset_index(drop=True) for column in ("Drug_ID", "smiles") if column in test_df.columns}
-                ),
-                f"{target_column}_true": y_test.reset_index(drop=True),
-                target_column: y_pred.reset_index(drop=True),
-                "y_true": y_test.reset_index(drop=True),
-                "y_pred": y_pred.reset_index(drop=True),
-            }
-        )
-        with S3.open(str(test_predictions_path), "w") as fh:
-            predictions_df.to_csv(fh, index=False)
-
-        metrics = self._compute_regression_metrics(
-            predictions_df["y_true"].astype(float),
-            predictions_df["y_pred"].astype(float),
-        )
+        if y_pred is not None and y_test is not None:
+            predictions_df = pd.DataFrame(
+                {
+                    **(
+                        {column: test_df[column].reset_index(drop=True) for column in ("Drug_ID", "smiles") if column in test_df.columns}
+                    ),
+                    f"{target_column}_true": y_test.reset_index(drop=True),
+                    target_column: y_pred.reset_index(drop=True),
+                    "y_true": y_test.reset_index(drop=True),
+                    "y_pred": y_pred.reset_index(drop=True),
+                }
+            )
+            with S3.open(str(test_predictions_path), "w") as fh:
+                predictions_df.to_csv(fh, index=False)
+            metrics = self._compute_regression_metrics(
+                predictions_df["y_true"].astype(float),
+                predictions_df["y_pred"].astype(float),
+            )
+        else:
+            predictions_df = None
+            test_predictions_path = None
+            metrics = {}
 
         train_rows = int(len(train_df))
         val_rows = int(len(val_df))
@@ -593,7 +615,7 @@ class TabICLBackend(PredictionBackend):
             "checkpoint_present_after_run": checkpoint_path.exists(),
             "metrics": {"test": metrics},
             "model_artifact_path": str(model_artifact_path),
-            "test_predictions_path": str(test_predictions_path),
+            "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "config_path": str(config_path),
             "splits_path": str(splits_path),
             "output_dir": str(output_path),
@@ -636,7 +658,7 @@ class TabICLBackend(PredictionBackend):
             "train_rows": train_rows,
             "val_rows": val_rows,
             "test_rows": test_rows,
-            "test_predictions_path": str(test_predictions_path),
+            "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "summary_path": str(summary_path),
             "canonical_summary_path": str(canonical_summary_path),
             "config_path": str(config_path),
@@ -647,6 +669,7 @@ class TabICLBackend(PredictionBackend):
             "started_at": started_at.isoformat(),
             "completed_at": completed_at.isoformat(),
             "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
+            "final_refit": final_refit,
         }
 
         # TabICL can leave large CPU/GPU buffers resident in the Python process

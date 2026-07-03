@@ -68,6 +68,29 @@ def test_chemprop_adapter_accepts_train_test_without_hidden_validation(tmp_path)
     assert result["split_counts"] == {"train": 2, "test": 1}
 
 
+def test_chemprop_adapter_accepts_train_only_final_refit_payload(tmp_path):
+    source = tmp_path / "curated.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "pEC50": [5.1, 6.2, 4.9],
+        }
+    ).to_csv(source, index=False)
+
+    result = materialize_chemprop_inputs(
+        source_csv=str(source),
+        output_dir=tmp_path / "chemprop_inputs",
+        task=_task(),
+        split_payload=[{"train": [0, 1, 2]}],
+        split_label="final_refit",
+        seed=1,
+    )
+
+    splits = json.loads((tmp_path / "chemprop_inputs" / "chemprop_splits.json").read_text())
+    assert splits == [{"train": [0, 1, 2]}]
+    assert result["split_counts"] == {"train": 3}
+
+
 def test_chemprop_adapter_rejects_bad_training_inputs(tmp_path):
     source = tmp_path / "bad.csv"
     pd.DataFrame({"smiles": ["CCO", ""], "pEC50": [5.0, None]}).to_csv(source, index=False)

@@ -817,6 +817,13 @@ class QSARTrainingToolkit(Toolkit):
         summary_path = result.get("summary_path") or result.get("canonical_summary_path")
         feature_columns = list(result.get("feature_columns") or [])
         model_path = result.get("best_model_path") or result.get("model_path")
+        cross_validation = result.get("cross_validation") or {}
+        known_metrics = result.get("metrics") or {}
+        if cross_validation.get("summary"):
+            known_metrics = {
+                "cross_validation": cross_validation["summary"],
+                "final_refit": known_metrics,
+            }
         model_id = (
             f"{backend_name}_{result.get('representation_name') or 'model'}_"
             f"{_cache_key({'model_path': model_path, 'validation_protocol': result.get('validation_protocol')})}"
@@ -828,9 +835,11 @@ class QSARTrainingToolkit(Toolkit):
             "task_type": task_type,
             "smiles_columns": [smiles_column],
             "target_columns": list(target_columns),
-            "known_metrics": result.get("metrics") or {},
+            "known_metrics": known_metrics,
             "training_data_summary": {
                 "validation_protocol": result.get("validation_protocol"),
+                "validation_strategy_type": result.get("validation_strategy_type"),
+                "validation_strategy": result.get("validation_strategy"),
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),
@@ -838,6 +847,8 @@ class QSARTrainingToolkit(Toolkit):
                     result.get("feature_preparation") or {}
                 ),
                 "training_summary_path": summary_path,
+                "cross_validation": cross_validation,
+                "catalog_model_policy": result.get("catalog_model_policy"),
             },
             "inference_profile": {
                 "representation_name": result.get("representation_name"),
@@ -1280,7 +1291,7 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
-        if len(split_registry_payloads) > 1:
+        if len(split_registry_payloads) > 1 and result.get("validation_strategy_type") != "cross_validation":
             result["candidate_registry_payloads"] = split_registry_payloads
             result["recommended_registry_payloads"] = [
                 item["registry_payload"] for item in split_registry_payloads
