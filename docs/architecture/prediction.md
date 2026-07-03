@@ -17,7 +17,7 @@ Agents
   |-- PredictionInferenceToolkit
   |-- BenchmarkToolkit
   |-- EnsembleToolkit
-  |-- QSARReportingToolkit
+  |-- qsar_report_agent
         |
         |-- training_orchestration.py
         |-- backend_factory.py

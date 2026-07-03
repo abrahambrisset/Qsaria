@@ -28,7 +28,6 @@ from cs_copilot.tools import (
     PeptideDesignerToolkit,
     PointerPandasTools,
     PredictionInferenceToolkit,
-    QSARReportingToolkit,
     ModelRegistryToolkit,
     QSARTrainingToolkit,
     SessionMemoryToolkit,
@@ -853,7 +852,7 @@ class QSARReportFactory(BaseAgentFactory):
             Your role is to turn structured outputs from dataset curation, training,
             registry, and inference into the final user-facing response.
             """,
-            tools=[PointerPandasTools(), QSARReportingToolkit()],
+            tools=[PointerPandasTools()],
             instructions=QSAR_REPORT_INSTRUCTIONS,
             session_state={
                 "qsar_report": {

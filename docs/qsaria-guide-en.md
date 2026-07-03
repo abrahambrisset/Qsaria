@@ -64,7 +64,7 @@ QSAR agents
   |-- PredictionInferenceToolkit
   |-- BenchmarkToolkit
   |-- EnsembleToolkit
-  |-- QSARReportingToolkit
+  |-- qsar_report_agent
         |
         |-- MolecularFeatureToolkit
         |-- ActivityCliffToolkit
