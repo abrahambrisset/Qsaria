@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
+from cs_copilot.tools.prediction.qsar_training_toolkit import (
+    QSARTrainingToolkit,
+    _resolve_existing_training_csv,
+)
 
 
 def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name: str, validation_protocol: str):
@@ -64,6 +68,30 @@ def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monke
         )
         with S3.open("pxr_training_ready.csv", "r") as handle:
             assert handle.readline().strip() == "smiles,pEC50,Emax"
+    finally:
+        S3.set_session_prefix(original_prefix)
+
+
+def test_training_csv_resolution_falls_back_to_latest_curation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original_prefix = S3.current_prefix()
+    S3.set_session_prefix("sessions/path-resolution")
+    try:
+        with S3.open("curated/pxr_curated.csv", "w") as handle:
+            handle.write("smiles,pEC50\nCCO,4.2\n")
+        agent = SimpleNamespace(
+            session_state={
+                "qsar_curation": {
+                    "last_result": {
+                        "curated_dataset_path": "curated/pxr_curated.csv",
+                    }
+                }
+            }
+        )
+
+        resolved = _resolve_existing_training_csv("uploads/pxr_curated.csv", agent)
+
+        assert resolved == "curated/pxr_curated.csv"
     finally:
         S3.set_session_prefix(original_prefix)
 

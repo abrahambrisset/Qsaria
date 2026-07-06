@@ -103,6 +103,34 @@ def _storage_path_exists(path: Path | str) -> bool:
         return False
 
 
+def _resolve_existing_training_csv(train_csv: str, agent: Optional[Agent] = None) -> str:
+    """Return an existing training CSV, preferring explicit paths then latest curation."""
+    normalized = _agent_storage_path(train_csv)
+    if _storage_path_exists(normalized):
+        return normalized
+
+    if agent is not None:
+        latest = latest_curation_artifacts(agent)
+        candidates = [
+            latest.get("curated_dataset_path"),
+            (latest.get("artifacts") or {}).get("curated_dataset_csv"),
+        ]
+        for candidate in candidates:
+            if candidate and _storage_path_exists(str(candidate)):
+                return str(candidate)
+
+    discovered = discover_curation_artifacts_near_dataset(train_csv)
+    candidates = [
+        discovered.get("curated_dataset_path"),
+        (discovered.get("artifacts") or {}).get("curated_dataset_csv"),
+    ]
+    for candidate in candidates:
+        if candidate and _storage_path_exists(str(candidate)):
+            return str(candidate)
+
+    return normalized
+
+
 def _resolve_feature_n_jobs(raw: Optional[Any] = None) -> int:
     if raw is not None:
         try:
@@ -1152,6 +1180,7 @@ class QSARTrainingToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Train a QSAR model with the requested backend."""
+        train_csv = _resolve_existing_training_csv(train_csv, agent)
         normalized_backend = backend_name.strip().lower()
         normalized_target_columns = normalize_json_list_argument(
             target_columns,
