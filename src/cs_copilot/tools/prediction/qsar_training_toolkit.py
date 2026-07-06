@@ -843,6 +843,11 @@ class QSARTrainingToolkit(Toolkit):
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),
+                "task_kind": result.get("task_kind"),
+                "class_labels": result.get("class_labels") or [],
+                "class_count": result.get("class_count"),
+                "label_mapping": result.get("label_mapping") or {},
+                "positive_class_label": result.get("positive_class_label"),
                 "feature_preparation": _compact_feature_preparation(
                     result.get("feature_preparation") or {}
                 ),
@@ -852,6 +857,11 @@ class QSARTrainingToolkit(Toolkit):
             },
             "inference_profile": {
                 "representation_name": result.get("representation_name"),
+                "task_kind": result.get("task_kind"),
+                "class_labels": result.get("class_labels") or [],
+                "class_count": result.get("class_count"),
+                "label_mapping": result.get("label_mapping") or {},
+                "positive_class_label": result.get("positive_class_label"),
                 **_feature_columns_summary(feature_columns, source=summary_path),
             },
             "applicability_domain": result.get("applicability_domain") or {},

@@ -23,7 +23,6 @@ from cs_copilot.agents.teams import get_cs_copilot_agent_team, get_qsar_agent_te
 from cs_copilot.model_config import _is_retriable, arun_with_retry, load_model_from_config
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.formatting import smiles_to_png_bytes
-from cs_copilot.tools.reporting.qsar_latex import escape_latex
 from cs_copilot.utils.logging import compact_log_data, get_logger, setup_logging
 
 load_dotenv()
@@ -33,6 +32,24 @@ Path("data").mkdir(exist_ok=True)
 # Set up logger
 logger = get_logger(__name__)
 runtime_logger = get_logger("cs_copilot.runtime")
+
+
+def escape_latex(value: object) -> str:
+    """Escape a short text fragment for LaTeX output."""
+    text = "" if value is None else str(value)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    return "".join(replacements.get(char, char) for char in text)
 
 # ---------- User Management System ----------------------------------------- #
 # Simple in-memory user storage (in production, use a proper database)

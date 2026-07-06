@@ -30,8 +30,19 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .qsar_training_policy import describe_compute_environment, project_now
+from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
 from .qsar_splitters import build_qsar_split_payload
+from .training_orchestration import (
+    classification_task_kind,
+    compute_classification_metrics,
+    compute_regression_metrics,
+    decode_classification_labels,
+    encode_classification_labels,
+    is_classification_task,
+    is_multiclass_task,
+    json_safe_label,
+    resolve_class_labels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +171,8 @@ class LightGBMBackend(PredictionBackend):
             "use_missing",
             "deterministic",
             "final_refit",
+            "classification_threshold",
+            "class_labels",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
@@ -385,6 +398,61 @@ class LightGBMBackend(PredictionBackend):
         regressor.fit(X_train, y_train, **fit_kwargs)
         return regressor
 
+    def _fit_classifier(
+        self,
+        *,
+        model_params: Dict[str, Any],
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: Optional[pd.DataFrame],
+        y_val: Optional[pd.Series],
+        categorical_feature_columns: List[str],
+        early_stopping_rounds: int,
+    ):
+        lgb = self._import_lightgbm()
+        classifier = lgb.LGBMClassifier(**model_params)
+        callbacks: List[Any] = [lgb.log_evaluation(period=0)]
+        has_validation = X_val is not None and y_val is not None
+        if has_validation and early_stopping_rounds > 0:
+            callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False))
+        fit_kwargs: Dict[str, Any] = {"callbacks": callbacks}
+        if has_validation:
+            fit_kwargs["eval_set"] = [(X_val, y_val)]
+        if categorical_feature_columns:
+            fit_kwargs["categorical_feature"] = list(categorical_feature_columns)
+        classifier.fit(X_train, y_train, **fit_kwargs)
+        return classifier
+
+    def _classification_output_frame(
+        self,
+        *,
+        predictions: Any,
+        probabilities: Any,
+        class_labels: List[Any],
+        target_column: str,
+        source: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        predicted_labels = decode_classification_labels(predictions, class_labels)
+        output = pd.DataFrame(
+            {
+                "prediction": predicted_labels,
+                target_column: predicted_labels,
+                "prediction_class_code": pd.Series(predictions).astype(int),
+            }
+        )
+        if probabilities is not None:
+            proba = pd.DataFrame(probabilities)
+            for index, class_label in enumerate(class_labels[: proba.shape[1]]):
+                column = f"probability_{safe_slug(str(json_safe_label(class_label))) or f'class_{index}'}"
+                output[column] = pd.to_numeric(proba.iloc[:, index], errors="coerce")
+            if len(class_labels) == 2 and proba.shape[1] >= 2:
+                output["positive_probability"] = pd.to_numeric(proba.iloc[:, 1], errors="coerce")
+        if source is not None:
+            for column in ("smiles", "Drug_ID"):
+                if column in source.columns:
+                    output.insert(0, column, source[column].reset_index(drop=True))
+        return output
+
     def _is_gpu_runtime_unavailable(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "no opencl device found" in message or "opencl" in message
@@ -432,14 +500,28 @@ class LightGBMBackend(PredictionBackend):
             categorical_feature_columns,
             category_mappings=category_mappings,
         )
+        task_type = str((payload or {}).get("task_type") or model_record.task.task_type or "regression")
         try:
-            y_pred = payload["model"].predict(features)
+            if is_classification_task(task_type):
+                class_labels = list((payload or {}).get("class_labels") or [])
+                if not class_labels:
+                    raise InvalidPredictionInputError("LightGBM classification artifact is missing class_labels metadata.")
+                y_pred = payload["model"].predict(features)
+                probabilities = payload["model"].predict_proba(features) if hasattr(payload["model"], "predict_proba") else None
+                output = self._classification_output_frame(
+                    predictions=y_pred,
+                    probabilities=probabilities,
+                    class_labels=class_labels,
+                    target_column=target_columns[0] if len(target_columns) == 1 else "prediction",
+                    source=df,
+                )
+            else:
+                y_pred = payload["model"].predict(features)
+                output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
+                if len(target_columns) == 1:
+                    output[target_columns[0]] = output["prediction"]
         except Exception as exc:
             raise PredictionExecutionError(f"LightGBM prediction failed: {exc}") from exc
-
-        output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
-        if len(target_columns) == 1:
-            output[target_columns[0]] = output["prediction"]
         with S3.open(preds_path, "w") as fh:
             output.to_csv(fh, index=False)
 
@@ -459,8 +541,9 @@ class LightGBMBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._ensure_available()
-        if task.task_type != "regression":
-            raise InvalidPredictionInputError("LightGBM V1 only supports regression tasks.")
+        task_is_classification = is_classification_task(task.task_type)
+        if task.task_type != "regression" and not task_is_classification:
+            raise InvalidPredictionInputError("LightGBM V1 supports regression and classification tasks.")
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
@@ -554,29 +637,51 @@ class LightGBMBackend(PredictionBackend):
         ]
 
         X_train = encoded_working.iloc[train_idx][feature_columns].copy()
-        y_train = pd.to_numeric(encoded_working.iloc[train_idx][target_column], errors="coerce").astype(float)
+        class_labels: List[Any] = []
+        class_mapping: Dict[str, int] = {}
+        if task_is_classification:
+            class_labels = resolve_class_labels(encoded_working[target_column])
+            if len(class_labels) < 2:
+                raise InvalidPredictionInputError("LightGBM classification requires at least two target classes.")
+            if is_multiclass_task(task.task_type) is False and len(class_labels) > 2:
+                # Plain `classification` may still infer multiclass from data; keep it explicit in metadata.
+                pass
+            encoded_target, class_mapping = encode_classification_labels(encoded_working[target_column], class_labels)
+            if encoded_target.isna().any():
+                raise InvalidPredictionInputError("LightGBM classification target contains labels outside class_labels.")
+            y_all = encoded_target.astype(int)
+        else:
+            y_all = pd.to_numeric(encoded_working[target_column], errors="coerce").astype(float)
+
+        y_train = y_all.iloc[train_idx].copy()
         X_val = encoded_working.iloc[val_idx][feature_columns].copy() if val_idx else None
-        y_val = (
-            pd.to_numeric(encoded_working.iloc[val_idx][target_column], errors="coerce").astype(float)
-            if val_idx
-            else None
-        )
+        y_val = y_all.iloc[val_idx].copy() if val_idx else None
         X_test = encoded_working.iloc[test_idx][feature_columns].copy() if test_idx else None
-        y_test = (
-            pd.to_numeric(encoded_working.iloc[test_idx][target_column], errors="coerce").astype(float)
-            if test_idx
-            else None
-        )
+        y_test = y_all.iloc[test_idx].copy() if test_idx else None
+        if task_is_classification:
+            present_train_classes = set(int(value) for value in y_train.tolist())
+            missing_train_classes = sorted(set(range(len(class_labels))) - present_train_classes)
+            if missing_train_classes:
+                missing = [json_safe_label(class_labels[index]) for index in missing_train_classes]
+                raise InvalidPredictionInputError(
+                    f"LightGBM classification training split is missing target classes {missing}."
+                )
 
         requested_device_type, auto_device, compute_env = self._resolve_device_type(sanitized_args)
         gpu_fallback_to_cpu = bool(sanitized_args.get("gpu_fallback_to_cpu", True))
         early_stopping_rounds = int(sanitized_args.get("early_stopping_rounds", 50))
         model_params = self._default_model_params(sanitized_args)
+        if task_is_classification:
+            model_params["objective"] = "multiclass" if len(class_labels) > 2 else "binary"
+            model_params["metric"] = sanitized_args.get("metric") or ("multi_logloss" if len(class_labels) > 2 else "binary_logloss")
+            if len(class_labels) > 2:
+                model_params["num_class"] = len(class_labels)
         model_params["device_type"] = requested_device_type
         fit_error: Optional[Exception] = None
 
         try:
-            regressor = self._fit_regressor(
+            fit_fn = self._fit_classifier if task_is_classification else self._fit_regressor
+            regressor = fit_fn(
                 model_params=model_params,
                 X_train=X_train,
                 y_train=y_train,
@@ -597,7 +702,8 @@ class LightGBMBackend(PredictionBackend):
                     exc,
                 )
                 model_params["device_type"] = "cpu"
-                regressor = self._fit_regressor(
+                fit_fn = self._fit_classifier if task_is_classification else self._fit_regressor
+                regressor = fit_fn(
                     model_params=model_params,
                     X_train=X_train,
                     y_train=y_train,
@@ -611,13 +717,35 @@ class LightGBMBackend(PredictionBackend):
                 raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
         y_pred = None
+        y_proba = None
         if X_test is not None and y_test is not None:
             try:
-                y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
+                if task_is_classification:
+                    y_pred = pd.Series(regressor.predict(X_test), index=X_test.index)
+                    y_proba = regressor.predict_proba(X_test) if hasattr(regressor, "predict_proba") else None
+                else:
+                    y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
             except Exception as exc:
                 raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
-        metrics = {"test": self._compute_regression_metrics(y_test, y_pred)} if y_pred is not None else {}
+        if y_pred is not None and y_test is not None and task_is_classification:
+            proba_frame = pd.DataFrame(y_proba) if y_proba is not None else None
+            positive_scores = (
+                pd.Series(proba_frame.iloc[:, 1]).reset_index(drop=True)
+                if proba_frame is not None and len(class_labels) == 2 and proba_frame.shape[1] >= 2
+                else None
+            )
+            metrics = {
+                "test": compute_classification_metrics(
+                    decode_classification_labels(y_test.reset_index(drop=True), class_labels),
+                    decode_classification_labels(y_pred.reset_index(drop=True), class_labels),
+                    class_labels=class_labels,
+                    positive_scores=positive_scores,
+                    target_column=target_column,
+                )
+            }
+        else:
+            metrics = {"test": compute_regression_metrics(y_test, y_pred, target_column=target_column)} if y_pred is not None else {}
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
@@ -636,6 +764,16 @@ class LightGBMBackend(PredictionBackend):
             "trained_at": started_at.isoformat(),
             "actual_device_type": actual_device_type,
         }
+        if task_is_classification:
+            model_payload.update(
+                {
+                    "task_kind": classification_task_kind(task.task_type, len(class_labels)),
+                    "class_labels": [json_safe_label(label) for label in class_labels],
+                    "class_count": len(class_labels),
+                    "label_mapping": class_mapping,
+                    "positive_class_label": json_safe_label(class_labels[1]) if len(class_labels) == 2 else None,
+                }
+            )
 
         model_path = model_dir / "best.pkl"
         with model_path.open("wb") as fh:
@@ -643,14 +781,29 @@ class LightGBMBackend(PredictionBackend):
 
         test_predictions_path = model_dir / "test_predictions.csv"
         if y_pred is not None and y_test is not None:
-            predictions_df = pd.DataFrame(
-                {
-                    target_column: y_pred.reset_index(drop=True),
-                    "prediction": y_pred.reset_index(drop=True),
-                    "y_true": y_test.reset_index(drop=True),
-                    "y_pred": y_pred.reset_index(drop=True),
-                }
-            )
+            if task_is_classification:
+                predictions_df = self._classification_output_frame(
+                    predictions=y_pred.reset_index(drop=True),
+                    probabilities=y_proba,
+                    class_labels=class_labels,
+                    target_column=target_column,
+                    source=working.iloc[test_idx].reset_index(drop=True),
+                )
+                predictions_df[f"{target_column}_true"] = decode_classification_labels(
+                    y_test.reset_index(drop=True),
+                    class_labels,
+                )
+                predictions_df["y_true"] = predictions_df[f"{target_column}_true"]
+                predictions_df["y_pred"] = predictions_df["prediction"]
+            else:
+                predictions_df = pd.DataFrame(
+                    {
+                        target_column: y_pred.reset_index(drop=True),
+                        "prediction": y_pred.reset_index(drop=True),
+                        "y_true": y_test.reset_index(drop=True),
+                        "y_pred": y_pred.reset_index(drop=True),
+                    }
+                )
             with S3.open(str(test_predictions_path), "w") as fh:
                 predictions_df.to_csv(fh, index=False)
         else:
@@ -687,6 +840,11 @@ class LightGBMBackend(PredictionBackend):
             "categorical_feature_columns": categorical_feature_columns,
             "categorical_mappings": categorical_mappings,
             "target_column": target_column,
+            "task_kind": classification_task_kind(task.task_type, len(class_labels)) if task_is_classification else "regression",
+            "class_labels": [json_safe_label(label) for label in class_labels],
+            "class_count": len(class_labels) if task_is_classification else None,
+            "label_mapping": class_mapping,
+            "positive_class_label": json_safe_label(class_labels[1]) if task_is_classification and len(class_labels) == 2 else None,
             "split_payload": split_payload,
             "effective_split_payload": effective_split_payload,
             "split_metadata": split_indices.get("metadata") or {},

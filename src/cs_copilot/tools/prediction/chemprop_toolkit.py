@@ -54,7 +54,10 @@ from .training_orchestration import (
     build_cross_validation_artifacts,
     build_training_plots_if_possible,
     collect_training_bundle_files,
+    compute_classification_metrics,
     compute_regression_metrics,
+    decode_classification_labels,
+    is_classification_task,
     normalize_json_list_argument,
     strip_unnamed_columns,
     write_training_summary,
@@ -185,7 +188,8 @@ class ChempropToolkit(Toolkit):
         column but add explicit truth/prediction/error columns and aggregate
         replicate predictions when multiple replicate outputs are present.
         """
-        target_column = task.target_columns[0] if task.target_columns else None
+        target_columns = list(task.target_columns or [])
+        target_column = target_columns[0] if target_columns else None
         if not target_column:
             return {}
 
@@ -204,7 +208,8 @@ class ChempropToolkit(Toolkit):
             return {}
         test_indices = split_payload[0].get("test") or []
         actual = dataset.iloc[test_indices].reset_index(drop=True)
-        if target_column not in actual.columns:
+        missing_actual_targets = [column for column in target_columns if column not in actual.columns]
+        if missing_actual_targets:
             return {}
 
         smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
@@ -213,7 +218,7 @@ class ChempropToolkit(Toolkit):
             if smiles_column in actual.columns
             else None
         )
-        prediction_series: List[pd.Series] = []
+        prediction_series_by_target: Dict[str, List[pd.Series]] = {column: [] for column in target_columns}
         prediction_source_paths: List[str] = []
         included_replicate_indices: List[int] = []
         normalized_replicate_artifacts: List[Dict[str, Any]] = []
@@ -233,7 +238,8 @@ class ChempropToolkit(Toolkit):
                 continue
             predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
             exclusion_reason = None
-            if target_column not in predictions.columns:
+            missing_prediction_targets = [column for column in target_columns if column not in predictions.columns]
+            if missing_prediction_targets:
                 exclusion_reason = "missing_target_prediction_column"
             elif len(predictions) != len(actual):
                 exclusion_reason = "row_count_mismatch"
@@ -255,10 +261,12 @@ class ChempropToolkit(Toolkit):
             artifact["aligned_for_validation"] = True
             artifact["exclusion_reason"] = None
             normalized_replicate_artifacts.append(artifact)
-            prediction_series.append(pd.to_numeric(predictions[target_column], errors="coerce"))
+            for column in target_columns:
+                prediction_series_by_target[column].append(pd.to_numeric(predictions[column], errors="coerce"))
             prediction_source_paths.append(str(prediction_path))
             included_replicate_indices.append(replicate_index)
 
+        prediction_series = prediction_series_by_target.get(target_column) or []
         if not prediction_series:
             return {}
 
@@ -266,8 +274,9 @@ class ChempropToolkit(Toolkit):
         prediction_frame.columns = [
             f"prediction_replicate_{idx}" for idx in included_replicate_indices
         ]
-        y_true = pd.to_numeric(actual[target_column], errors="coerce")
-        y_pred = prediction_frame.mean(axis=1, skipna=True)
+        is_classification = is_classification_task(task.task_type)
+        y_true_numeric = pd.to_numeric(actual[target_column], errors="coerce")
+        y_pred_numeric = prediction_frame.mean(axis=1, skipna=True)
         prediction_std = (
             prediction_frame.std(axis=1, ddof=0).fillna(0.0)
             if len(prediction_series) > 1
@@ -278,21 +287,78 @@ class ChempropToolkit(Toolkit):
             if smiles_column in actual.columns
             else pd.Series([None] * len(actual))
         )
-        normalized = pd.DataFrame(
-            {
-                "source_row_index": test_indices,
-                "smiles": smiles_values,
-                f"{target_column}_true": y_true,
-                f"{target_column}_prediction": y_pred,
-                "prediction": y_pred,
-                target_column: y_pred,
-                "prediction_std": prediction_std,
-                "residual": y_true - y_pred,
-                "absolute_error": (y_true - y_pred).abs(),
-                "replicate_count": len(prediction_series),
-                "detected_replicate_count": len(replicate_artifacts),
-            }
-        )
+        if is_classification:
+            manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
+            classification_targets: Dict[str, Any] = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    classification_targets = manifest.get("classification_targets") or {}
+                except Exception:
+                    classification_targets = {}
+            class_info: Dict[str, Any] = classification_targets.get(target_column) or {}
+            class_labels = list(class_info.get("class_labels") or [0, 1])
+            positive_probability = y_pred_numeric.clip(lower=0.0, upper=1.0)
+            predicted_codes = (positive_probability >= 0.5).astype(int)
+            true_labels = decode_classification_labels(y_true_numeric.fillna(-1).astype(int).tolist(), class_labels)
+            predicted_labels = decode_classification_labels(predicted_codes.tolist(), class_labels)
+            normalized = pd.DataFrame(
+                {
+                    "source_row_index": test_indices,
+                    "smiles": smiles_values,
+                    f"{target_column}_true": true_labels,
+                    f"{target_column}_prediction": predicted_labels,
+                    "prediction": predicted_labels,
+                    target_column: predicted_labels,
+                    "positive_probability": positive_probability,
+                    "prediction_class_code": predicted_codes,
+                    "true_class_code": y_true_numeric,
+                    "prediction_std": prediction_std,
+                    "replicate_count": len(prediction_series),
+                    "detected_replicate_count": len(replicate_artifacts),
+                }
+            )
+            for extra_target in target_columns[1:]:
+                extra_series = prediction_series_by_target.get(extra_target) or []
+                if not extra_series:
+                    continue
+                extra_frame = pd.concat(extra_series, axis=1)
+                extra_pred = extra_frame.mean(axis=1, skipna=True).clip(lower=0.0, upper=1.0)
+                extra_codes = (extra_pred >= 0.5).astype(int)
+                extra_labels = list((classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1])
+                normalized[f"{extra_target}_true"] = decode_classification_labels(
+                    pd.to_numeric(actual[extra_target], errors="coerce").fillna(-1).astype(int).tolist(),
+                    extra_labels,
+                )
+                normalized[f"{extra_target}_prediction"] = decode_classification_labels(extra_codes.tolist(), extra_labels)
+                normalized[f"{extra_target}_positive_probability"] = extra_pred
+        else:
+            normalized = pd.DataFrame(
+                {
+                    "source_row_index": test_indices,
+                    "smiles": smiles_values,
+                    f"{target_column}_true": y_true_numeric,
+                    f"{target_column}_prediction": y_pred_numeric,
+                    "prediction": y_pred_numeric,
+                    target_column: y_pred_numeric,
+                    "prediction_std": prediction_std,
+                    "residual": y_true_numeric - y_pred_numeric,
+                    "absolute_error": (y_true_numeric - y_pred_numeric).abs(),
+                    "replicate_count": len(prediction_series),
+                    "detected_replicate_count": len(replicate_artifacts),
+                }
+            )
+            for extra_target in target_columns[1:]:
+                extra_series = prediction_series_by_target.get(extra_target) or []
+                if not extra_series:
+                    continue
+                extra_frame = pd.concat(extra_series, axis=1)
+                extra_true = pd.to_numeric(actual[extra_target], errors="coerce")
+                extra_pred = extra_frame.mean(axis=1, skipna=True)
+                normalized[f"{extra_target}_true"] = extra_true
+                normalized[f"{extra_target}_prediction"] = extra_pred
+                normalized[f"{extra_target}_residual"] = extra_true - extra_pred
+                normalized[f"{extra_target}_absolute_error"] = (extra_true - extra_pred).abs()
         normalized = pd.concat([normalized, prediction_frame], axis=1)
 
         normalized_path = output_path / "model_0" / "test_predictions.csv"
@@ -801,24 +867,66 @@ class ChempropToolkit(Toolkit):
 
         test_indices = split_payload[0]["test"]
         true_column = f"{target_column}_true"
+        is_classification = is_classification_task(task.task_type)
         if true_column in predictions.columns and "prediction" in predictions.columns:
-            actual_values = pd.to_numeric(predictions[true_column], errors="coerce")
-            predicted_values = pd.to_numeric(predictions["prediction"], errors="coerce")
+            actual_values = predictions[true_column]
+            predicted_values = predictions["prediction"]
         else:
             actual = dataset.iloc[test_indices].reset_index(drop=True)
             if target_column not in actual.columns or target_column not in predictions.columns:
                 return {}
             if len(actual) != len(predictions):
                 return {}
-            actual_values = pd.to_numeric(actual[target_column], errors="coerce")
-            predicted_values = pd.to_numeric(predictions[target_column], errors="coerce")
-        metric_values = compute_regression_metrics(
-            actual_values,
-            predicted_values,
-            target_column=target_column,
-        )
+            actual_values = actual[target_column]
+            predicted_values = predictions[target_column]
+        if is_classification:
+            class_labels = None
+            manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
+            classification_targets: Dict[str, Any] = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text())
+                    classification_targets = manifest.get("classification_targets") or {}
+                    class_labels = (
+                        (classification_targets.get(target_column) or {}).get("class_labels")
+                    )
+                except Exception:
+                    class_labels = None
+            metric_values = compute_classification_metrics(
+                actual_values,
+                predicted_values,
+                class_labels=class_labels,
+                positive_scores=predictions.get("positive_probability"),
+                target_column=target_column,
+            )
+        else:
+            metric_values = compute_regression_metrics(
+                pd.to_numeric(actual_values, errors="coerce"),
+                pd.to_numeric(predicted_values, errors="coerce"),
+                target_column=target_column,
+            )
         if not metric_values:
             return {}
+        target_metrics: Dict[str, Any] = {target_column: metric_values}
+        for extra_target in list(task.target_columns or [])[1:]:
+            true_col = f"{extra_target}_true"
+            pred_col = f"{extra_target}_prediction"
+            if true_col not in predictions.columns or pred_col not in predictions.columns:
+                continue
+            if is_classification:
+                target_metrics[extra_target] = compute_classification_metrics(
+                    predictions[true_col],
+                    predictions[pred_col],
+                    class_labels=(classification_targets.get(extra_target) or {}).get("class_labels"),
+                    positive_scores=predictions.get(f"{extra_target}_positive_probability"),
+                    target_column=extra_target,
+                )
+            else:
+                target_metrics[extra_target] = compute_regression_metrics(
+                    pd.to_numeric(predictions[true_col], errors="coerce"),
+                    pd.to_numeric(predictions[pred_col], errors="coerce"),
+                    target_column=extra_target,
+                )
 
         return {
             "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
@@ -838,6 +946,7 @@ class ChempropToolkit(Toolkit):
             "target_true_column": normalized_predictions.get("target_true_column") or target_column,
             "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
             "metrics": {"test": metric_values},
+            "target_metrics": target_metrics,
         }
 
     def train_model(
@@ -1133,6 +1242,7 @@ class ChempropToolkit(Toolkit):
                 root_artifacts=root_artifacts,
                 root_output_dir=root_output_path,
                 target_column=target_column,
+                task_type=task.task_type,
             )
 
             result = dict(final_primary_run)

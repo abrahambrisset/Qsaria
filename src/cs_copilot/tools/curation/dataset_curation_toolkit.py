@@ -30,6 +30,11 @@ from cs_copilot.tools.curation.policies import (
     LEGACY_QSAR_POLICY,
 )
 from cs_copilot.storage import S3
+from cs_copilot.tools.prediction.training_orchestration import (
+    is_classification_task,
+    normalize_classification_label,
+    resolve_class_labels,
+)
 
 from .backend import CurationRequest, CurationResult, TargetSummary
 
@@ -364,6 +369,68 @@ def _resolve_regression_duplicates(
     }
 
 
+def _resolve_classification_duplicates(
+    df: pd.DataFrame,
+    target_columns: List[str],
+    identity_column: str = "smiles",
+) -> Dict[str, Any]:
+    """Resolve duplicate standardized structures for classification datasets."""
+    grouped_rows: List[Dict[str, Any]] = []
+    duplicate_group_records: List[Dict[str, Any]] = []
+    duplicate_groups_detected = 0
+    duplicate_groups_aggregated = 0
+    duplicate_conflicting_groups = 0
+    duplicate_conflicting_rows_removed = 0
+
+    for identity_key, group in df.groupby(identity_column, dropna=False, sort=False):
+        if len(group) == 1:
+            grouped_rows.append(group.iloc[0].to_dict())
+            continue
+
+        duplicate_groups_detected += 1
+        target_values: Dict[str, List[Any]] = {}
+        is_conflicting = False
+        for target in target_columns:
+            labels = [normalize_classification_label(value) for value in group[target].tolist()]
+            labels = [label for label in labels if label is not None]
+            unique = resolve_class_labels(pd.Series(labels))
+            target_values[target] = [str(value) for value in labels]
+            if len(unique) > 1:
+                is_conflicting = True
+
+        duplicate_group_records.append(
+            {
+                "identity_key": identity_key,
+                "identity_column": identity_column,
+                "group_size": int(len(group)),
+                "resolution": "removed_conflict" if is_conflicting else "aggregated_label",
+                "target_spreads": "{}",
+                "target_values": json.dumps(target_values, sort_keys=True),
+                "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
+                "raw_smiles": " | ".join(str(v) for v in group.get("raw_smiles", pd.Series()).tolist()),
+                "standardized_smiles": " | ".join(
+                    str(v) for v in group.get("standardized_smiles", group["smiles"]).tolist()
+                ),
+            }
+        )
+        if is_conflicting:
+            duplicate_conflicting_groups += 1
+            duplicate_conflicting_rows_removed += int(len(group))
+            continue
+
+        grouped_rows.append(group.iloc[0].to_dict())
+        duplicate_groups_aggregated += 1
+
+    return {
+        "dataframe": pd.DataFrame(grouped_rows, columns=df.columns),
+        "duplicate_groups_detected": duplicate_groups_detected,
+        "duplicate_groups_aggregated": duplicate_groups_aggregated,
+        "duplicate_conflicting_groups": duplicate_conflicting_groups,
+        "duplicate_conflicting_rows_removed": duplicate_conflicting_rows_removed,
+        "duplicate_group_records": duplicate_group_records,
+    }
+
+
 def _select_curation_backend(curation_backend: str):
     if curation_backend == DEFAULT_CURATION_BACKEND:
         return standardize_with_chembl_structure_v1
@@ -452,6 +519,17 @@ class DatasetCurationToolkit(Toolkit):
             ]
             if task_type == "regression":
                 target_columns = numeric_candidates[:1]
+            elif is_classification_task(task_type):
+                max_reasonable_classes = max(20, int(len(df) * 0.2))
+                classification_candidates = []
+                for column in columns:
+                    if column in excluded:
+                        continue
+                    labels = df[column].map(normalize_classification_label).dropna()
+                    class_count = int(labels.nunique(dropna=True))
+                    if 2 <= class_count <= max_reasonable_classes:
+                        classification_candidates.append(column)
+                target_columns = classification_candidates[:1]
             else:
                 target_columns = numeric_candidates[:1]
 
@@ -499,13 +577,18 @@ class DatasetCurationToolkit(Toolkit):
             if curation_backend == DEFAULT_CURATION_BACKEND
             else LEGACY_QSAR_POLICY
         )
+        classification_task = is_classification_task(task_type)
         curation_policy = {
             **backend_policy,
             "duplicate_policy": "aggregate_mean_if_spread_within_threshold_else_drop_conflicts",
             "duplicate_conflict_threshold": duplicate_conflict_threshold,
-            "target_policy": "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets",
+            "target_policy": (
+                "preserve_class_labels -> remove_missing_labels -> require_at_least_two_classes"
+                if classification_task
+                else "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets"
+            ),
             "unit_policy": "detect explicit unit columns -> block on unresolved heterogeneous units -> infer unit context only when no explicit unit column exists",
-            "outlier_policy": "detect_iqr_1.5 -> flag_only",
+            "outlier_policy": "not_applicable_for_classification" if classification_task else "detect_iqr_1.5 -> flag_only",
             "measurement_context_policy": "detect assay/context/fit-quality columns -> report availability without filtering rows",
         }
 
@@ -666,19 +749,43 @@ class DatasetCurationToolkit(Toolkit):
         non_numeric_target_removed = 0
         infinite_target_removed = 0
         curated_targets: List[str] = []
-        for column in target_columns:
-            numeric = pd.to_numeric(working[column], errors="coerce")
-            raw_missing = int(working[column].isna().sum())
-            coerced_missing = int(numeric.isna().sum())
-            non_numeric_target_removed += max(coerced_missing - raw_missing, 0)
-            infinite_mask = numeric.apply(lambda v: isinstance(v, (int, float)) and not math.isfinite(v))
-            infinite_target_removed += int(infinite_mask.sum())
-            numeric = numeric.mask(infinite_mask, other=pd.NA)
-            missing_target_removed += int(numeric.isna().sum())
-            working[column] = numeric
-            curated_targets.append(column)
+        classification_target_summary: Dict[str, Any] = {}
+        if classification_task:
+            for column in target_columns:
+                normalized = working[column].map(normalize_classification_label)
+                missing_target_removed += int(normalized.isna().sum())
+                working[column] = normalized
+                curated_targets.append(column)
+            if not curated_targets:
+                blocking_issues.append("No classification target column was retained after curation.")
+            working = working.dropna(subset=curated_targets).copy()
+            for column in curated_targets:
+                labels = resolve_class_labels(working[column])
+                counts = working[column].value_counts(dropna=False).to_dict()
+                classification_target_summary[column] = {
+                    "class_count": len(labels),
+                    "classes": [str(value) for value in labels],
+                    "class_counts": {str(key): int(value) for key, value in counts.items()},
+                }
+                if len(labels) < 2:
+                    blocking_issues.append(
+                        f"Classification target `{column}` has fewer than two classes after curation."
+                    )
+            actions.append("preserve classification target labels")
+            actions.append("remove missing classification target rows")
+        else:
+            for column in target_columns:
+                numeric = pd.to_numeric(working[column], errors="coerce")
+                raw_missing = int(working[column].isna().sum())
+                coerced_missing = int(numeric.isna().sum())
+                non_numeric_target_removed += max(coerced_missing - raw_missing, 0)
+                infinite_mask = numeric.apply(lambda v: isinstance(v, (int, float)) and not math.isfinite(v))
+                infinite_target_removed += int(infinite_mask.sum())
+                numeric = numeric.mask(infinite_mask, other=pd.NA)
+                missing_target_removed += int(numeric.isna().sum())
+                working[column] = numeric
+                curated_targets.append(column)
 
-        if task_type == "regression":
             if not curated_targets:
                 blocking_issues.append("No regression target column was retained after curation.")
             working = working.dropna(subset=curated_targets).copy()
@@ -693,6 +800,7 @@ class DatasetCurationToolkit(Toolkit):
         duplicate_conflicting_rows_removed = 0
         duplicate_group_records: List[Dict[str, Any]] = []
         if duplicate_rows_removed:
+            duplicate_resolution = None
             if task_type == "regression" and curated_targets:
                 duplicate_resolution = _resolve_regression_duplicates(
                     working,
@@ -700,6 +808,13 @@ class DatasetCurationToolkit(Toolkit):
                     conflict_threshold=duplicate_conflict_threshold,
                     identity_column=duplicate_identity_column,
                 )
+            elif classification_task and curated_targets:
+                duplicate_resolution = _resolve_classification_duplicates(
+                    working,
+                    curated_targets,
+                    identity_column=duplicate_identity_column,
+                )
+            if duplicate_resolution is not None:
                 working = duplicate_resolution["dataframe"]
                 duplicate_groups_detected = duplicate_resolution["duplicate_groups_detected"]
                 duplicate_groups_aggregated = duplicate_resolution["duplicate_groups_aggregated"]
@@ -709,7 +824,9 @@ class DatasetCurationToolkit(Toolkit):
                 ]
                 duplicate_group_records = duplicate_resolution["duplicate_group_records"]
                 actions.append(
-                    "resolve duplicate QSAR identities using conflict-threshold aggregation"
+                    "resolve duplicate QSAR identities using classification labels"
+                    if classification_task
+                    else "resolve duplicate QSAR identities using conflict-threshold aggregation"
                 )
             else:
                 duplicate_group_records = [
@@ -754,25 +871,33 @@ class DatasetCurationToolkit(Toolkit):
         target_summaries: List[TargetSummary] = []
         constant_target_columns: List[str] = []
         for column in curated_targets:
-            series = pd.to_numeric(working[column], errors="coerce").dropna()
-            if series.empty:
-                warnings.append(f"Target column `{column}` is empty after curation.")
+            if classification_task:
+                labels = resolve_class_labels(working[column])
+                if len(labels) <= 1:
+                    constant_target_columns.append(column)
                 continue
-            if series.nunique(dropna=True) <= 1:
-                constant_target_columns.append(column)
-            target_summaries.append(
-                TargetSummary(
-                    column=column,
-                    mean=float(series.mean()),
-                    std=float(series.std()) if len(series) > 1 else 0.0,
-                    minimum=float(series.min()),
-                    maximum=float(series.max()),
-                    median=float(series.median()),
+            else:
+                series = pd.to_numeric(working[column], errors="coerce").dropna()
+                if series.empty:
+                    warnings.append(f"Target column `{column}` is empty after curation.")
+                    continue
+                if series.nunique(dropna=True) <= 1:
+                    constant_target_columns.append(column)
+                target_summaries.append(
+                    TargetSummary(
+                        column=column,
+                        mean=float(series.mean()),
+                        std=float(series.std()) if len(series) > 1 else 0.0,
+                        minimum=float(series.min()),
+                        maximum=float(series.max()),
+                        median=float(series.median()),
+                    )
                 )
-            )
 
         if task_type == "regression" and len(constant_target_columns) == len(curated_targets):
             blocking_issues.append("All retained target columns are constant after curation.")
+        if classification_task and len(constant_target_columns) == len(curated_targets):
+            blocking_issues.append("All retained classification targets have fewer than two classes after curation.")
 
         unit_quality = _detect_target_unit_quality(
             df=df,
@@ -783,18 +908,29 @@ class DatasetCurationToolkit(Toolkit):
         outlier_quality = _detect_target_outliers(
             working,
             target_columns=curated_targets,
-        )
+        ) if not classification_task else {
+            "outlier_method": None,
+            "outliers_flagged_total": 0,
+            "outliers_flagged_by_target": {},
+            "outlier_bounds_by_target": {},
+            "outlier_policy": "not_applicable_for_classification",
+        }
         measurement_context = _detect_measurement_context(df)
 
         target_data_quality = {
             "numeric_targets_required": task_type == "regression",
+            "classification_targets_allowed": classification_task,
+            "classification_target_summary": classification_target_summary,
             "non_numeric_target_removed": non_numeric_target_removed,
             "infinite_target_removed": infinite_target_removed,
             "missing_target_removed": missing_target_removed,
             "constant_target_columns": list(constant_target_columns),
             "target_ready_for_qsar": not bool(
                 blocking_issues
-                or (task_type == "regression" and len(constant_target_columns) == len(curated_targets))
+                or (
+                    (task_type == "regression" or classification_task)
+                    and len(constant_target_columns) == len(curated_targets)
+                )
             ),
         }
         target_data_quality.update(unit_quality)

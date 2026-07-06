@@ -12,7 +12,14 @@ from typing import Any, Dict, List, Mapping, Sequence
 import pandas as pd
 
 from .backend import InvalidPredictionInputError, PredictionTaskSpec
-from .training_orchestration import strip_unnamed_columns
+from .training_orchestration import (
+    encode_classification_labels,
+    is_classification_task,
+    is_multiclass_task,
+    json_safe_label,
+    resolve_class_labels,
+    strip_unnamed_columns,
+)
 
 
 def _file_fingerprint(path: Path) -> Dict[str, Any]:
@@ -98,6 +105,7 @@ def materialize_chemprop_inputs(
             )
 
     clean = df[required_columns].copy()
+    class_metadata: Dict[str, Any] = {}
     if task.task_type == "regression":
         for column in target_columns:
             numeric = pd.to_numeric(clean[column], errors="coerce")
@@ -108,6 +116,29 @@ def materialize_chemprop_inputs(
                     f"at rows {missing_target[missing_target].index[:5].tolist()}."
                 )
             clean[column] = numeric
+    elif is_classification_task(task.task_type):
+        if is_multiclass_task(task.task_type):
+            raise InvalidPredictionInputError("Chemprop multiclass classification is not enabled in this QSARIA version.")
+        for column in target_columns:
+            labels = resolve_class_labels(clean[column])
+            if len(labels) != 2:
+                raise InvalidPredictionInputError(
+                    f"Chemprop classification target `{column}` requires exactly two classes; found {len(labels)}."
+                )
+            encoded, mapping = encode_classification_labels(clean[column], labels)
+            missing_target = encoded.isna()
+            if bool(missing_target.any()):
+                raise InvalidPredictionInputError(
+                    f"Chemprop classification target `{column}` contains missing labels at rows "
+                    f"{missing_target[missing_target].index[:5].tolist()}."
+                )
+            clean[column] = encoded.astype(int)
+            class_metadata[column] = {
+                "class_labels": [json_safe_label(label) for label in labels],
+                "class_count": len(labels),
+                "label_mapping": mapping,
+                "positive_class_label": json_safe_label(labels[1]),
+            }
 
     split_counts = _validate_split_payload(split_payload, len(clean))
     split_map = split_payload[0]
@@ -141,6 +172,7 @@ def materialize_chemprop_inputs(
         "task_type": task.task_type,
         "row_count": int(len(clean)),
         "columns": list(clean.columns),
+        "classification_targets": class_metadata,
         "split_label": split_label,
         "seed": seed,
         "split_counts": split_counts,

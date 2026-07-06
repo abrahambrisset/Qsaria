@@ -168,7 +168,21 @@ def _hydrate_inference_profile_from_summary(
         profile["representation_name"] = summary_payload.get("representation_name")
     if summary_payload.get("summary_path") and not profile.get("feature_columns_source"):
         profile["feature_columns_source"] = summary_payload.get("summary_path")
+    for key in ("task_kind", "class_labels", "class_count", "label_mapping", "positive_class_label"):
+        if profile.get(key) is None and summary_payload.get(key) is not None:
+            profile[key] = summary_payload.get(key)
     return profile
+
+
+def _classification_metadata(record: PredictionModelRecord) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"task_type": record.task.task_type}
+    sources = (record.inference_profile or {}, record.training_data_summary or {})
+    for key in ("task_kind", "class_labels", "class_count", "label_mapping", "positive_class_label"):
+        for source in sources:
+            if source.get(key) is not None:
+                payload[key] = source.get(key)
+                break
+    return payload
 
 
 def _resolved_path_key(path: str | Path) -> str:
@@ -974,6 +988,7 @@ class ModelRegistryToolkit(Toolkit):
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
+        metadata.update(_classification_metadata(record))
         if record.training_data_summary.get("seed_policy"):
             metadata["reproducibility"] = seed_policy_reproducibility_metadata(
                 record.training_data_summary.get("seed_policy")
@@ -1092,6 +1107,7 @@ class ModelRegistryToolkit(Toolkit):
                 },
             }
         )
+        payload.update(_classification_metadata(record))
         artifacts = payload.get("artifacts") or {}
         if artifacts.get("applicability_domain_path"):
             payload["applicability_domain"] = {

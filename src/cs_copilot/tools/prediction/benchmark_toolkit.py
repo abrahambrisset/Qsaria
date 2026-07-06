@@ -29,6 +29,7 @@ from .tabular_representations import (
     tabular_candidates_for_backend,
     get_tabular_representation,
 )
+from .training_orchestration import is_classification_task
 
 logger = logging.getLogger(__name__)
 
@@ -434,10 +435,17 @@ class BenchmarkToolkit(Toolkit):
         scaffold_family = aggregated.get("scaffold") or {}
         kmeans_family = aggregated.get("cluster_kmeans") or {}
         hardest_r2 = _safe_float((hardest_family or {}).get("r2_mean") or (hardest_family or {}).get("r2"))
+        hardest_balanced_accuracy = _safe_float(
+            (hardest_family or {}).get("balanced_accuracy_mean") or (hardest_family or {}).get("balanced_accuracy")
+        )
         delta_vs_random = validation_assessment.get("delta_vs_random") or {}
         hardest_delta_r2 = None
+        hardest_delta_balanced_accuracy = None
         if hardest_split:
             hardest_delta_r2 = _safe_float((delta_vs_random.get(hardest_split) or {}).get("r2"))
+            hardest_delta_balanced_accuracy = _safe_float(
+                (delta_vs_random.get(hardest_split) or {}).get("balanced_accuracy")
+            )
 
         row = {
             "candidate_id": candidate["candidate_id"],
@@ -448,11 +456,26 @@ class BenchmarkToolkit(Toolkit):
             "random_r2": _safe_float(random_family.get("r2_mean") or random_family.get("r2")),
             "scaffold_r2": _safe_float(scaffold_family.get("r2_mean") or scaffold_family.get("r2")),
             "cluster_kmeans_r2": _safe_float(kmeans_family.get("r2_mean") or kmeans_family.get("r2")),
+            "random_balanced_accuracy": _safe_float(
+                random_family.get("balanced_accuracy_mean") or random_family.get("balanced_accuracy")
+            ),
+            "scaffold_balanced_accuracy": _safe_float(
+                scaffold_family.get("balanced_accuracy_mean") or scaffold_family.get("balanced_accuracy")
+            ),
+            "cluster_kmeans_balanced_accuracy": _safe_float(
+                kmeans_family.get("balanced_accuracy_mean") or kmeans_family.get("balanced_accuracy")
+            ),
             "hardest_split": hardest_split,
             "hardest_split_r2": hardest_r2,
+            "hardest_split_balanced_accuracy": hardest_balanced_accuracy,
             "delta_r2": hardest_delta_r2,
+            "delta_balanced_accuracy": hardest_delta_balanced_accuracy,
+            "roc_auc": _safe_float((hardest_family or random_family).get("roc_auc_mean") or (hardest_family or random_family).get("roc_auc")),
+            "f1_macro": _safe_float((hardest_family or random_family).get("f1_macro_mean") or (hardest_family or random_family).get("f1_macro")),
             "random_family_r2_mean": _safe_float(random_family.get("r2_mean")),
             "random_family_r2_std": _safe_float(random_family.get("r2_std")),
+            "random_family_balanced_accuracy_mean": _safe_float(random_family.get("balanced_accuracy_mean")),
+            "random_family_balanced_accuracy_std": _safe_float(random_family.get("balanced_accuracy_std")),
             "train_time_s": _safe_float((result.get("training_durations") or {}).get("total_duration_seconds")),
             "status": persisted.get("status"),
             "internal_model_root": persisted.get("model_root"),
@@ -483,6 +506,9 @@ class BenchmarkToolkit(Toolkit):
                         "rmse": _safe_float(metrics.get("rmse")),
                         "mae": _safe_float(metrics.get("mae")),
                         "mse": _safe_float(metrics.get("mse")),
+                        "balanced_accuracy": _safe_float(metrics.get("balanced_accuracy")),
+                        "roc_auc": _safe_float(metrics.get("roc_auc")),
+                        "f1_macro": _safe_float(metrics.get("f1_macro")),
                     },
                 }
             )
@@ -494,10 +520,17 @@ class BenchmarkToolkit(Toolkit):
             "status": row.get("status"),
             "hardest_split": row.get("hardest_split"),
             "hardest_split_r2": row.get("hardest_split_r2"),
+            "hardest_split_balanced_accuracy": row.get("hardest_split_balanced_accuracy"),
             "random_r2": row.get("random_r2"),
+            "random_balanced_accuracy": row.get("random_balanced_accuracy"),
             "scaffold_r2": row.get("scaffold_r2"),
+            "scaffold_balanced_accuracy": row.get("scaffold_balanced_accuracy"),
             "cluster_kmeans_r2": row.get("cluster_kmeans_r2"),
+            "cluster_kmeans_balanced_accuracy": row.get("cluster_kmeans_balanced_accuracy"),
             "delta_r2": row.get("delta_r2"),
+            "delta_balanced_accuracy": row.get("delta_balanced_accuracy"),
+            "roc_auc": row.get("roc_auc"),
+            "f1_macro": row.get("f1_macro"),
             "train_time_s": row.get("train_time_s"),
             "governance": validation_assessment.get("governance"),
             "split_results": split_summaries,
@@ -507,15 +540,18 @@ class BenchmarkToolkit(Toolkit):
         }
 
     def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        def sort_key(row: Dict[str, Any]) -> tuple[float, float, float, float]:
-            hardest_r2 = row.get("hardest_split_r2")
-            delta_r2 = row.get("delta_r2")
-            random_r2 = row.get("random_r2")
+        def sort_key(row: Dict[str, Any]) -> tuple[float, float, float, float, float]:
+            classification_row = row.get("hardest_split_balanced_accuracy") is not None or row.get("random_balanced_accuracy") is not None
+            hardest_metric = row.get("hardest_split_balanced_accuracy" if classification_row else "hardest_split_r2")
+            delta_metric = row.get("delta_balanced_accuracy" if classification_row else "delta_r2")
+            random_metric = row.get("random_balanced_accuracy" if classification_row else "random_r2")
+            tie_breaker = row.get("roc_auc") if classification_row else None
             train_time = row.get("train_time_s")
             return (
-                -(hardest_r2 if hardest_r2 is not None else float("-inf")),
-                -(delta_r2 if delta_r2 is not None else float("-inf")),
-                -(random_r2 if random_r2 is not None else float("-inf")),
+                -(hardest_metric if hardest_metric is not None else float("-inf")),
+                -(tie_breaker if tie_breaker is not None else float("-inf")),
+                -(delta_metric if delta_metric is not None else float("-inf")),
+                -(random_metric if random_metric is not None else float("-inf")),
                 train_time if train_time is not None else float("inf"),
             )
 
@@ -528,9 +564,17 @@ class BenchmarkToolkit(Toolkit):
     ) -> Dict[str, Optional[str]]:
         ranked = self._rank_summary_rows(rows)
         best_overall = ranked[0]["candidate_id"] if ranked else None
+        classification_rows = any(
+            row.get("hardest_split_balanced_accuracy") is not None or row.get("random_balanced_accuracy") is not None
+            for row in rows
+        )
         best_hardest = max(
             rows,
-            key=lambda row: row.get("hardest_split_r2") if row.get("hardest_split_r2") is not None else float("-inf"),
+            key=lambda row: (
+                row.get("hardest_split_balanced_accuracy" if classification_rows else "hardest_split_r2")
+                if row.get("hardest_split_balanced_accuracy" if classification_rows else "hardest_split_r2") is not None
+                else float("-inf")
+            ),
             default=None,
         )
         best_fast = min(
@@ -540,11 +584,12 @@ class BenchmarkToolkit(Toolkit):
         )
         best_stability = None
         if benchmark_protocol == "robust_qsar":
-            stability_rows = [row for row in rows if row.get("random_family_r2_std") is not None]
+            stability_key = "random_family_balanced_accuracy_std" if classification_rows else "random_family_r2_std"
+            stability_rows = [row for row in rows if row.get(stability_key) is not None]
             if stability_rows:
                 best_stability = min(
                     stability_rows,
-                    key=lambda row: row.get("random_family_r2_std", float("inf")),
+                    key=lambda row: row.get(stability_key, float("inf")),
                 )
 
         return {
@@ -611,28 +656,52 @@ class BenchmarkToolkit(Toolkit):
         lines.append("")
         lines.append("## Leaderboard")
         lines.append("")
-        lines.append("| candidate_id | backend | representation | hardest_split | hardest_split_r2 | random_r2 | scaffold_r2 | cluster_kmeans_r2 | delta_r2 | train_time_s | status |")
-        lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---|")
-        for row in self._rank_summary_rows(candidate_rows):
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        str(row.get("candidate_id") or ""),
-                        str(row.get("backend") or ""),
-                        str(row.get("representation") or ""),
-                        str(row.get("hardest_split") or ""),
-                        f"{row['hardest_split_r2']:.3f}" if row.get("hardest_split_r2") is not None else "",
-                        f"{row['random_r2']:.3f}" if row.get("random_r2") is not None else "",
-                        f"{row['scaffold_r2']:.3f}" if row.get("scaffold_r2") is not None else "",
-                        f"{row['cluster_kmeans_r2']:.3f}" if row.get("cluster_kmeans_r2") is not None else "",
-                        f"{row['delta_r2']:.3f}" if row.get("delta_r2") is not None else "",
-                        f"{row['train_time_s']:.3f}" if row.get("train_time_s") is not None else "",
-                        str(row.get("status") or ""),
-                    ]
+        classification_rows = any(row.get("random_balanced_accuracy") is not None for row in candidate_rows)
+        if classification_rows:
+            lines.append("| candidate_id | backend | representation | hardest_split | hardest_balanced_accuracy | random_balanced_accuracy | roc_auc | f1_macro | train_time_s | status |")
+            lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---|")
+            for row in self._rank_summary_rows(candidate_rows):
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            str(row.get("candidate_id") or ""),
+                            str(row.get("backend") or ""),
+                            str(row.get("representation") or ""),
+                            str(row.get("hardest_split") or ""),
+                            f"{row['hardest_split_balanced_accuracy']:.3f}" if row.get("hardest_split_balanced_accuracy") is not None else "",
+                            f"{row['random_balanced_accuracy']:.3f}" if row.get("random_balanced_accuracy") is not None else "",
+                            f"{row['roc_auc']:.3f}" if row.get("roc_auc") is not None else "",
+                            f"{row['f1_macro']:.3f}" if row.get("f1_macro") is not None else "",
+                            f"{row['train_time_s']:.3f}" if row.get("train_time_s") is not None else "",
+                            str(row.get("status") or ""),
+                        ]
+                    )
+                    + " |"
                 )
-                + " |"
-            )
+        else:
+            lines.append("| candidate_id | backend | representation | hardest_split | hardest_split_r2 | random_r2 | scaffold_r2 | cluster_kmeans_r2 | delta_r2 | train_time_s | status |")
+            lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---|")
+            for row in self._rank_summary_rows(candidate_rows):
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        [
+                            str(row.get("candidate_id") or ""),
+                            str(row.get("backend") or ""),
+                            str(row.get("representation") or ""),
+                            str(row.get("hardest_split") or ""),
+                            f"{row['hardest_split_r2']:.3f}" if row.get("hardest_split_r2") is not None else "",
+                            f"{row['random_r2']:.3f}" if row.get("random_r2") is not None else "",
+                            f"{row['scaffold_r2']:.3f}" if row.get("scaffold_r2") is not None else "",
+                            f"{row['cluster_kmeans_r2']:.3f}" if row.get("cluster_kmeans_r2") is not None else "",
+                            f"{row['delta_r2']:.3f}" if row.get("delta_r2") is not None else "",
+                            f"{row['train_time_s']:.3f}" if row.get("train_time_s") is not None else "",
+                            str(row.get("status") or ""),
+                        ]
+                    )
+                    + " |"
+                )
         lines.append("")
         lines.append("## Split-by-split comparative analysis")
         lines.append("")
@@ -645,10 +714,17 @@ class BenchmarkToolkit(Toolkit):
             lines.append(f"- hardest split: `{validation_assessment.get('hardest_split')}`")
             for split_result in item.get("split_results") or []:
                 metrics = ((split_result.get("metrics") or {}).get("test") or {})
-                lines.append(
-                    f"- `{split_result.get('strategy_label')}`: "
-                    f"R²={metrics.get('r2')}, RMSE={metrics.get('rmse')}, MAE={metrics.get('mae')}, MSE={metrics.get('mse')}"
-                )
+                if metrics.get("balanced_accuracy") is not None:
+                    lines.append(
+                        f"- `{split_result.get('strategy_label')}`: "
+                        f"balanced_accuracy={metrics.get('balanced_accuracy')}, "
+                        f"roc_auc={metrics.get('roc_auc')}, f1_macro={metrics.get('f1_macro')}"
+                    )
+                else:
+                    lines.append(
+                        f"- `{split_result.get('strategy_label')}`: "
+                        f"R²={metrics.get('r2')}, RMSE={metrics.get('rmse')}, MAE={metrics.get('mae')}, MSE={metrics.get('mse')}"
+                    )
             lines.append("")
         lines.append("## Governance and recommendation")
         lines.append("")

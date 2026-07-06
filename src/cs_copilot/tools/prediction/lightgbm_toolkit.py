@@ -1090,6 +1090,7 @@ class LightGBMToolkit(Toolkit):
             root_artifacts=root_artifacts,
             root_output_dir=root_output_path,
             target_column=target_column,
+            task_type=task.task_type,
         )
 
         validation_assessment = assess_protocol_results(final_split_results)

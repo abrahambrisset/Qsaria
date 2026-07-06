@@ -16,9 +16,24 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from sklearn.calibration import CalibrationDisplay
+from sklearn.metrics import ConfusionMatrixDisplay, PrecisionRecallDisplay, RocCurveDisplay
 
 
 PLOT_DPI = 300
+CLASSIFICATION_TASK_TYPES = {"classification", "binary_classification", "multiclass", "multiclass_classification"}
+
+
+def _is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def _positive_label(labels: List[Any]) -> Any:
+    positive_tokens = {"1", "true", "t", "yes", "y", "active", "positive", "pos", "mutagenic", "toxic"}
+    for label in labels:
+        if str(label).strip().lower() in positive_tokens:
+            return label
+    return labels[-1]
 
 
 def _safe_metric_columns(df: pd.DataFrame, target_column: str) -> pd.DataFrame:
@@ -64,6 +79,32 @@ def _load_split_truth_and_predictions(
     )
     frame["residual"] = frame["y_true"] - frame["y_pred"]
     return frame
+
+
+def _pick_column(frame: pd.DataFrame, candidates: List[str], *, exclude: Optional[str] = None) -> Optional[str]:
+    return next((column for column in candidates if column in frame.columns and column != exclude), None)
+
+
+def _load_classification_predictions(predictions_path: Path, target_column: str) -> Optional[pd.DataFrame]:
+    if not predictions_path.exists():
+        return None
+    predictions = pd.read_csv(predictions_path)
+    true_col = _pick_column(predictions, [f"{target_column}_true", "y_true", target_column])
+    pred_col = _pick_column(
+        predictions,
+        [f"{target_column}_prediction", "prediction", "predicted_class", "y_pred", target_column],
+        exclude=true_col,
+    )
+    if not true_col or not pred_col:
+        return None
+    frame = pd.DataFrame({"y_true": predictions[true_col], "y_pred": predictions[pred_col]}).dropna()
+    score_col = _pick_column(
+        predictions,
+        ["positive_probability", f"{target_column}_positive_probability", "probability_1", "score"],
+    )
+    if score_col:
+        frame["positive_score"] = pd.to_numeric(predictions.loc[frame.index, score_col], errors="coerce")
+    return frame.reset_index(drop=True) if not frame.empty else None
 
 
 def _plot_target_distribution(values: pd.Series, output_path: Path) -> None:
@@ -329,6 +370,105 @@ def _plot_seed_performance(split_results: List[Dict[str, Any]], output_path: Pat
     return str(output_path)
 
 
+def _plot_probability_distribution(frame: pd.DataFrame, output_path: Path, label: str) -> None:
+    if "positive_score" not in frame.columns:
+        return
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for class_label, group in frame.groupby("y_true"):
+        scores = pd.to_numeric(group["positive_score"], errors="coerce").dropna()
+        if scores.empty:
+            continue
+        ax.hist(scores, bins=25, alpha=0.5, density=True, label=f"Classe {class_label}")
+    ax.set_title(f"Distribution des probabilites positives ({label})")
+    ax.set_xlabel("Probabilite classe positive")
+    ax.set_ylabel("Densite")
+    ax.grid(alpha=0.2, linestyle="--")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _build_classification_plots(
+    *,
+    split_results: List[Dict[str, Any]],
+    output_path: Path,
+    target_column: str,
+) -> Dict[str, str]:
+    generated: Dict[str, str] = {}
+    for item in split_results:
+        strategy_label = _normalize_strategy_label(item)
+        if strategy_label not in {"random", "scaffold", "cluster_kmeans"} and not (
+            strategy_label and strategy_label.startswith("random_seed_")
+        ):
+            continue
+        predictions_path = Path(item.get("test_predictions_path") or "")
+        frame = _load_classification_predictions(predictions_path, target_column)
+        if frame is None or frame.empty:
+            continue
+
+        cm_path = output_path / f"confusion_matrix_{strategy_label}.png"
+        ConfusionMatrixDisplay.from_predictions(frame["y_true"], frame["y_pred"], cmap="Blues")
+        plt.title(f"Matrice de confusion ({strategy_label})")
+        plt.tight_layout()
+        plt.savefig(cm_path, dpi=PLOT_DPI, bbox_inches="tight")
+        plt.close()
+        generated[f"confusion_matrix_{strategy_label}"] = str(cm_path)
+
+        cm_norm_path = output_path / f"confusion_matrix_{strategy_label}_normalized.png"
+        ConfusionMatrixDisplay.from_predictions(
+            frame["y_true"],
+            frame["y_pred"],
+            normalize="true",
+            cmap="Blues",
+            values_format=".2f",
+        )
+        plt.title(f"Matrice de confusion normalisee ({strategy_label})")
+        plt.tight_layout()
+        plt.savefig(cm_norm_path, dpi=PLOT_DPI, bbox_inches="tight")
+        plt.close()
+        generated[f"confusion_matrix_{strategy_label}_normalized"] = str(cm_norm_path)
+
+        if "positive_score" not in frame.columns or frame["positive_score"].dropna().empty:
+            continue
+        score = frame["positive_score"]
+        if frame["y_true"].nunique(dropna=True) == 2:
+            labels = sorted(frame["y_true"].dropna().unique().tolist(), key=lambda value: str(value))
+            positive_label = _positive_label(labels)
+            y_binary = (frame["y_true"].astype(str) == str(positive_label)).astype(int)
+
+            roc_path = output_path / f"roc_curve_{strategy_label}.png"
+            RocCurveDisplay.from_predictions(y_binary, score)
+            plt.title(f"Courbe ROC ({strategy_label}, positif={positive_label})")
+            plt.tight_layout()
+            plt.savefig(roc_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close()
+            generated[f"roc_curve_{strategy_label}"] = str(roc_path)
+
+            pr_path = output_path / f"precision_recall_curve_{strategy_label}.png"
+            PrecisionRecallDisplay.from_predictions(y_binary, score)
+            plt.title(f"Precision-Recall ({strategy_label}, positif={positive_label})")
+            plt.tight_layout()
+            plt.savefig(pr_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close()
+            generated[f"precision_recall_curve_{strategy_label}"] = str(pr_path)
+
+            calibration_path = output_path / f"calibration_curve_{strategy_label}.png"
+            CalibrationDisplay.from_predictions(y_binary, score, n_bins=10)
+            plt.title(f"Calibration des probabilites ({strategy_label}, positif={positive_label})")
+            plt.tight_layout()
+            plt.savefig(calibration_path, dpi=PLOT_DPI, bbox_inches="tight")
+            plt.close()
+            generated[f"calibration_curve_{strategy_label}"] = str(calibration_path)
+
+        prob_path = output_path / f"positive_probability_distribution_{strategy_label}.png"
+        _plot_probability_distribution(frame, prob_path, strategy_label)
+        if prob_path.exists():
+            generated[f"positive_probability_distribution_{strategy_label}"] = str(prob_path)
+
+    return generated
+
+
 def build_qsar_training_plots(
     *,
     train_csv: str,
@@ -336,9 +476,17 @@ def build_qsar_training_plots(
     primary_run: Dict[str, Any],
     output_dir: str,
     target_column: str,
+    task_type: str = "regression",
 ) -> Dict[str, str]:
     output_path = Path(output_dir).expanduser().resolve()
     output_path.mkdir(parents=True, exist_ok=True)
+
+    if _is_classification_task(task_type):
+        return _build_classification_plots(
+            split_results=split_results,
+            output_path=output_path,
+            target_column=target_column,
+        )
 
     dataset = pd.read_csv(Path(train_csv).expanduser())
     target_values = pd.to_numeric(dataset[target_column], errors="coerce").dropna()

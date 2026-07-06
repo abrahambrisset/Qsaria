@@ -54,6 +54,22 @@ class TabularFakeBackend(FakeBackend):
         return {"predictions_path": preds_path}
 
 
+class BinaryFakeBackend(FakeBackend):
+    def __init__(self, labels: list[str], positive_probability: list[float]):
+        super().__init__(0.0)
+        self.labels = labels
+        self.positive_probability = positive_probability
+
+    def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False, extra_args=None):
+        pd.DataFrame(
+            {
+                "prediction": self.labels,
+                "positive_probability": self.positive_probability,
+            }
+        ).to_csv(preds_path, index=False)
+        return {"predictions_path": preds_path}
+
+
 FAKE_CAPABILITIES = {
     "fake": BackendCapabilities(
         backend_name="fake",
@@ -85,6 +101,28 @@ FAKE_CAPABILITIES = {
         requires_feature_preparation=True,
         supported_task_types=("regression",),
         supported_representations=("morgan_only",),
+        supports_applicability_domain=False,
+        supports_uncertainty="none",
+    ),
+    "fake_classifier": BackendCapabilities(
+        backend_name="fake_classifier",
+        can_train=False,
+        can_predict=True,
+        prediction_input_kinds=("smiles_csv",),
+        requires_feature_preparation=False,
+        supported_task_types=("classification",),
+        supported_representations=("fake",),
+        supports_applicability_domain=False,
+        supports_uncertainty="none",
+    ),
+    "fake_classifier2": BackendCapabilities(
+        backend_name="fake_classifier2",
+        can_train=False,
+        can_predict=True,
+        prediction_input_kinds=("smiles_csv",),
+        requires_feature_preparation=False,
+        supported_task_types=("classification",),
+        supported_representations=("fake",),
         supports_applicability_domain=False,
         supports_uncertainty="none",
     ),
@@ -174,6 +212,59 @@ def test_ensemble_backend_predicts_component_columns(tmp_path):
     assert [component["backend_name"] for component in summary["components"]] == ["fake", "fake2"]
     assert summary["prediction_summary"]["mean"] == 3.5
     assert summary["disagreement_summary"]["max"] == 1.0
+
+
+def test_ensemble_backend_binary_classification_majority_vote(tmp_path):
+    input_csv = tmp_path / "input.csv"
+    pd.DataFrame({"smiles": ["CC", "CCC"]}).to_csv(input_csv, index=False)
+    model_a = tmp_path / "a.fake"
+    model_b = tmp_path / "b.fake"
+    model_a.write_text("a")
+    model_b.write_text("b")
+    ensemble_path = tmp_path / "ensemble.json"
+    ensemble_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "ensemble_kind": "catalog_consensus_classification",
+                "aggregation_strategy": "majority_vote",
+                "class_labels": ["inactive", "active"],
+                "components": [
+                    {
+                        "model_id": "a",
+                        "component_slug": "a",
+                        "backend_name": "fake_classifier",
+                        "model_path": str(model_a),
+                        "task": {"task_type": "classification", "smiles_columns": ["smiles"], "target_columns": ["active"]},
+                    },
+                    {
+                        "model_id": "b",
+                        "component_slug": "b",
+                        "backend_name": "fake_classifier2",
+                        "model_path": str(model_b),
+                        "task": {"task_type": "classification", "smiles_columns": ["smiles"], "target_columns": ["active"]},
+                    },
+                ],
+            }
+        )
+    )
+    backend = EnsembleBackend(
+        backends={
+            "fake_classifier": BinaryFakeBackend(["active", "inactive"], [0.8, 0.2]),
+            "fake_classifier2": BinaryFakeBackend(["active", "active"], [0.7, 0.6]),
+        },
+        backend_capabilities=FAKE_CAPABILITIES,
+    )
+    output = tmp_path / "preds.csv"
+    record = _record("ens", "ensemble", ensemble_path, target="active", task_type="classification")
+
+    result = backend.predict_from_csv(str(input_csv), record, str(output))
+
+    preds = pd.read_csv(output)
+    assert result["aggregation_strategy"] == "majority_vote"
+    assert preds["prediction"].tolist() == ["active", "active"]
+    assert preds["positive_probability"].round(2).tolist() == [0.75, 0.40]
+    assert preds["ensemble_vote_fraction"].tolist() == [1.0, 0.5]
 
 
 def test_ensemble_backend_uses_capabilities_for_tabular_preparation(tmp_path):
@@ -309,7 +400,8 @@ def test_create_ensemble_from_catalog_persists_evidence(tmp_path, monkeypatch):
     assert payload["evaluations"] == []
     evidence = json.loads(Path(result["selection_evidence_path"]).read_text())
     assert evidence["compatible_count"] == 2
-    assert {item["selection_decision"] for item in evidence["candidates"]} == {"included"}
+    included = [item for item in evidence["candidates"] if item["selection_decision"] == "included"]
+    assert {item["model_id"] for item in included} == {"std_scaffold", "robust_stable"}
 
 
 def test_create_ensemble_rejects_incompatible_and_warns_ablation(tmp_path, monkeypatch):

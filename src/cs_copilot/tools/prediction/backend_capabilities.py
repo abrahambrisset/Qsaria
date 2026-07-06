@@ -23,6 +23,7 @@ class BackendCapabilities:
     supported_representations: Tuple[str, ...]
     supports_applicability_domain: bool
     supports_uncertainty: str
+    multi_target_task_types: Tuple[str, ...] = ()
     supports_component_orchestration: bool = False
     supports_activity_cliff_feedback_loops: bool = False
     gpu_support: str = "not_declared"
@@ -45,7 +46,8 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("smiles_csv",),
         requires_feature_preparation=False,
-        supported_task_types=("regression",),
+        supported_task_types=("regression", "classification"),
+        multi_target_task_types=("regression", "classification"),
         supported_representations=("molecular_graph",),
         supports_applicability_domain=True,
         supports_uncertainty="none",
@@ -57,7 +59,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("tabular_features_csv",),
         requires_feature_preparation=True,
-        supported_task_types=("regression",),
+        supported_task_types=("regression", "classification", "multiclass_classification"),
         supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
         supports_applicability_domain=True,
         supports_uncertainty="none",
@@ -71,7 +73,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("tabular_features_csv",),
         requires_feature_preparation=True,
-        supported_task_types=("regression",),
+        supported_task_types=("regression", "classification"),
         supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
         supports_applicability_domain=True,
         supports_uncertainty="none",
@@ -89,8 +91,8 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         can_predict=True,
         prediction_input_kinds=("smiles_csv",),
         requires_feature_preparation=False,
-        supported_task_types=("regression",),
-        supported_representations=("catalog_consensus_regression",),
+        supported_task_types=("regression", "classification"),
+        supported_representations=("catalog_consensus_regression", "catalog_consensus_classification"),
         supports_applicability_domain=False,
         supports_uncertainty="component_disagreement_std",
         supports_component_orchestration=True,
@@ -146,6 +148,35 @@ def backend_requires_feature_preparation(
         backend_name,
         registry=registry,
     ).requires_feature_preparation
+
+
+def normalize_capability_task_type(task_type: str) -> str:
+    normalized = str(task_type or "").strip().lower()
+    if normalized in {"binary_classification", "classification"}:
+        return "classification"
+    if normalized in {"multiclass", "multiclass_classification"}:
+        return "multiclass_classification"
+    return normalized
+
+
+def backend_supports_task_type(
+    backend_name: str,
+    task_type: str,
+    *,
+    registry: Mapping[str, BackendCapabilities] | None = None,
+) -> bool:
+    capabilities = get_backend_capabilities(backend_name, registry=registry)
+    return normalize_capability_task_type(task_type) in capabilities.supported_task_types
+
+
+def backend_supports_multi_target(
+    backend_name: str,
+    task_type: str,
+    *,
+    registry: Mapping[str, BackendCapabilities] | None = None,
+) -> bool:
+    capabilities = get_backend_capabilities(backend_name, registry=registry)
+    return normalize_capability_task_type(task_type) in capabilities.multi_target_task_types
 
 
 def backend_supports_component_orchestration(

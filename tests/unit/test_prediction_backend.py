@@ -14,6 +14,7 @@ from cs_copilot.tools.prediction.backend import (
 import cs_copilot.tools.prediction.catalog as catalog_module
 import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
@@ -35,7 +36,9 @@ from cs_copilot.tools.prediction.session_state import (
 )
 from cs_copilot.tools.prediction.training_orchestration import (
     apply_training_profile,
+    build_training_plots_if_possible,
     collect_training_bundle_files,
+    compute_classification_metrics,
     materialize_primary_protocol_artifacts,
     normalize_json_list_argument,
     write_training_summary,
@@ -56,6 +59,11 @@ def test_backend_capabilities_registry_core_contracts():
     assert ensemble.supports_uncertainty == "component_disagreement_std"
     assert lightgbm.supports_activity_cliff_feedback_loops is True
     assert chemprop.supports_activity_cliff_feedback_loops is False
+    assert "classification" in chemprop.supported_task_types
+    assert "classification" in lightgbm.supported_task_types
+    assert "multiclass_classification" in lightgbm.supported_task_types
+    assert "classification" in ensemble.supported_task_types
+    assert "classification" in chemprop.multi_target_task_types
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
     assert ensemble.gpu_support == "not_applicable"
@@ -192,6 +200,130 @@ def test_training_orchestration_normalizes_agent_list_arguments():
         0.1,
         0.1,
     ]
+
+
+def test_training_orchestration_classification_metrics_binary_text_labels():
+    metrics = compute_classification_metrics(
+        pd.Series(["inactive", "active", "active", "inactive"]),
+        pd.Series(["inactive", "active", "inactive", "inactive"]),
+        positive_scores=pd.Series([0.1, 0.9, 0.4, 0.2]),
+    )
+
+    assert metrics["n"] == 4
+    assert metrics["class_count"] == 2
+    assert metrics["accuracy"] == 0.75
+    assert metrics["balanced_accuracy"] == 0.75
+    assert metrics["f1_macro"] > 0.7
+    assert metrics["roc_auc"] == 1.0
+    assert metrics["positive_class"] == "active"
+
+
+def test_training_orchestration_classification_metrics_multiclass_text_labels():
+    metrics = compute_classification_metrics(
+        pd.Series(["low", "medium", "high", "high"]),
+        pd.Series(["low", "medium", "medium", "high"]),
+    )
+
+    assert metrics["class_count"] == 3
+    assert metrics["balanced_accuracy"] > 0.6
+    assert "roc_auc" not in metrics
+
+
+def test_chemprop_adapter_encodes_binary_classification_labels(tmp_path):
+    source = tmp_path / "training.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "COC"],
+            "active": ["inactive", "active", "inactive", "active"],
+            "extra": [1, 2, 3, 4],
+        }
+    ).to_csv(source, index=False)
+
+    result = materialize_chemprop_inputs(
+        source_csv=str(source),
+        output_dir=tmp_path / "chemprop_inputs",
+        task=PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["active"]),
+        split_payload=[{"train": [0, 1], "test": [2, 3]}],
+        split_label="random",
+        seed=123,
+    )
+
+    clean = pd.read_csv(result["chemprop_training_input_csv"])
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    assert clean.columns.tolist() == ["smiles", "active"]
+    assert sorted(clean["active"].unique().tolist()) == [0, 1]
+    assert manifest["classification_targets"]["active"]["class_count"] == 2
+    assert json.loads(Path(result["chemprop_splits_file"]).read_text()) == [{"train": [0, 1], "test": [2, 3]}]
+
+
+def test_chemprop_adapter_rejects_multiclass_classification(tmp_path):
+    source = tmp_path / "training.csv"
+    pd.DataFrame(
+        {"smiles": ["CCO", "CCC", "CCN"], "label": ["low", "medium", "high"]}
+    ).to_csv(source, index=False)
+
+    with pytest.raises(InvalidPredictionInputError, match="exactly two classes|multiclass"):
+        materialize_chemprop_inputs(
+            source_csv=str(source),
+            output_dir=tmp_path / "chemprop_inputs",
+            task=PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["label"]),
+            split_payload=[{"train": [0, 1], "test": [2]}],
+            split_label="random",
+            seed=123,
+        )
+
+
+def test_chemprop_toolkit_normalizes_multi_target_binary_classification(tmp_path):
+    toolkit = ChempropToolkit(register_tools=False)
+    train_csv = tmp_path / "chemprop_input.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "COC"],
+            "active": [0, 1, 0, 1],
+            "toxic": [1, 0, 1, 0],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_run"
+    (output_dir / "chemprop_inputs").mkdir(parents=True)
+    (output_dir / "chemprop_inputs" / "chemprop_input_manifest.json").write_text(
+        json.dumps(
+            {
+                "classification_targets": {
+                    "active": {"class_labels": ["inactive", "active"]},
+                    "toxic": {"class_labels": ["safe", "toxic"]},
+                }
+            }
+        )
+    )
+    splits_file = output_dir / "splits.json"
+    splits_file.write_text(json.dumps([{"train": [0, 1], "test": [2, 3]}]))
+    model_dir = output_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    (model_dir / "best.pt").write_text("model")
+    pd.DataFrame(
+        {
+            "smiles": ["CCN", "COC"],
+            "active": [0.2, 0.8],
+            "toxic": [0.7, 0.1],
+        }
+    ).to_csv(model_dir / "test_predictions.csv", index=False)
+
+    result = toolkit._compute_training_metrics(
+        train_csv=str(train_csv),
+        output_dir=str(output_dir),
+        task=PredictionTaskSpec(
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["active", "toxic"],
+        ),
+        splits_file=str(splits_file),
+    )
+
+    predictions = pd.read_csv(result["test_predictions_path"])
+    assert predictions["active_prediction"].tolist() == ["inactive", "active"]
+    assert predictions["toxic_prediction"].tolist() == ["toxic", "safe"]
+    assert result["metrics"]["test"]["balanced_accuracy"] == 1.0
+    assert result["target_metrics"]["toxic"]["balanced_accuracy"] == 1.0
 
 
 def test_training_orchestration_applies_profile_with_backend_specific_limits():
@@ -832,6 +964,114 @@ def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, t
         persisted_metadata["training_data_summary"]["validation_protocol"]
         == "repeated_scaffold_holdout_scaffold_repeat_2"
     )
+
+
+def test_model_registry_persistence_exposes_classification_metadata(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "ames.csv"
+    train_csv.write_text("smiles,Y\nCCO,1\nCCC,0\n")
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-07-03T14:11:43+02:00",
+                "validation_protocol": "random_holdout",
+                "representation_name": "morgan_count_only",
+                "task_kind": "binary_classification",
+                "class_labels": [0, 1],
+                "class_count": 2,
+                "label_mapping": {"0": 0, "1": 1},
+                "positive_class_label": 1,
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="classification",
+        smiles_columns=["smiles"],
+        target_columns=["Y"],
+        status="workflow_demo",
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        status="workflow_demo",
+        agent=agent,
+    )
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    assert persisted_metadata["task_type"] == "classification"
+    assert persisted_metadata["task_kind"] == "binary_classification"
+    assert persisted_metadata["class_labels"] == [0, 1]
+    assert persisted_metadata["class_count"] == 2
+    assert persisted_metadata["label_mapping"] == {"0": 0, "1": 1}
+    assert persisted_metadata["positive_class_label"] == 1
+    assert persisted_metadata["inference_profile"]["class_labels"] == [0, 1]
+
+
+def test_training_plots_build_classification_artifacts(tmp_path):
+    predictions_path = tmp_path / "predictions.csv"
+    predictions_path.write_text(
+        "Y_true,prediction,positive_probability\n"
+        "0,0,0.1\n"
+        "1,1,0.9\n"
+        "1,0,0.4\n"
+        "0,0,0.2\n"
+    )
+    splits_path = tmp_path / "splits.json"
+    splits_path.write_text(json.dumps([{"train": [0, 1], "test": [0, 1, 2, 3]}]))
+    primary_run = {
+        "strategy_label": "random_holdout",
+        "splits_path": str(splits_path),
+        "test_predictions_path": str(predictions_path),
+    }
+
+    artifacts = build_training_plots_if_possible(
+        train_csv=str(tmp_path / "missing.csv"),
+        split_results=[primary_run],
+        primary_run=primary_run,
+        root_artifacts={"splits_path": str(splits_path), "test_predictions_path": str(predictions_path)},
+        root_output_dir=tmp_path,
+        target_column="Y",
+        task_type="classification",
+    )
+    assert "confusion_matrix_random" in artifacts
+    assert "confusion_matrix_random_normalized" in artifacts
+    assert "roc_curve_random" in artifacts
+    assert "precision_recall_curve_random" in artifacts
+    assert "calibration_curve_random" in artifacts
+    assert "positive_probability_distribution_random" in artifacts
+    assert not any(key.startswith(("parity_plot", "residuals_plot")) for key in artifacts)
+    assert all(Path(path).exists() for path in artifacts.values())
 
 
 def test_prediction_registry_summarize_model_unknown_id_returns_guidance():

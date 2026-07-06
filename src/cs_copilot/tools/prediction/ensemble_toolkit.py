@@ -22,6 +22,7 @@ from .ensemble_backend import EnsembleBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import project_now, safe_slug
 from .tabicl_backend import TabICLBackend
+from .training_orchestration import compute_classification_metrics, is_classification_task, is_multiclass_task
 
 
 ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_only", "rdkit_basic_only", "rdkit_all_only"}
@@ -184,6 +185,17 @@ def _nested_metric(payload: Dict[str, Any], *keys: str) -> Optional[float]:
 
 def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
     metrics = record.known_metrics or {}
+    random_balanced_accuracy = (
+        _nested_metric(metrics, "random", "balanced_accuracy_mean")
+        or _nested_metric(metrics, "random", "balanced_accuracy")
+        or _nested_metric(metrics, "random_split", "balanced_accuracy")
+    )
+    scaffold_balanced_accuracy = (
+        _nested_metric(metrics, "scaffold", "balanced_accuracy_mean")
+        or _nested_metric(metrics, "scaffold", "balanced_accuracy")
+        or _nested_metric(metrics, "scaffold_split", "balanced_accuracy")
+    )
+    fallback_balanced_accuracy = _safe_float(metrics.get("balanced_accuracy")) if isinstance(metrics, dict) else None
     scaffold_r2 = (
         _nested_metric(metrics, "scaffold", "r2_mean")
         or _nested_metric(metrics, "scaffold", "r2")
@@ -214,6 +226,12 @@ def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
         "hardest_split": hardest_name,
         "hardest_split_r2": hardest_r2 or scaffold_r2 or fallback_r2,
         "fallback_r2": fallback_r2,
+        "random_balanced_accuracy": random_balanced_accuracy,
+        "scaffold_balanced_accuracy": scaffold_balanced_accuracy,
+        "hardest_split_balanced_accuracy": scaffold_balanced_accuracy or fallback_balanced_accuracy,
+        "fallback_balanced_accuracy": fallback_balanced_accuracy,
+        "roc_auc": _safe_float(metrics.get("roc_auc")) if isinstance(metrics, dict) else None,
+        "f1_macro": _safe_float(metrics.get("f1_macro")) if isinstance(metrics, dict) else None,
     }
 
 
@@ -223,9 +241,19 @@ def _evidence_tier(record: PredictionModelRecord, metrics: Dict[str, Any]) -> st
         return "A"
     if "robust" in text and metrics.get("random_r2_std") is not None:
         return "A"
-    if metrics.get("scaffold_r2") is not None or metrics.get("hardest_split_r2") is not None:
+    if (
+        metrics.get("scaffold_r2") is not None
+        or metrics.get("hardest_split_r2") is not None
+        or metrics.get("scaffold_balanced_accuracy") is not None
+        or metrics.get("hardest_split_balanced_accuracy") is not None
+    ):
         return "B"
-    if metrics.get("random_r2") is not None or metrics.get("fallback_r2") is not None:
+    if (
+        metrics.get("random_r2") is not None
+        or metrics.get("fallback_r2") is not None
+        or metrics.get("random_balanced_accuracy") is not None
+        or metrics.get("fallback_balanced_accuracy") is not None
+    ):
         return "C"
     return "D"
 
@@ -234,11 +262,19 @@ def _sort_score(evidence: Dict[str, Any]) -> tuple[float, float, float, float]:
     tier_weight = {"A": 4.0, "B": 3.0, "C": 2.0, "D": 1.0}.get(evidence.get("evidence_tier"), 0.0)
     metric = evidence.get("metrics", {}).get("hardest_split_r2")
     if metric is None:
+        metric = evidence.get("metrics", {}).get("hardest_split_balanced_accuracy")
+    if metric is None:
         metric = evidence.get("metrics", {}).get("scaffold_r2")
+    if metric is None:
+        metric = evidence.get("metrics", {}).get("scaffold_balanced_accuracy")
     if metric is None:
         metric = evidence.get("metrics", {}).get("random_r2")
     if metric is None:
+        metric = evidence.get("metrics", {}).get("random_balanced_accuracy")
+    if metric is None:
         metric = evidence.get("metrics", {}).get("fallback_r2")
+    if metric is None:
+        metric = evidence.get("metrics", {}).get("fallback_balanced_accuracy")
     status_weight = {
         "production": 4.0,
         "robust_validated": 3.5,
@@ -263,6 +299,12 @@ def _metrics(y_true: pd.Series, y_pred: pd.Series) -> Dict[str, float]:
     denom = float(((truth - truth.mean()) ** 2).sum())
     r2 = float(1.0 - float((residual**2).sum()) / denom) if denom > 0 else float("nan")
     return {"n": int(mask.sum()), "r2": r2, "rmse": rmse, "mae": mae, "mse": mse}
+
+
+def _task_compatible(record_task_type: str, requested_task_type: str) -> bool:
+    if record_task_type == requested_task_type:
+        return True
+    return is_classification_task(record_task_type) and is_classification_task(requested_task_type)
 
 
 class EnsembleToolkit(Toolkit):
@@ -298,7 +340,7 @@ class EnsembleToolkit(Toolkit):
         compatible = True
         reasons: List[str] = []
         warnings: List[str] = []
-        if record.task.task_type != task_type:
+        if not _task_compatible(record.task.task_type, task_type):
             compatible = False
             warnings.append(f"Task type mismatch: {record.task.task_type}.")
         if not _target_matches(record, target):
@@ -318,9 +360,9 @@ class EnsembleToolkit(Toolkit):
             warnings.append("Ablation representation; include only with explicit scientific justification.")
         if compatible:
             reasons.append("Compatible target, task, backend and model path.")
-        if metrics.get("hardest_split_r2") is not None:
+        if metrics.get("hardest_split_r2") is not None or metrics.get("hardest_split_balanced_accuracy") is not None:
             reasons.append("Has hardest/scaffold-style validation evidence.")
-        elif metrics.get("random_r2") is not None:
+        elif metrics.get("random_r2") is not None or metrics.get("random_balanced_accuracy") is not None:
             reasons.append("Has random-split validation evidence only.")
         else:
             reasons.append("No direct validation metric was extracted; usable only with caution.")
@@ -472,10 +514,16 @@ class EnsembleToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Create and persist a post-hoc ensemble from compatible catalog models."""
-        if aggregation_strategy != "median":
-            raise ValueError("Only median aggregation is supported in ensemble V1.")
-        if task_type != "regression":
-            raise ValueError("Ensemble V1 is limited to regression QSAR.")
+        task_is_classification = is_classification_task(task_type)
+        if task_is_classification and is_multiclass_task(task_type):
+            raise ValueError("Ensemble multiclass classification is not enabled in this QSARIA version.")
+        if task_is_classification and aggregation_strategy == "median":
+            aggregation_strategy = "majority_vote"
+        if task_is_classification:
+            if aggregation_strategy != "majority_vote":
+                raise ValueError("Classification ensembles support only majority_vote aggregation.")
+        elif aggregation_strategy != "median":
+            raise ValueError("Regression ensembles support only median aggregation.")
         self.catalog.refresh_from_internal_store(persist=True)
         model_ids = _coerce_list(model_ids)
         selected, selected_evidence, all_evidence = self._select_components(
@@ -500,13 +548,24 @@ class EnsembleToolkit(Toolkit):
             self._component_payload(record, evidence)
             for record, evidence in zip(selected, selected_evidence)
         ]
+        class_labels: List[Any] = []
+        if task_is_classification:
+            for record in selected:
+                labels = list((record.inference_profile or {}).get("class_labels") or [])
+                if labels and not class_labels:
+                    class_labels = labels
+                elif labels and class_labels and list(labels) != class_labels:
+                    raise ValueError("Selected classification components do not share the same class labels.")
+            if len(class_labels) > 2:
+                raise ValueError("Ensemble multiclass classification is not enabled in this QSARIA version.")
         ensemble_payload = {
             "schema_version": 1,
-            "ensemble_kind": "catalog_consensus_regression",
+            "ensemble_kind": "catalog_consensus_classification" if task_is_classification else "catalog_consensus_regression",
             "target": target,
             "task_type": task_type,
-            "aggregation_strategy": "median",
-            "uncertainty_strategy": "component_disagreement_std",
+            "aggregation_strategy": aggregation_strategy,
+            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+            "class_labels": class_labels,
             "created_from": "catalog",
             "created_at": now.isoformat(),
             "selection_policy": {
@@ -553,8 +612,11 @@ class EnsembleToolkit(Toolkit):
                 "has_ensemble_level_evaluation": False,
             },
             inference_profile={
-                "aggregation_strategy": "median",
-                "uncertainty_strategy": "component_disagreement_std",
+                "aggregation_strategy": aggregation_strategy,
+                "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+                "class_labels": class_labels,
+                "class_count": len(class_labels) if class_labels else None,
+                "positive_class_label": class_labels[1] if len(class_labels) == 2 else None,
             },
             selection_hints={
                 "selection_evidence_path": str(evidence_path.resolve()),
@@ -727,26 +789,57 @@ class EnsembleToolkit(Toolkit):
 
         prediction_columns = [column for column in predictions.columns if column.startswith("prediction_")]
         metrics_rows = []
-        for column in prediction_columns:
-            metrics_rows.append({"model": column.removeprefix("prediction_"), **_metrics(source[target_column], predictions[column])})
-        metrics_rows.append({"model": "ensemble_median", **_metrics(source[target_column], predictions["ensemble_prediction_median"])})
+        task_is_classification = is_classification_task(record.task.task_type)
+        if task_is_classification:
+            for column in prediction_columns:
+                metrics_rows.append(
+                    {
+                        "model": column.removeprefix("prediction_"),
+                        **compute_classification_metrics(source[target_column], predictions[column]),
+                    }
+                )
+            metrics_rows.append(
+                {
+                    "model": "ensemble_majority_vote",
+                    **compute_classification_metrics(
+                        source[target_column],
+                        predictions["ensemble_prediction_class"],
+                        positive_scores=predictions.get("positive_probability"),
+                    ),
+                }
+            )
+        else:
+            for column in prediction_columns:
+                metrics_rows.append({"model": column.removeprefix("prediction_"), **_metrics(source[target_column], predictions[column])})
+            metrics_rows.append({"model": "ensemble_median", **_metrics(source[target_column], predictions["ensemble_prediction_median"])})
         metrics_df = pd.DataFrame(metrics_rows)
         metrics_path = eval_dir / "metrics_by_component.csv"
         metrics_df.to_csv(metrics_path, index=False)
 
-        residuals = pd.DataFrame(
-            {
-                "y_true": pd.to_numeric(source[target_column], errors="coerce"),
-                "ensemble_prediction": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce"),
-                "ensemble_residual": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce")
-                - pd.to_numeric(source[target_column], errors="coerce"),
-                "ensemble_disagreement_std": pd.to_numeric(predictions["ensemble_prediction_std"], errors="coerce"),
-            }
-        )
+        if task_is_classification:
+            residuals = pd.DataFrame(
+                {
+                    "y_true": source[target_column],
+                    "ensemble_prediction": predictions["ensemble_prediction_class"],
+                    "ensemble_correct": source[target_column].astype(str) == predictions["ensemble_prediction_class"].astype(str),
+                    "ensemble_vote_fraction": pd.to_numeric(predictions["ensemble_vote_fraction"], errors="coerce"),
+                }
+            )
+        else:
+            residuals = pd.DataFrame(
+                {
+                    "y_true": pd.to_numeric(source[target_column], errors="coerce"),
+                    "ensemble_prediction": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce"),
+                    "ensemble_residual": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce")
+                    - pd.to_numeric(source[target_column], errors="coerce"),
+                    "ensemble_disagreement_std": pd.to_numeric(predictions["ensemble_prediction_std"], errors="coerce"),
+                }
+            )
         residuals_path = eval_dir / "residuals.csv"
         residuals.to_csv(residuals_path, index=False)
         disagreement_path = eval_dir / "disagreement_analysis.csv"
-        residuals.sort_values("ensemble_disagreement_std", ascending=False).to_csv(disagreement_path, index=False)
+        sort_column = "ensemble_vote_fraction" if task_is_classification else "ensemble_disagreement_std"
+        residuals.sort_values(sort_column, ascending=task_is_classification).to_csv(disagreement_path, index=False)
 
         component_predictions_path = eval_dir / "component_predictions.csv"
         predictions[prediction_columns].to_csv(component_predictions_path, index=False)
@@ -816,13 +909,32 @@ class EnsembleToolkit(Toolkit):
             "",
             f"Evaluation: {summary['evaluation_id']} ({summary['evaluation_kind']})",
             "",
-            "| Modele | R2 | RMSE | MAE | MSE | n |",
-            "|---|---:|---:|---:|---:|---:|",
         ]
-        for row in metrics_rows:
-            lines.append(
-                f"| {row['model']} | {row['r2']:.4f} | {row['rmse']:.4f} | {row['mae']:.4f} | {row['mse']:.4f} | {row['n']} |"
+        if metrics_rows and "balanced_accuracy" in metrics_rows[0]:
+            lines.extend(
+                [
+                    "| Modele | Balanced accuracy | F1 macro | ROC-AUC | n |",
+                    "|---|---:|---:|---:|---:|",
+                ]
             )
+            for row in metrics_rows:
+                roc_auc = row.get("roc_auc")
+                roc_auc_text = f"{roc_auc:.4f}" if roc_auc is not None else "NA"
+                lines.append(
+                    f"| {row['model']} | {row.get('balanced_accuracy', 0):.4f} | "
+                    f"{row.get('f1_macro', 0):.4f} | {roc_auc_text} | {row.get('n')} |"
+                )
+        else:
+            lines.extend(
+                [
+                    "| Modele | R2 | RMSE | MAE | MSE | n |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for row in metrics_rows:
+                lines.append(
+                    f"| {row['model']} | {row['r2']:.4f} | {row['rmse']:.4f} | {row['mae']:.4f} | {row['mse']:.4f} | {row['n']} |"
+                )
         lines.extend(
             [
                 "",

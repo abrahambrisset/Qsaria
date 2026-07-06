@@ -134,3 +134,62 @@ def test_chembl_backend_stereo_identity_removes_conflicting_duplicates(
     assert result["duplicate_conflicting_groups"] == 1
     assert len(curated) == 1
     assert curated["smiles"].iloc[0] == "CCO"
+
+
+def test_chembl_backend_classification_aggregates_concordant_duplicates(
+    tmp_path, monkeypatch
+) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    source = tmp_path / "classification.csv"
+    output = tmp_path / "classification_curated.csv"
+    pd.DataFrame(
+        {
+            "SMILES": ["C[C@H](O)N", "C[C@@H](O)N", "CCO"],
+            "active": ["yes", "yes", "no"],
+        }
+    ).to_csv(source, index=False)
+
+    result = DatasetCurationToolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="classification",
+        smiles_column="SMILES",
+        target_columns=["active"],
+        output_csv=str(output),
+    )
+
+    curated = pd.read_csv(output)
+    assert result["duplicate_groups_aggregated"] == 1
+    assert result["duplicate_conflicting_groups"] == 0
+    assert len(curated) == 2
+    assert result["target_data_quality"]["classification_target_summary"]["active"]["class_count"] == 2
+    assert set(curated["active"]) == {"yes", "no"}
+
+
+def test_chembl_backend_classification_removes_conflicting_duplicates(
+    tmp_path, monkeypatch
+) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    source = tmp_path / "classification_conflict.csv"
+    output = tmp_path / "classification_conflict_curated.csv"
+    pd.DataFrame(
+        {
+            "SMILES": ["C[C@H](O)N", "C[C@@H](O)N", "CCO"],
+            "active": ["yes", "no", "no"],
+        }
+    ).to_csv(source, index=False)
+
+    result = DatasetCurationToolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="classification",
+        smiles_column="SMILES",
+        target_columns=["active"],
+        output_csv=str(output),
+    )
+
+    curated = pd.read_csv(output)
+    assert result["duplicate_groups_aggregated"] == 0
+    assert result["duplicate_conflicting_groups"] == 1
+    assert len(curated) == 1
+    assert curated["smiles"].iloc[0] == "CCO"

@@ -30,6 +30,7 @@ from .chemprop_backend import ChempropBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import safe_slug
 from .tabicl_backend import TabICLBackend
+from .training_orchestration import is_classification_task, is_multiclass_task, json_safe_label
 
 
 def _read_csv(path: str | Path) -> pd.DataFrame:
@@ -151,10 +152,15 @@ class EnsembleBackend(PredictionBackend):
         payload = self._load_payload(path)
         if int(payload.get("schema_version", 0)) != 1:
             raise InvalidPredictionInputError("Unsupported ensemble schema_version.")
-        if payload.get("ensemble_kind") != "catalog_consensus_regression":
+        if payload.get("ensemble_kind") not in {"catalog_consensus_regression", "catalog_consensus_classification"}:
             raise InvalidPredictionInputError("Unsupported ensemble_kind for this V1 backend.")
-        if payload.get("aggregation_strategy") != "median":
-            raise InvalidPredictionInputError("Only median aggregation is supported in ensemble V1.")
+        if payload.get("ensemble_kind") == "catalog_consensus_regression" and payload.get("aggregation_strategy") != "median":
+            raise InvalidPredictionInputError("Only median aggregation is supported for regression ensemble V1.")
+        if (
+            payload.get("ensemble_kind") == "catalog_consensus_classification"
+            and payload.get("aggregation_strategy") != "majority_vote"
+        ):
+            raise InvalidPredictionInputError("Only majority_vote aggregation is supported for classification ensemble V1.")
         components = payload.get("components")
         if not isinstance(components, list) or not components:
             raise InvalidPredictionInputError("Ensemble must contain at least one component.")
@@ -334,6 +340,12 @@ class EnsembleBackend(PredictionBackend):
     ) -> Dict[str, Any]:
         ensemble_path = self.validate_model_path(model_record.model_path)
         payload = self._load_payload(ensemble_path)
+        ensemble_kind = str(payload.get("ensemble_kind") or "")
+        task_is_classification = ensemble_kind == "catalog_consensus_classification" or is_classification_task(
+            model_record.task.task_type
+        )
+        if task_is_classification and is_multiclass_task(model_record.task.task_type):
+            raise InvalidPredictionInputError("Ensemble multiclass classification is not enabled in this QSARIA version.")
         components = payload.get("components") or []
         output_path = Path(preds_path).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +356,7 @@ class EnsembleBackend(PredictionBackend):
         component_input_csv = str(input_path.resolve()) if input_path.exists() else input_csv
         source_df = _read_csv(component_input_csv)
         component_columns: Dict[str, pd.Series] = {}
+        component_probability_columns: Dict[str, pd.Series] = {}
         component_paths: Dict[str, str] = {}
         component_input_paths: Dict[str, str] = {}
         component_summaries: list[Dict[str, Any]] = []
@@ -392,8 +405,24 @@ class EnsembleBackend(PredictionBackend):
                     extra_args=extra_args,
                 )
                 frame = _read_csv(component_path)
-                column = _prediction_column(frame, record.task.target_columns)
-                values = pd.to_numeric(frame[column], errors="coerce")
+                if task_is_classification:
+                    column = "prediction" if "prediction" in frame.columns else next(
+                        (target for target in record.task.target_columns if target in frame.columns),
+                        None,
+                    )
+                    if column is None:
+                        raise InvalidPredictionInputError(
+                            f"Component `{record.model_id}` did not return a classification prediction column."
+                        )
+                    values = frame[column].map(json_safe_label)
+                    if "positive_probability" in frame.columns:
+                        component_probability_columns[f"positive_probability_{slug}"] = pd.to_numeric(
+                            frame["positive_probability"],
+                            errors="coerce",
+                        ).reset_index(drop=True)
+                else:
+                    column = _prediction_column(frame, record.task.target_columns)
+                    values = pd.to_numeric(frame[column], errors="coerce")
                 if len(values) != len(source_df):
                     raise InvalidPredictionInputError(
                         f"Component `{record.model_id}` returned {len(values)} predictions for {len(source_df)} inputs."
@@ -422,17 +451,35 @@ class EnsembleBackend(PredictionBackend):
             raise PredictionExecutionError("No component predictions were produced.")
 
         component_df = pd.DataFrame(component_columns)
-        aggregate = pd.DataFrame(
-            {
-                "prediction": component_df.median(axis=1),
-                "ensemble_prediction_median": component_df.median(axis=1),
-                "ensemble_prediction_mean": component_df.mean(axis=1),
-                "ensemble_prediction_std": component_df.std(axis=1, ddof=0),
-                "ensemble_prediction_min": component_df.min(axis=1),
-                "ensemble_prediction_max": component_df.max(axis=1),
-                "ensemble_component_count": len(component_columns),
-            }
-        )
+        if task_is_classification:
+            modes = component_df.mode(axis=1, dropna=True)
+            majority = modes[0] if 0 in modes.columns else pd.Series([None] * len(component_df))
+            vote_fraction = component_df.eq(majority, axis=0).sum(axis=1) / float(len(component_columns))
+            aggregate = pd.DataFrame(
+                {
+                    "prediction": majority,
+                    "ensemble_prediction_class": majority,
+                    "ensemble_vote_fraction": vote_fraction,
+                    "ensemble_component_count": len(component_columns),
+                }
+            )
+            if component_probability_columns:
+                probability_df = pd.DataFrame(component_probability_columns)
+                aggregate["positive_probability"] = probability_df.mean(axis=1, skipna=True)
+                aggregate["ensemble_positive_probability_std"] = probability_df.std(axis=1, ddof=0).fillna(0.0)
+                component_df = pd.concat([component_df, probability_df], axis=1)
+        else:
+            aggregate = pd.DataFrame(
+                {
+                    "prediction": component_df.median(axis=1),
+                    "ensemble_prediction_median": component_df.median(axis=1),
+                    "ensemble_prediction_mean": component_df.mean(axis=1),
+                    "ensemble_prediction_std": component_df.std(axis=1, ddof=0),
+                    "ensemble_prediction_min": component_df.min(axis=1),
+                    "ensemble_prediction_max": component_df.max(axis=1),
+                    "ensemble_component_count": len(component_columns),
+                }
+            )
         result_df = pd.concat([aggregate, component_df], axis=1)
         result_df.to_csv(output_path, index=False)
         ensemble_inference_summary = {
@@ -443,18 +490,30 @@ class EnsembleBackend(PredictionBackend):
             "rows_in": int(len(source_df)),
             "rows_predicted": int(len(result_df)),
             "rows_failed": 0,
-            "aggregation_strategy": "median",
-            "official_prediction_column": "ensemble_prediction_median",
-            "uncertainty_strategy": "component_disagreement_std",
+            "aggregation_strategy": "majority_vote" if task_is_classification else "median",
+            "official_prediction_column": "ensemble_prediction_class" if task_is_classification else "ensemble_prediction_median",
+            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
             "uncertainty_note": (
-                "ensemble_prediction_std is inter-component disagreement, not calibrated predictive uncertainty."
+                "ensemble_vote_fraction is component agreement, not calibrated predictive uncertainty."
+                if task_is_classification
+                else "ensemble_prediction_std is inter-component disagreement, not calibrated predictive uncertainty."
             ),
             "component_count": len(component_columns),
             "components": component_summaries,
             "output_columns": list(result_df.columns),
-            "prediction_summary": _numeric_summary(aggregate["ensemble_prediction_median"]),
-            "disagreement_summary": _numeric_summary(aggregate["ensemble_prediction_std"]),
-            "top_disagreement_rows": self._top_disagreement_rows(
+            "prediction_summary": (
+                aggregate["ensemble_prediction_class"].value_counts(dropna=False).to_dict()
+                if task_is_classification
+                else _numeric_summary(aggregate["ensemble_prediction_median"])
+            ),
+            "disagreement_summary": (
+                _numeric_summary(aggregate["ensemble_vote_fraction"])
+                if task_is_classification
+                else _numeric_summary(aggregate["ensemble_prediction_std"])
+            ),
+            "top_disagreement_rows": []
+            if task_is_classification
+            else self._top_disagreement_rows(
                 source_df=source_df,
                 aggregate=aggregate,
             ),
@@ -467,8 +526,8 @@ class EnsembleBackend(PredictionBackend):
             "component_input_paths": component_input_paths,
             "components": component_summaries,
             "component_count": len(component_columns),
-            "aggregation_strategy": "median",
-            "uncertainty_strategy": "component_disagreement_std",
+            "aggregation_strategy": "majority_vote" if task_is_classification else "median",
+            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
             "ensemble_inference_summary": ensemble_inference_summary,
             "download_file_ref": str(output_path),
             "download_file_tag": f"<file>{output_path}</file>",

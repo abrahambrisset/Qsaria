@@ -15,7 +15,7 @@ import json
 import math
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import pandas as pd
 from scipy.stats import kendalltau, spearmanr
@@ -25,10 +25,121 @@ from .backend import PredictionTaskSpec
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile
 
+CLASSIFICATION_TASK_TYPES = {"classification", "binary_classification", "multiclass", "multiclass_classification"}
+MULTICLASS_TASK_TYPES = {"multiclass", "multiclass_classification"}
+
 
 def strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy without CSV index columns such as ``Unnamed: 0``."""
     return df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed:")].copy()
+
+
+def normalize_task_type(task_type: str) -> str:
+    normalized = str(task_type or "").strip().lower()
+    if normalized in {"binary_classification", "classification"}:
+        return "classification"
+    if normalized in MULTICLASS_TASK_TYPES:
+        return "multiclass_classification"
+    return normalized or "regression"
+
+
+def is_classification_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in CLASSIFICATION_TASK_TYPES
+
+
+def is_multiclass_task(task_type: str) -> bool:
+    return str(task_type or "").strip().lower() in MULTICLASS_TASK_TYPES
+
+
+def classification_task_kind(task_type: str, class_count: Optional[int] = None) -> str:
+    if is_multiclass_task(task_type) or (class_count is not None and class_count > 2):
+        return "multiclass_classification"
+    if is_classification_task(task_type):
+        return "binary_classification"
+    return "regression"
+
+
+def normalize_classification_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return value
+
+
+def label_key(value: Any) -> str:
+    return json.dumps(normalize_classification_label(value), sort_keys=True, default=str)
+
+
+def json_safe_label(value: Any) -> Any:
+    value = normalize_classification_label(value)
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def sort_class_labels(labels: Sequence[Any]) -> List[Any]:
+    unique = {label_key(label): normalize_classification_label(label) for label in labels}
+    values = list(unique.values())
+    if len(values) == 2:
+        negative_tokens = {"0", "false", "f", "no", "n", "inactive", "negative", "neg", "control"}
+        positive_tokens = {"1", "true", "t", "yes", "y", "active", "positive", "pos"}
+
+        def polarity(value: Any) -> Optional[int]:
+            token = str(json_safe_label(value)).strip().lower()
+            if token in negative_tokens:
+                return 0
+            if token in positive_tokens:
+                return 1
+            return None
+
+        polarities = [polarity(value) for value in values]
+        if set(polarities) == {0, 1}:
+            return [value for _, value in sorted(zip(polarities, values), key=lambda item: item[0])]
+    return sorted(values, key=lambda value: (str(type(value)), str(value)))
+
+
+def resolve_class_labels(series: pd.Series) -> List[Any]:
+    labels = [normalize_classification_label(value) for value in series.tolist()]
+    return sort_class_labels([label for label in labels if label is not None])
+
+
+def encode_classification_labels(
+    series: pd.Series,
+    class_labels: Sequence[Any],
+) -> Tuple[pd.Series, Dict[str, int]]:
+    mapping = {label_key(label): index for index, label in enumerate(class_labels)}
+
+    def _encode(value: Any) -> Optional[int]:
+        key = label_key(value)
+        return mapping.get(key)
+
+    encoded = series.map(_encode)
+    return encoded, {str(json_safe_label(label)): index for index, label in enumerate(class_labels)}
+
+
+def decode_classification_labels(codes: Sequence[Any], class_labels: Sequence[Any]) -> pd.Series:
+    labels = list(class_labels)
+
+    def _decode(code: Any) -> Any:
+        try:
+            index = int(code)
+        except (TypeError, ValueError):
+            return None
+        return json_safe_label(labels[index]) if 0 <= index < len(labels) else None
+
+    return pd.Series([_decode(code) for code in codes])
 
 
 def normalize_json_list_argument(
@@ -211,6 +322,115 @@ def compute_regression_metrics(
     }
 
 
+def _binary_roc_auc(y_true_codes: pd.Series, positive_scores: pd.Series) -> Optional[float]:
+    aligned = pd.DataFrame({"y": y_true_codes, "score": positive_scores}).dropna()
+    if aligned.empty:
+        return None
+    positives = int((aligned["y"] == 1).sum())
+    negatives = int((aligned["y"] == 0).sum())
+    if positives == 0 or negatives == 0:
+        return None
+    ranks = aligned["score"].rank(method="average")
+    rank_sum_pos = float(ranks[aligned["y"] == 1].sum())
+    return float((rank_sum_pos - positives * (positives + 1) / 2.0) / (positives * negatives))
+
+
+def compute_classification_metrics(
+    y_true: pd.Series,
+    y_pred: pd.Series,
+    *,
+    class_labels: Optional[Sequence[Any]] = None,
+    positive_scores: Optional[pd.Series] = None,
+    target_column: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compute standard QSAR classification metrics for binary or multiclass labels."""
+    truth = y_true.map(normalize_classification_label)
+    pred = y_pred.map(normalize_classification_label)
+    mask = truth.notna() & pred.notna()
+    truth = truth[mask].reset_index(drop=True)
+    pred = pred[mask].reset_index(drop=True)
+    if truth.empty:
+        return {}
+
+    labels = list(class_labels or resolve_class_labels(pd.concat([truth, pred], ignore_index=True)))
+    if len(labels) < 2:
+        return {}
+
+    true_codes, _ = encode_classification_labels(truth, labels)
+    pred_codes, _ = encode_classification_labels(pred, labels)
+    valid = true_codes.notna() & pred_codes.notna()
+    true_codes = true_codes[valid].astype(int).reset_index(drop=True)
+    pred_codes = pred_codes[valid].astype(int).reset_index(drop=True)
+    if true_codes.empty:
+        return {}
+
+    rows: List[Dict[str, Any]] = []
+    recalls: List[float] = []
+    precisions: List[float] = []
+    f1_values: List[float] = []
+    for class_index, class_label in enumerate(labels):
+        tp = int(((true_codes == class_index) & (pred_codes == class_index)).sum())
+        fp = int(((true_codes != class_index) & (pred_codes == class_index)).sum())
+        fn = int(((true_codes == class_index) & (pred_codes != class_index)).sum())
+        support = int((true_codes == class_index).sum())
+        precision = float(tp / (tp + fp)) if tp + fp else 0.0
+        recall = float(tp / (tp + fn)) if tp + fn else 0.0
+        f1 = float(2.0 * precision * recall / (precision + recall)) if precision + recall else 0.0
+        precisions.append(precision)
+        recalls.append(recall)
+        f1_values.append(f1)
+        rows.append(
+            {
+                "class_label": json_safe_label(class_label),
+                "support": support,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+            }
+        )
+
+    accuracy = float((true_codes == pred_codes).mean())
+    metrics: Dict[str, Any] = {
+        "accuracy": accuracy,
+        "balanced_accuracy": float(sum(recalls) / len(recalls)) if recalls else None,
+        "precision_macro": float(sum(precisions) / len(precisions)) if precisions else None,
+        "recall_macro": float(sum(recalls) / len(recalls)) if recalls else None,
+        "f1_macro": float(sum(f1_values) / len(f1_values)) if f1_values else None,
+        "n": int(len(true_codes)),
+        "num_classes": len(labels),
+        "class_count": len(labels),
+        "class_labels": [json_safe_label(label) for label in labels],
+        "class_counts": {
+            str(json_safe_label(labels[index])): int((true_codes == index).sum())
+            for index in range(len(labels))
+        },
+        "per_class": rows,
+        **({"target_column": target_column} if target_column else {}),
+    }
+    if len(labels) == 2:
+        pos_label = labels[1]
+        binary_row = rows[1]
+        metrics.update(
+            {
+                "positive_class": json_safe_label(pos_label),
+                "negative_class": json_safe_label(labels[0]),
+                "precision": binary_row["precision"],
+                "recall": binary_row["recall"],
+                "f1": binary_row["f1"],
+            }
+        )
+        if positive_scores is not None:
+            scores = positive_scores.reset_index(drop=True)
+            if len(scores) == len(mask):
+                scores = scores[mask.to_numpy()].reset_index(drop=True)
+            if len(scores) == len(valid):
+                scores = scores[valid.to_numpy()].reset_index(drop=True)
+            auc = _binary_roc_auc(true_codes, pd.to_numeric(scores, errors="coerce"))
+            if auc is not None:
+                metrics["roc_auc"] = auc
+    return metrics
+
+
 def build_applicability_domain_for_training(
     *,
     train_csv: str,
@@ -249,6 +469,7 @@ def build_training_plots_if_possible(
     root_artifacts: Mapping[str, Optional[str]],
     root_output_dir: Path,
     target_column: Optional[str],
+    task_type: str = "regression",
 ) -> Dict[str, str]:
     """Build standard QSAR plots when the required split artifacts are present."""
     if not target_column or not root_artifacts.get("splits_path") or not root_artifacts.get("test_predictions_path"):
@@ -280,6 +501,7 @@ def build_training_plots_if_possible(
             },
             output_dir=str(plots_output_dir),
             target_column=target_column,
+            task_type=task_type,
         )
     except Exception:
         return {}

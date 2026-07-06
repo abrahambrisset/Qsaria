@@ -42,6 +42,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
+from .training_orchestration import normalize_task_type
 from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 logger = logging.getLogger(__name__)
@@ -781,13 +782,17 @@ class ChempropBackend(PredictionBackend):
         output_path.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now().astimezone()
 
+        chemprop_task_type = normalize_task_type(task.task_type)
+        if chemprop_task_type in {"binary_classification", "multiclass", "multiclass_classification"}:
+            chemprop_task_type = "classification"
+
         args = [
             "chemprop",
             "train",
             "--data-path",
             str(input_path),
             "--task-type",
-            task.task_type,
+            chemprop_task_type,
             "--output-dir",
             str(output_path),
         ]
