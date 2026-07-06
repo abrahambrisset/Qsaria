@@ -68,6 +68,32 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
     return strip_unnamed_columns(df)
 
 
+def _agent_storage_path(path: str | Path) -> str:
+    """Normalize agent-returned session paths for S3.open."""
+    raw = str(path)
+    if raw.startswith(("s3://", "/", "file://")):
+        return raw
+
+    prefix = S3.current_prefix().strip("/")
+    for root in (".files", "data"):
+        session_prefix = f"{root}/{prefix}/"
+        while raw.startswith(session_prefix):
+            raw = raw[len(session_prefix) :]
+
+    while raw.startswith(f"{prefix}/"):
+        raw = raw[len(prefix) + 1 :]
+
+    return raw
+
+
+def _agent_local_path(path: str | Path) -> str:
+    """Normalize agent-returned session paths for filesystem-only helpers."""
+    storage_path = _agent_storage_path(path)
+    if storage_path.startswith(("s3://", "/", "file://")):
+        return storage_path
+    return S3.path(storage_path)
+
+
 def _find_first_existing_path(candidates: List[Path]) -> Optional[Path]:
     for candidate in candidates:
         try:
@@ -202,7 +228,7 @@ class ChempropToolkit(Toolkit):
         if not any(item.get("raw_test_predictions_path") for item in replicate_artifacts):
             return {}
 
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
         split_payload = json.loads(splits_path.read_text())
         if not split_payload or "test" not in split_payload[0]:
             return {}
@@ -559,7 +585,7 @@ class ChempropToolkit(Toolkit):
     ) -> Dict[str, Any]:
         run_output_dir = Path(output_dir).expanduser().resolve()
         chemprop_input = materialize_chemprop_inputs(
-            source_csv=train_csv,
+            source_csv=_agent_local_path(train_csv),
             output_dir=run_output_dir / "chemprop_inputs",
             task=task,
             split_payload=split_payload,
@@ -622,7 +648,7 @@ class ChempropToolkit(Toolkit):
         split_sizes: List[float],
         seed: int,
     ) -> List[Dict[str, List[int]]]:
-        dataset = strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        dataset = strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
         normalized_split_sizes = normalize_json_list_argument(
             split_sizes,
             argument_name="split_sizes",
@@ -858,7 +884,7 @@ class ChempropToolkit(Toolkit):
         if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
             return {}
 
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
+        dataset = _strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
         predictions = _strip_unnamed_columns(pd.read_csv(preds_path))
 
         split_payload = json.loads(splits_path.read_text())
@@ -968,6 +994,8 @@ class ChempropToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Launch Chemprop training and persist a lightweight training record."""
+        source_train_csv = _agent_storage_path(train_csv)
+        local_train_csv = _agent_local_path(train_csv)
         smiles_columns = normalize_json_list_argument(
             smiles_columns,
             argument_name="smiles_columns",
@@ -1022,7 +1050,7 @@ class ChempropToolkit(Toolkit):
         if task.task_type == "regression" and len(task.target_columns) == 1:
             try:
                 activity_cliffs = prepare_activity_cliff_context(
-                    train_csv=train_csv,
+                    train_csv=local_train_csv,
                     output_dir=resolved_output_dir,
                     smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
                     target_column=task.target_columns[0],
@@ -1041,7 +1069,7 @@ class ChempropToolkit(Toolkit):
         qsar_training_state = None
         active_run_record = {
             "status": "running",
-            "train_csv": train_csv,
+            "train_csv": source_train_csv,
             "output_dir": resolved_output_dir,
             "validation_protocol": protocol_policy["protocol"],
             "training_profile": training_policy["training_profile"],
@@ -1064,7 +1092,7 @@ class ChempropToolkit(Toolkit):
         total_started_at = project_now()
 
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
-        with S3.open(train_csv, "r") as fh:
+        with S3.open(source_train_csv, "r") as fh:
             split_source_df = strip_unnamed_columns(pd.read_csv(fh))
         is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
@@ -1096,7 +1124,7 @@ class ChempropToolkit(Toolkit):
                     split_payload = cv_split_payloads[label]
                 else:
                     split_payload = self._build_split_payload(
-                        train_csv=train_csv,
+                        train_csv=local_train_csv,
                         task=task,
                         split_type=split_run["backend_split_type"],
                         split_sizes=run_args["split_sizes"],
@@ -1111,7 +1139,7 @@ class ChempropToolkit(Toolkit):
                 write_active_training_marker(active_marker_path, active_run_record)
 
                 single_result = self._train_single_run(
-                    train_csv=train_csv,
+                    train_csv=local_train_csv,
                     task=task,
                     output_dir=str(run_output_dir),
                     train_args=run_args,
@@ -1178,7 +1206,7 @@ class ChempropToolkit(Toolkit):
                     "final_refit": True,
                 }
                 final_refit_run = self._train_single_run(
-                    train_csv=train_csv,
+                    train_csv=local_train_csv,
                     task=task,
                     output_dir=str(final_refit_output_dir),
                     train_args=final_args,
@@ -1201,7 +1229,7 @@ class ChempropToolkit(Toolkit):
             if prediction_state is not None:
                 prediction_state["training_runs"].append(
                     {
-                        "train_csv": train_csv,
+                        "train_csv": source_train_csv,
                         "output_dir": resolved_output_dir,
                         "task_type": task_type,
                         "smiles_columns": task.smiles_columns,
@@ -1227,7 +1255,7 @@ class ChempropToolkit(Toolkit):
             )
             validation_assessment = self._assess_protocol_results(split_results)
             ad_summary = self._build_applicability_domain(
-                train_csv=train_csv,
+                train_csv=local_train_csv,
                 primary_run=final_primary_run,
                 primary_output_dir=final_primary_output_dir,
                 model_id_hint=Path(resolved_output_dir).name,
@@ -1236,7 +1264,7 @@ class ChempropToolkit(Toolkit):
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
             plot_artifacts = build_training_plots_if_possible(
-                train_csv=train_csv,
+                train_csv=local_train_csv,
                 split_results=split_results,
                 primary_run=final_primary_run,
                 root_artifacts=root_artifacts,
@@ -1349,7 +1377,7 @@ class ChempropToolkit(Toolkit):
                 / f"{Path(resolved_output_dir).name}_training_bundle.zip"
             ).resolve()
             bundle_files = collect_training_bundle_files(
-                train_csv=train_csv,
+                train_csv=local_train_csv,
                 summary_path=training_summary_path,
                 result={
                     **result,

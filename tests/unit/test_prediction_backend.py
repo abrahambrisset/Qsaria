@@ -15,7 +15,7 @@ import cs_copilot.tools.prediction.catalog as catalog_module
 import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
-from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit, _agent_storage_path
 from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
@@ -522,6 +522,20 @@ def test_chemprop_repeated_holdout_forces_single_replicate():
 
     assert training_policy["extra_args"]["num_replicates"] == 1
     assert "repeated_scaffold_holdout" in note
+
+
+def test_chemprop_normalizes_repeated_session_prefixed_paths(monkeypatch):
+    monkeypatch.setattr(
+        "cs_copilot.tools.prediction.chemprop_toolkit.S3.current_prefix",
+        lambda: "sessions/abc123",
+    )
+
+    assert (
+        _agent_storage_path(
+            ".files/sessions/abc123/.files/sessions/abc123/curated_pxr_challenge_train.csv"
+        )
+        == "curated_pxr_challenge_train.csv"
+    )
 
 
 def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):

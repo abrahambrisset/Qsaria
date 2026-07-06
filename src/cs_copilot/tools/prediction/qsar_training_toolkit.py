@@ -51,11 +51,11 @@ def _agent_storage_path(path: str | Path) -> str:
     prefix = S3.current_prefix().strip("/")
     for root in (".files", "data"):
         session_prefix = f"{root}/{prefix}/"
-        if raw.startswith(session_prefix):
-            return raw[len(session_prefix) :]
+        while raw.startswith(session_prefix):
+            raw = raw[len(session_prefix) :]
 
-    if raw.startswith(f"{prefix}/"):
-        return raw[len(prefix) + 1 :]
+    while raw.startswith(f"{prefix}/"):
+        raw = raw[len(prefix) + 1 :]
 
     return raw
 

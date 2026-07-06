@@ -52,13 +52,16 @@ def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monke
 
         toolkit = QSARTrainingToolkit()
         result = toolkit.prepare_training_dataset(
-            input_csv=".files/sessions/path-normalization/pxr_curated.csv",
+            input_csv=".files/sessions/path-normalization/.files/sessions/path-normalization/pxr_curated.csv",
             smiles_column="smiles",
             target_columns=["pEC50", "Emax"],
-            output_csv=".files/sessions/path-normalization/pxr_training_ready.csv",
+            output_csv=".files/sessions/path-normalization/.files/sessions/path-normalization/pxr_training_ready.csv",
         )
 
-        assert result["output_csv"] == ".files/sessions/path-normalization/pxr_training_ready.csv"
+        assert (
+            result["output_csv"]
+            == ".files/sessions/path-normalization/.files/sessions/path-normalization/pxr_training_ready.csv"
+        )
         with S3.open("pxr_training_ready.csv", "r") as handle:
             assert handle.readline().strip() == "smiles,pEC50,Emax"
     finally:
