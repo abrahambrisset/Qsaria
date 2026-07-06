@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
 
@@ -39,6 +40,29 @@ def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name
             "inference_profile": {"representation_name": representation_name},
         },
     }
+
+
+def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    original_prefix = S3.current_prefix()
+    S3.set_session_prefix("sessions/path-normalization")
+    try:
+        with S3.open("pxr_curated.csv", "w") as handle:
+            handle.write("smiles,pEC50,Emax\nCCO,4.2,1.1\nCCN,5.1,1.4\n")
+
+        toolkit = QSARTrainingToolkit()
+        result = toolkit.prepare_training_dataset(
+            input_csv=".files/sessions/path-normalization/pxr_curated.csv",
+            smiles_column="smiles",
+            target_columns=["pEC50", "Emax"],
+            output_csv=".files/sessions/path-normalization/pxr_training_ready.csv",
+        )
+
+        assert result["output_csv"] == ".files/sessions/path-normalization/pxr_training_ready.csv"
+        with S3.open("pxr_training_ready.csv", "r") as handle:
+            assert handle.readline().strip() == "smiles,pEC50,Emax"
+    finally:
+        S3.set_session_prefix(original_prefix)
 
 
 def _fake_repeated_train_result(tmp_path: Path, *, backend_name: str, representation_name: str):

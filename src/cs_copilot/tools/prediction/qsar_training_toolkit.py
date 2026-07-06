@@ -42,8 +42,26 @@ FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
 QSAR_ROW_ID_COLUMN = "__qsar_row_id"
 
 
+def _agent_storage_path(path: str | Path) -> str:
+    """Normalize agent-returned storage paths before passing them to S3.open."""
+    raw = str(path)
+    if raw.startswith(("s3://", "/", "file://")):
+        return raw
+
+    prefix = S3.current_prefix().strip("/")
+    for root in (".files", "data"):
+        session_prefix = f"{root}/{prefix}/"
+        if raw.startswith(session_prefix):
+            return raw[len(session_prefix) :]
+
+    if raw.startswith(f"{prefix}/"):
+        return raw[len(prefix) + 1 :]
+
+    return raw
+
+
 def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]:
-    with S3.open(path, "r") as fh:
+    with S3.open(_agent_storage_path(path), "r") as fh:
         columns = list(pd.read_csv(fh, nrows=0).columns)
     excluded = {"smiles", QSAR_ROW_ID_COLUMN, *target_columns}
     return [column for column in columns if column not in excluded]
@@ -51,7 +69,7 @@ def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]
 
 def _hash_file(path: str) -> str:
     digest = hashlib.sha256()
-    with S3.open(path, "rb") as fh:
+    with S3.open(_agent_storage_path(path), "rb") as fh:
         while True:
             chunk = fh.read(1024 * 1024)
             if not chunk:
@@ -67,7 +85,7 @@ def _cache_key(payload: Dict[str, Any]) -> str:
 
 def _read_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        with S3.open(str(path), "r") as fh:
+        with S3.open(_agent_storage_path(path), "r") as fh:
             payload = json.load(fh)
     except FileNotFoundError:
         return None
@@ -78,7 +96,7 @@ def _read_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
 
 def _storage_path_exists(path: Path | str) -> bool:
     try:
-        with S3.open(str(path), "rb") as fh:
+        with S3.open(_agent_storage_path(path), "rb") as fh:
             fh.read(1)
         return True
     except FileNotFoundError:
@@ -96,7 +114,7 @@ def _resolve_feature_n_jobs(raw: Optional[Any] = None) -> int:
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with S3.open(str(path), "w") as fh:
+    with S3.open(_agent_storage_path(path), "w") as fh:
         json.dump(payload, fh, indent=2, sort_keys=True)
         fh.write("\n")
 
@@ -444,7 +462,7 @@ class QSARTrainingToolkit(Toolkit):
         output_csv: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Normalize a QSAR training CSV into canonical `smiles` + target columns."""
-        with S3.open(input_csv, "r") as fh:
+        with S3.open(_agent_storage_path(input_csv), "r") as fh:
             df = pd.read_csv(fh)
 
         normalized_target_columns = normalize_json_list_argument(
@@ -463,7 +481,7 @@ class QSARTrainingToolkit(Toolkit):
 
         standardized = df[["smiles", *normalized_target_columns]].copy()
         destination = output_csv or "training/qsar_training_dataset.csv"
-        with S3.open(destination, "w") as fh:
+        with S3.open(_agent_storage_path(destination), "w") as fh:
             standardized.to_csv(fh, index=False)
 
         return {
@@ -497,7 +515,7 @@ class QSARTrainingToolkit(Toolkit):
         cache_root.mkdir(parents=True, exist_ok=True)
 
         step_started_at = time.monotonic()
-        with S3.open(train_csv, "r") as fh:
+        with S3.open(_agent_storage_path(train_csv), "r") as fh:
             source_df = pd.read_csv(fh)
         resolved_smiles_column = resolve_smiles_column_name(source_df, smiles_column)
         missing_targets = [column for column in target_columns if column not in source_df.columns]
