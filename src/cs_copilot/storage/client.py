@@ -201,7 +201,23 @@ class S3(metaclass=_S3Meta):
 
     @classmethod
     def _local_session_path(cls, rel: str) -> Path:
+        explicit = cls._already_scoped_local_path(rel)
+        if explicit is not None:
+            return explicit
         return LOCAL_STORAGE_ROOT / Path(cls.current_prefix().strip("/")) / Path(rel)
+
+    @classmethod
+    def _already_scoped_local_path(cls, rel: str) -> Path | None:
+        """Return local path when callers pass `.files/sessions/...` or `data/sessions/...`."""
+        if not isinstance(rel, str):
+            return None
+        raw = rel[2:] if rel.startswith("./") else rel
+        prefix = cls.current_prefix().strip("/")
+        for root in (str(LOCAL_STORAGE_ROOT).strip("/"), "data"):
+            scoped = f"{root}/{prefix}/"
+            if raw.startswith(scoped):
+                return Path(raw)
+        return None
 
     @staticmethod
     def _is_write_mode(mode: str) -> bool:

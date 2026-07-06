@@ -135,6 +135,19 @@ def test_relative_local_paths_are_session_scoped(
         assert handle.read() == "value\n1\n"
 
 
+def test_already_scoped_local_paths_are_not_prefixed_twice(
+    clean_storage_env, fixed_session_prefix, monkeypatch, tmp_path
+):
+    """Agent-visible `.files/sessions/...` paths should open as-is."""
+    monkeypatch.chdir(tmp_path)
+    scoped_path = Path(".files") / "sessions" / "test-session" / "uploads" / "dataset.csv"
+    scoped_path.parent.mkdir(parents=True)
+    scoped_path.write_text("value\n1\n")
+
+    with S3.open(".files/sessions/test-session/uploads/dataset.csv", "r") as handle:
+        assert handle.read() == "value\n1\n"
+
+
 def test_relative_paths_use_context_local_session_prefix(clean_storage_env, monkeypatch, tmp_path):
     """Concurrent execution contexts should not share the mutable storage prefix."""
     monkeypatch.chdir(tmp_path)

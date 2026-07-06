@@ -290,7 +290,7 @@ def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str
             "duration_seconds",
         )
         if split_result.get(key) is not None
-    } | {"metrics": metrics}
+    } | {"metrics": metrics, "target_metrics": split_result.get("target_metrics") or {}}
 
 
 def _compact_activity_cliffs(activity_cliffs: Dict[str, Any]) -> Dict[str, Any]:
@@ -335,6 +335,7 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "training_durations",
         "training_duration_seconds",
         "metrics",
+        "target_metrics",
         "validation_assessment",
         "model_path",
         "best_model_path",
