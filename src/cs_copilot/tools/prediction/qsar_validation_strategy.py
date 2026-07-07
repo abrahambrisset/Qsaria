@@ -8,10 +8,13 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
-from .qsar_training_policy import resolve_seed_policy, resolve_validation_protocol
+from .qsar_training_policy import (
+    DEFAULT_QSAR_SPLIT_SIZES,
+    resolve_seed_policy,
+    resolve_validation_protocol,
+)
 
-
-DEFAULT_SPLIT_SIZES = [0.8, 0.1, 0.1]
+DEFAULT_SPLIT_SIZES = list(DEFAULT_QSAR_SPLIT_SIZES)
 DEFAULT_SELECTION_METRIC = "rmse"
 
 SPLIT_FAMILY_TO_BACKEND_TYPE = {

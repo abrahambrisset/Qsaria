@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.backend import PredictionExecutionError
-from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit, _clean_split_source_target_for_task
 
 
 def _fake_agent() -> SimpleNamespace:
@@ -71,6 +72,72 @@ def test_run_training_worker_reads_result_json(tmp_path, monkeypatch):
 
     assert result["model_path"] == expected["model_path"]
     assert "worker_duration_seconds" in result
+
+
+def test_run_training_worker_explains_missing_worker_outputs(tmp_path, monkeypatch):
+    toolkit = TabICLToolkit()
+    job_dir = tmp_path / "worker_job"
+    job_dir.mkdir()
+    job_path = job_dir / "job.json"
+    job_path.write_text(json.dumps({"train_csv": "dataset.csv"}))
+    marker_path = tmp_path / ".training_in_progress"
+
+    class FakeProcess:
+        def __init__(self, *args, **kwargs):
+            kwargs["stdout"].write("worker started\n")
+            kwargs["stdout"].flush()
+
+        def poll(self):
+            return -9
+
+        @property
+        def pid(self):
+            return 12345
+
+    monkeypatch.setattr("cs_copilot.tools.prediction.tabicl_toolkit.subprocess.Popen", FakeProcess)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        toolkit._run_training_worker(
+            job_path=job_path,
+            worker_log_path=job_dir / "worker.log",
+            active_marker_path=marker_path,
+        )
+
+    message = str(exc_info.value)
+    assert "return_code=-9" in message
+    assert "SIGKILL" in message
+    assert "memory" in message
+    assert "worker started" in message
+
+
+def test_tabicl_split_source_keeps_multiclass_string_labels():
+    df = pd.DataFrame(
+        {
+            "smiles": [f"CC{idx}O" for idx in range(14)],
+            "cyp_profile": ["2c9", "2d6", "3a4"] * 4 + ["", None],
+        }
+    )
+
+    cleaned = _clean_split_source_target_for_task(
+        df,
+        target_column="cyp_profile",
+        task_type="multiclass_classification",
+    )
+
+    assert len(cleaned) == 12
+    assert sorted(cleaned["cyp_profile"].unique().tolist()) == ["2c9", "2d6", "3a4"]
+
+
+def test_tabicl_split_source_keeps_regression_numeric_cleanup():
+    df = pd.DataFrame({"smiles": ["CCO", "CCN", "CCC"], "Y": ["1.5", "bad", None]})
+
+    cleaned = _clean_split_source_target_for_task(
+        df,
+        target_column="Y",
+        task_type="regression",
+    )
+
+    assert cleaned["Y"].tolist() == [1.5]
 
 
 def test_train_tabicl_model_wraps_worker_errors(tmp_path, monkeypatch):

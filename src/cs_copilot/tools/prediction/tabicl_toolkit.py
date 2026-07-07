@@ -19,9 +19,17 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.storage.client import S3
-from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+from cs_copilot.tools.activity_cliffs import (
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
 from .backend import PredictionExecutionError, PredictionTaskSpec
+from .qsar_splitters import (
+    build_full_train_split_payload,
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -34,36 +42,49 @@ from .qsar_training_policy import (
     summarize_training_durations,
 )
 from .qsar_validation_strategy import resolve_validation_strategy
-from .qsar_splitters import (
-    build_full_train_split_payload,
-    build_qsar_split_payload,
-    build_repeated_kfold_split_payloads,
+from .session_state import (
+    get_prediction_state,
+    write_active_training_marker,
+)
+from .tabicl_backend import (
+    DEFAULT_TABICL_CHECKPOINT_DIR,
+    DEFAULT_TABICL_CLASSIFIER_CHECKPOINT,
+    DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+    TabICLBackend,
 )
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     LEGACY_TABULAR_REPRESENTATION_NAMES,
-)
-from .session_state import (
-    get_prediction_state,
-    write_active_training_marker,
 )
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
     build_cross_validation_artifacts,
     build_training_plots_if_possible,
+    is_classification_task,
     materialize_primary_protocol_artifacts,
+    normalize_classification_label,
     normalize_json_list_argument,
     strip_unnamed_columns,
     write_training_summary,
 )
-from .tabicl_backend import (
-    DEFAULT_TABICL_CHECKPOINT_DIR,
-    DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
-    TabICLBackend,
-)
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_split_source_target_for_task(
+    df: pd.DataFrame,
+    *,
+    target_column: str,
+    task_type: str,
+) -> pd.DataFrame:
+    if target_column not in df.columns:
+        return df
+    if is_classification_task(task_type):
+        return df.loc[df[target_column].map(normalize_classification_label).notna()].reset_index(drop=True)
+    cleaned = df.copy()
+    cleaned[target_column] = pd.to_numeric(cleaned[target_column], errors="coerce")
+    return cleaned.dropna(subset=[target_column]).reset_index(drop=True)
 
 
 class TabICLToolkit(Toolkit):
@@ -245,6 +266,13 @@ class TabICLToolkit(Toolkit):
                 "default_task_type": "regression",
                 "default_checkpoint_dir": str(DEFAULT_TABICL_CHECKPOINT_DIR),
                 "default_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+                "default_regressor_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+                "default_classifier_checkpoint_version": DEFAULT_TABICL_CLASSIFIER_CHECKPOINT,
+                "supported_task_types": [
+                    "regression",
+                    "classification",
+                    "multiclass_classification",
+                ],
                 "supported_validation_protocols": [
                     "fast_local",
                     "standard_qsar",
@@ -263,6 +291,9 @@ class TabICLToolkit(Toolkit):
                     "Modern comparative campaigns use RDKit all, Morgan binary, Morgan count, and the complete combined pack.",
                     "RDKit basic representations are legacy-only and require explicit user override.",
                     "If the user explicitly requests a representation, that override should win.",
+                    "TabICL classification supports binary and multiclass single-target tasks.",
+                    "TabICL uses separate classifier and regressor checkpoints.",
+                    "TabICL does not expose native multi-target training.",
                     "The `.ckpt` checkpoint is a backend resource, not a trained model artifact.",
                     "`validate_tabicl_model_path` is intended for saved trained models such as `.pkl`.",
                 ],
@@ -422,9 +453,11 @@ class TabICLToolkit(Toolkit):
         target_column = target_columns[0]
         with S3.open(train_csv, "r") as fh:
             split_source_df = strip_unnamed_columns(pd.read_csv(fh))
-        if target_column in split_source_df.columns:
-            split_source_df[target_column] = pd.to_numeric(split_source_df[target_column], errors="coerce")
-            split_source_df = split_source_df.dropna(subset=[target_column]).reset_index(drop=True)
+        split_source_df = _clean_split_source_target_for_task(
+            split_source_df,
+            target_column=target_column,
+            task_type=task_type,
+        )
         is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
         if is_cv_protocol:
@@ -786,8 +819,18 @@ class TabICLToolkit(Toolkit):
             raise RuntimeError(message)
 
         log_excerpt = worker_log_path.read_text(encoding="utf-8") if worker_log_path.exists() else ""
+        if return_code == -9:
+            exit_summary = "return_code=-9 (SIGKILL; often caused by memory pressure/OOM)"
+        elif return_code is None:
+            exit_summary = "return_code=unknown"
+        else:
+            exit_summary = f"return_code={return_code}"
+        progress_hint = f" last_progress={last_progress_message}" if last_progress_message else ""
         raise RuntimeError(
             "TabICL worker exited without producing result.json or error.json. "
+            f"{exit_summary} duration_seconds={duration_seconds}{progress_hint}. "
+            "This usually means the worker process was killed before Python could write a structured error; "
+            "for TabICL, the most likely cause on large datasets is excessive memory use. "
             f"worker_log={worker_log_path} details={log_excerpt[-4000:]}"
         )
 
@@ -812,7 +855,7 @@ class TabICLToolkit(Toolkit):
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train a TabICLv2 regressor with shared QSAR validation protocols."""
+        """Train a TabICLv2 model with shared QSAR validation protocols."""
         normalized_target_columns = self._normalize_json_list_argument(
             target_columns,
             argument_name="target_columns",

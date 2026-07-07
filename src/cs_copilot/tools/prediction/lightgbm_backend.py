@@ -30,8 +30,8 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
 from .qsar_splitters import build_qsar_split_payload
+from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
 from .training_orchestration import (
     classification_task_kind,
     compute_classification_metrics,
@@ -302,7 +302,7 @@ class LightGBMBackend(PredictionBackend):
                     mapping[normalized] = len(mapping)
             encoded[column] = (
                 encoded[column]
-                .map(lambda raw: mapping.get(_normalize_category_value(raw), -1))
+                .map(lambda raw, mapping=mapping: mapping.get(_normalize_category_value(raw), -1))
                 .astype("int32")
             )
             resolved_mappings[column] = mapping
@@ -659,7 +659,7 @@ class LightGBMBackend(PredictionBackend):
         X_test = encoded_working.iloc[test_idx][feature_columns].copy() if test_idx else None
         y_test = y_all.iloc[test_idx].copy() if test_idx else None
         if task_is_classification:
-            present_train_classes = set(int(value) for value in y_train.tolist())
+            present_train_classes = {int(value) for value in y_train.tolist()}
             missing_train_classes = sorted(set(range(len(class_labels))) - present_train_classes)
             if missing_train_classes:
                 missing = [json_safe_label(class_labels[index]) for index in missing_train_classes]
@@ -834,6 +834,7 @@ class LightGBMBackend(PredictionBackend):
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "splits_path": str(splits_path),
             "config_path": str(config_path),
+            "task_type": task.task_type,
             "metrics": metrics,
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),

@@ -27,6 +27,8 @@ QSAR_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX = 0.03
 PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
 SEED_MIN = 1
 SEED_MAX = 2_147_483_647
+FAST_LOCAL_SPLIT_SIZES = [0.8, 0.2]
+DEFAULT_QSAR_SPLIT_SIZES = [0.8, 0.1, 0.1]
 
 
 def project_now() -> datetime:
@@ -83,24 +85,44 @@ def _unique_replay_seeds(count: int, base_seed: int) -> List[int]:
 
 def _split_templates(protocol: str) -> List[Dict[str, Any]]:
     if protocol == "fast_local":
-        return [{"backend_split_type": "random", "primary": True}]
+        return [{"backend_split_type": "random", "primary": True, "split_sizes": FAST_LOCAL_SPLIT_SIZES}]
     if protocol == "standard_qsar":
         return [
-            {"backend_split_type": "random", "primary": True},
-            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
+            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "label": "scaffold",
+                "backend_split_type": "scaffold_balanced",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
         ]
     if protocol == "robust_qsar":
         return [
-            {"backend_split_type": "random", "primary": True},
-            {"backend_split_type": "random", "primary": False},
-            {"backend_split_type": "random", "primary": False},
-            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
+            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {"backend_split_type": "random", "primary": False, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {"backend_split_type": "random", "primary": False, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "label": "scaffold",
+                "backend_split_type": "scaffold_balanced",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
         ]
     if protocol == "challenging_qsar":
         return [
-            {"backend_split_type": "random", "primary": True},
-            {"label": "scaffold", "backend_split_type": "scaffold_balanced", "primary": False},
-            {"label": "cluster_kmeans", "backend_split_type": "kmeans", "primary": False},
+            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "label": "scaffold",
+                "backend_split_type": "scaffold_balanced",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
+            {
+                "label": "cluster_kmeans",
+                "backend_split_type": "kmeans",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
         ]
     return [{"backend_split_type": "random", "primary": True}]
 
@@ -149,15 +171,16 @@ def resolve_seed_policy(
     split_seeds = run_seeds[: len(templates)]
     model_seed = run_seeds[-1]
     split_runs: List[Dict[str, Any]] = []
-    for template, seed in zip(templates, split_seeds):
-        split_runs.append(
-            {
-                "label": _label_split(template, seed),
-                "backend_split_type": template["backend_split_type"],
-                "seed": seed,
-                "primary": bool(template.get("primary", False)),
-            }
-        )
+    for template, seed in zip(templates, split_seeds, strict=True):
+        run = {
+            "label": _label_split(template, seed),
+            "backend_split_type": template["backend_split_type"],
+            "seed": seed,
+            "primary": bool(template.get("primary", False)),
+        }
+        if template.get("split_sizes") is not None:
+            run["split_sizes"] = list(template["split_sizes"])
+        split_runs.append(run)
 
     random_split_seeds = [
         item["seed"] for item in split_runs if item["backend_split_type"] == "random"
@@ -645,7 +668,6 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         return assessment
     hardest_name = None
     hardest_primary = None
-    hardest_secondary = None
 
     for strategy_name, family_result in aggregated.items():
         if strategy_name == "random":
@@ -666,7 +688,6 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
             if hardest_primary is None or split_primary < hardest_primary:
                 hardest_name = strategy_name
                 hardest_primary = split_primary
-                hardest_secondary = split_secondary
 
     if hardest_name is not None:
         assessment["hardest_split"] = hardest_name

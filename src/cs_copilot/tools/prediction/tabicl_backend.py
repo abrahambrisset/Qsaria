@@ -6,6 +6,8 @@ TabICLv2 backend adapter for tabular QSAR workflows.
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import importlib.metadata
 import importlib.util
 import json
@@ -14,8 +16,6 @@ import math
 import pickle
 import shutil
 import threading
-import gc
-import ctypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -33,8 +33,8 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .qsar_training_policy import project_now
 from .qsar_splitters import build_qsar_split_payload
+from .qsar_training_policy import project_now
 from .training_orchestration import (
     classification_task_kind,
     compute_classification_metrics,
@@ -42,7 +42,6 @@ from .training_orchestration import (
     decode_classification_labels,
     encode_classification_labels,
     is_classification_task,
-    is_multiclass_task,
     json_safe_label,
     resolve_class_labels,
 )
@@ -51,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TABICL_CHECKPOINT_DIR = Path("data/model_assets/checkpoints/tabicl").resolve()
 DEFAULT_TABICL_REGRESSOR_CHECKPOINT = "tabicl-regressor-v2-20260212.ckpt"
+DEFAULT_TABICL_CLASSIFIER_CHECKPOINT = "tabicl-classifier-v2-20260212.ckpt"
 
 
 def _release_process_memory() -> None:
@@ -97,7 +97,7 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
 
 
 class TabICLBackend(PredictionBackend):
-    """Prediction backend built around TabICLv2 regressors."""
+    """Prediction backend built around TabICLv2 tabular estimators."""
 
     backend_name = "tabicl"
     MODEL_EXTENSIONS = (".pkl",)
@@ -112,7 +112,10 @@ class TabICLBackend(PredictionBackend):
         return importlib.util.find_spec("tabicl") is not None
 
     def describe_environment(self) -> Dict[str, Any]:
-        checkpoint_path = DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        regressor_checkpoint_path = DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        classifier_checkpoint_path = (
+            DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+        )
         classifier_available = False
         if self.is_available():
             try:
@@ -130,8 +133,14 @@ class TabICLBackend(PredictionBackend):
                 "package_version": self._package_version(),
                 "checkpoint_dir": str(DEFAULT_TABICL_CHECKPOINT_DIR),
                 "default_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
-                "default_checkpoint_path": str(checkpoint_path),
-                "default_checkpoint_present": checkpoint_path.exists(),
+                "default_checkpoint_path": str(regressor_checkpoint_path),
+                "default_checkpoint_present": regressor_checkpoint_path.exists(),
+                "default_regressor_checkpoint_version": DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+                "default_regressor_checkpoint_path": str(regressor_checkpoint_path),
+                "default_regressor_checkpoint_present": regressor_checkpoint_path.exists(),
+                "default_classifier_checkpoint_version": DEFAULT_TABICL_CLASSIFIER_CHECKPOINT,
+                "default_classifier_checkpoint_path": str(classifier_checkpoint_path),
+                "default_classifier_checkpoint_present": classifier_checkpoint_path.exists(),
             },
         )
 
@@ -152,10 +161,22 @@ class TabICLBackend(PredictionBackend):
                 f"Environment snapshot: {self.describe_environment()}"
             )
 
-    def _resolve_checkpoint_config(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _default_checkpoint_for_task(self, task_type: str) -> str:
+        return (
+            DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+            if is_classification_task(task_type)
+            else DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        )
+
+    def _resolve_checkpoint_config(
+        self,
+        extra_args: Optional[Dict[str, Any]],
+        *,
+        task_type: str = "regression",
+    ) -> Dict[str, Any]:
         extra_args = dict(extra_args or {})
         checkpoint_version = str(
-            extra_args.get("checkpoint_version") or DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+            extra_args.get("checkpoint_version") or self._default_checkpoint_for_task(task_type)
         )
         checkpoint_dir = Path(
             extra_args.get("checkpoint_dir") or DEFAULT_TABICL_CHECKPOINT_DIR
@@ -207,6 +228,10 @@ class TabICLBackend(PredictionBackend):
             "n_jobs",
             "verbose",
             "inference_config",
+            "class_shuffle_method",
+            "softmax_temperature",
+            "average_logits",
+            "support_many_classes",
             "checkpoint_dir",
             "save_model_weights",
             "save_training_data",
@@ -229,7 +254,7 @@ class TabICLBackend(PredictionBackend):
         sanitized = {key: value for key, value in raw.items() if key in allowed}
         if dropped:
             logger.warning(
-                "Dropping unsupported TabICL train args for this V1 backend: %s",
+                "Dropping unsupported TabICL train args: %s",
                 ", ".join(dropped),
             )
         return sanitized
@@ -342,7 +367,7 @@ class TabICLBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
-            raise InvalidPredictionInputError("TabICL V1 does not support predictive uncertainty export.")
+            raise InvalidPredictionInputError("TabICL does not support predictive uncertainty export.")
 
         model_path = self.validate_model_path(model_record.model_path)
         try:
@@ -412,14 +437,15 @@ class TabICLBackend(PredictionBackend):
         self._ensure_available()
         task_is_classification = is_classification_task(task.task_type)
         if task.task_type != "regression" and not task_is_classification:
-            raise InvalidPredictionInputError("TabICL V1 supports regression and binary classification tasks.")
-        if is_multiclass_task(task.task_type):
-            raise InvalidPredictionInputError("TabICL multiclass classification is not enabled in this QSARIA version.")
+            raise InvalidPredictionInputError("TabICL supports regression and classification tasks.")
         if len(task.target_columns) != 1:
-            raise InvalidPredictionInputError("TabICL V1 requires exactly one target column.")
+            raise InvalidPredictionInputError("TabICL requires exactly one target column.")
 
         sanitized_args = self._sanitize_train_extra_args(extra_args)
-        checkpoint_cfg = self._resolve_checkpoint_config(sanitized_args)
+        checkpoint_cfg = self._resolve_checkpoint_config(
+            sanitized_args,
+            task_type=task.task_type,
+        )
         if not checkpoint_cfg["checkpoint_path"].exists():
             raise InvalidPredictionInputError(
                 "TabICL checkpoint not found at the expected persistent path: "
@@ -446,15 +472,15 @@ class TabICLBackend(PredictionBackend):
         class_mapping: Dict[str, int] = {}
         if task_is_classification:
             class_labels = resolve_class_labels(working[target_column])
-            if len(class_labels) != 2:
-                raise InvalidPredictionInputError("TabICL classification currently requires exactly two classes.")
+            if len(class_labels) < 2:
+                raise InvalidPredictionInputError("TabICL classification requires at least two classes.")
             encoded_target, class_mapping = encode_classification_labels(working[target_column], class_labels)
             working[target_column] = encoded_target
         else:
             working[target_column] = pd.to_numeric(working[target_column], errors="coerce")
         working = working.dropna(subset=[target_column]).reset_index(drop=True)
         if len(working) < 10:
-            raise InvalidPredictionInputError("TabICL V1 requires at least 10 rows after target cleanup.")
+            raise InvalidPredictionInputError("TabICL requires at least 10 rows after target cleanup.")
 
         if final_refit:
             split_payload = [
@@ -491,13 +517,18 @@ class TabICLBackend(PredictionBackend):
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
         test_df = working.iloc[test_indices].reset_index(drop=True)
+        train_rows = int(len(train_df))
+        val_rows = int(len(val_df))
+        test_rows = int(len(test_df))
 
         X_train = train_df[feature_columns].copy()
         y_train = train_df[target_column].astype(int if task_is_classification else float).copy()
         X_test = test_df[feature_columns].copy() if not test_df.empty else None
         y_test = test_df[target_column].astype(int if task_is_classification else float).copy() if not test_df.empty else None
         if task_is_classification:
-            missing_train_classes = sorted(set(range(len(class_labels))) - set(int(value) for value in y_train.tolist()))
+            missing_train_classes = sorted(
+                set(range(len(class_labels))) - {int(value) for value in y_train.tolist()}
+            )
             if missing_train_classes:
                 missing = [json_safe_label(class_labels[index]) for index in missing_train_classes]
                 raise InvalidPredictionInputError(
@@ -528,7 +559,13 @@ class TabICLBackend(PredictionBackend):
             "n_jobs",
             "inference_config",
         )
-        for key in optional_keys:
+        classifier_optional_keys = (
+            "class_shuffle_method",
+            "softmax_temperature",
+            "average_logits",
+            "support_many_classes",
+        )
+        for key in optional_keys + (classifier_optional_keys if task_is_classification else ()):
             if key in sanitized_args:
                 init_kwargs[key] = sanitized_args[key]
 
@@ -565,9 +602,9 @@ class TabICLBackend(PredictionBackend):
                 "elapsed_seconds": round((project_now() - started_at).total_seconds(), 3),
                 "target_column": target_column,
                 "feature_count": len(feature_columns),
-                "train_rows": int(len(train_df)),
-                "val_rows": int(len(val_df)),
-                "test_rows": int(len(test_df)),
+                "train_rows": train_rows,
+                "val_rows": val_rows,
+                "test_rows": test_rows,
             }
             if heartbeat_path is not None:
                 heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
@@ -702,10 +739,6 @@ class TabICLBackend(PredictionBackend):
             predictions_df = None
             test_predictions_path = None
             metrics = {}
-
-        train_rows = int(len(train_df))
-        val_rows = int(len(val_df))
-        test_rows = int(len(test_df))
 
         summary = {
             "backend_name": self.backend_name,

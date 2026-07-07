@@ -1,9 +1,11 @@
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
 from cs_copilot.tools.io.pointer_pandas_tools import PointerPandasTools
+from cs_copilot.tools.prediction.qsar_splitters import (
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from cs_copilot.tools.prediction.qsar_training_policy import (
     resolve_backend_n_jobs,
     resolve_seed_policy,
@@ -11,10 +13,6 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     resolve_validation_protocol,
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
-)
-from cs_copilot.tools.prediction.qsar_splitters import (
-    build_qsar_split_payload,
-    build_repeated_kfold_split_payloads,
 )
 from cs_copilot.tools.prediction.tabular_splitters import build_tabular_split_payload
 
@@ -102,6 +100,10 @@ def test_generated_seed_policy_changes_between_runs():
     assert first["split_runs"] != second["split_runs"]
     assert first["model_seed"] != second["model_seed"]
     assert len({item["seed"] for item in first["split_runs"]} | {first["model_seed"]}) == 3
+    assert [item["split_sizes"] for item in first["split_runs"]] == [
+        [0.8, 0.1, 0.1],
+        [0.8, 0.1, 0.1],
+    ]
 
 
 def test_user_provided_seed_policy_is_replayable():

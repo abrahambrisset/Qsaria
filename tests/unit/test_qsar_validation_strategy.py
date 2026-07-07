@@ -16,6 +16,10 @@ def test_standard_qsar_strategy_delegates_to_existing_protocol():
         "random",
         "scaffold_balanced",
     ]
+    assert [run["split_sizes"] for run in policy["split_runs"]] == [
+        [0.8, 0.1, 0.1],
+        [0.8, 0.1, 0.1],
+    ]
 
 
 def test_custom_holdout_uses_requested_split_sizes():

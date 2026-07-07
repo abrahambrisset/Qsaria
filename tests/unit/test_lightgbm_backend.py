@@ -5,8 +5,12 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from cs_copilot.tools.prediction.backend import InvalidPredictionInputError, PredictionModelRecord, PredictionTaskSpec
 import cs_copilot.tools.prediction.lightgbm_backend as lightgbm_backend_module
+from cs_copilot.tools.prediction.backend import (
+    InvalidPredictionInputError,
+    PredictionModelRecord,
+    PredictionTaskSpec,
+)
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 
 
@@ -144,6 +148,7 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
     )
 
     assert result["task_kind"] == "binary_classification"
+    assert result["task_type"] == "classification"
     assert result["class_count"] == 2
     assert result["metrics"]["test"]["balanced_accuracy"] == 1.0
     preds = pd.read_csv(result["test_predictions_path"])
@@ -187,6 +192,7 @@ def test_lightgbm_multiclass_classification_roundtrip(tmp_path, monkeypatch):
     )
 
     assert result["task_kind"] == "multiclass_classification"
+    assert result["task_type"] == "multiclass_classification"
     assert result["class_count"] == 3
     assert "roc_auc" not in result["metrics"]["test"]
     assert result["metrics"]["test"]["balanced_accuracy"] == 1.0

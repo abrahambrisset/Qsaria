@@ -6,33 +6,38 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
+import cs_copilot.tools.prediction.catalog as catalog_module
+import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.backend import (
     InvalidPredictionInputError,
     PredictionModelRecord,
     PredictionTaskSpec,
 )
-import cs_copilot.tools.prediction.catalog as catalog_module
-import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
-from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
-from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
-from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit, _agent_storage_path
-from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
-from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
-from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
-from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
-from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.backend_capabilities import (
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
     describe_backend_capabilities,
     get_backend_capabilities,
 )
+from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
+from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
+from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit, _agent_storage_path
+from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
+from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
     get_prediction_state,
     latest_curation_artifacts,
     write_active_training_marker,
+)
+from cs_copilot.tools.prediction.tabicl_backend import (
+    DEFAULT_TABICL_CLASSIFIER_CHECKPOINT,
+    DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
+    TabICLBackend,
 )
 from cs_copilot.tools.prediction.training_orchestration import (
     apply_training_profile,
@@ -62,8 +67,11 @@ def test_backend_capabilities_registry_core_contracts():
     assert "classification" in chemprop.supported_task_types
     assert "classification" in lightgbm.supported_task_types
     assert "multiclass_classification" in lightgbm.supported_task_types
+    assert "classification" in tabicl.supported_task_types
+    assert "multiclass_classification" in tabicl.supported_task_types
     assert "classification" in ensemble.supported_task_types
     assert "classification" in chemprop.multi_target_task_types
+    assert tabicl.multi_target_task_types == ()
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
     assert ensemble.gpu_support == "not_applicable"
@@ -1135,6 +1143,170 @@ def test_chemprop_backend_validate_model_path_accepts_ckpt(tmp_path):
     resolved = backend.validate_model_path(str(model_path))
 
     assert resolved == Path(model_path)
+
+
+def _tabicl_dataset(tmp_path, values, *, target_column="label") -> Path:
+    path = tmp_path / "tabicl_train.csv"
+    pd.DataFrame(
+        {
+            "smiles": [f"C{'C' * (idx % 3)}O" for idx in range(len(values))],
+            "feature_a": list(range(len(values))),
+            "feature_b": [idx % 5 for idx in range(len(values))],
+            target_column: values,
+        }
+    ).to_csv(path, index=False)
+    return path
+
+
+def _patch_fake_tabicl_estimator(monkeypatch, backend: TabICLBackend, *, classification: bool):
+    init_calls = []
+
+    class FakeEstimator:
+        def __init__(self, **kwargs):
+            init_calls.append(kwargs)
+            self.class_count = 0
+
+        def fit(self, X, y):
+            if classification:
+                self.class_count = len({int(value) for value in y.tolist()})
+            return self
+
+        def predict(self, X):
+            if not classification:
+                return [0.5 for _ in range(len(X))]
+            return [idx % self.class_count for idx in range(len(X))]
+
+        def predict_proba(self, X):
+            rows = []
+            for idx in range(len(X)):
+                row = [0.0] * self.class_count
+                row[idx % self.class_count] = 1.0
+                rows.append(row)
+            return rows
+
+        def save(self, path, **_kwargs):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text("fake-tabicl-model")
+
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_import_tabicl_classifier", lambda: FakeEstimator)
+    monkeypatch.setattr(backend, "_import_tabicl_regressor", lambda: FakeEstimator)
+    return init_calls
+
+
+def _tabicl_extra_args(tmp_path, checkpoint_name: str) -> dict:
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / checkpoint_name).write_text("checkpoint")
+    return {
+        "checkpoint_dir": str(checkpoint_dir),
+        "split_payload": [{"train": list(range(9)), "test": [9, 10, 11]}],
+        "allow_auto_download": False,
+    }
+
+
+def test_tabicl_binary_classification_uses_classifier_checkpoint(monkeypatch, tmp_path):
+    backend = TabICLBackend()
+    init_calls = _patch_fake_tabicl_estimator(monkeypatch, backend, classification=True)
+    train_csv = _tabicl_dataset(tmp_path, ["inactive", "active"] * 6)
+    extra_args = {
+        **_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+        "class_shuffle_method": "latin",
+        "support_many_classes": False,
+    }
+
+    result = backend.train_model(
+        str(train_csv),
+        str(tmp_path / "tabicl_binary"),
+        PredictionTaskSpec(
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["label"],
+        ),
+        extra_args=extra_args,
+    )
+
+    assert result["class_count"] == 2
+    assert result["task_kind"] == "binary_classification"
+    assert init_calls[0]["checkpoint_version"] == DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+    assert init_calls[0]["class_shuffle_method"] == "latin"
+    assert init_calls[0]["support_many_classes"] is False
+
+
+def test_tabicl_multiclass_classification_accepts_three_classes(monkeypatch, tmp_path):
+    backend = TabICLBackend()
+    init_calls = _patch_fake_tabicl_estimator(monkeypatch, backend, classification=True)
+    train_csv = _tabicl_dataset(tmp_path, ["low", "medium", "high"] * 4)
+
+    result = backend.train_model(
+        str(train_csv),
+        str(tmp_path / "tabicl_multiclass"),
+        PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["label"],
+        ),
+        extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+    )
+
+    assert result["class_count"] == 3
+    assert result["task_kind"] == "multiclass_classification"
+    assert init_calls[0]["checkpoint_version"] == DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+
+
+def test_tabicl_classification_rejects_single_class(monkeypatch, tmp_path):
+    backend = TabICLBackend()
+    _patch_fake_tabicl_estimator(monkeypatch, backend, classification=True)
+    train_csv = _tabicl_dataset(tmp_path, ["active"] * 12)
+
+    with pytest.raises(InvalidPredictionInputError, match="at least two classes"):
+        backend.train_model(
+            str(train_csv),
+            str(tmp_path / "tabicl_one_class"),
+            PredictionTaskSpec(
+                task_type="classification",
+                smiles_columns=["smiles"],
+                target_columns=["label"],
+            ),
+            extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+        )
+
+
+def test_tabicl_rejects_multi_target_classification(monkeypatch, tmp_path):
+    backend = TabICLBackend()
+    _patch_fake_tabicl_estimator(monkeypatch, backend, classification=True)
+    train_csv = _tabicl_dataset(tmp_path, ["inactive", "active"] * 6)
+
+    with pytest.raises(InvalidPredictionInputError, match="exactly one target"):
+        backend.train_model(
+            str(train_csv),
+            str(tmp_path / "tabicl_multi_target"),
+            PredictionTaskSpec(
+                task_type="classification",
+                smiles_columns=["smiles"],
+                target_columns=["label", "other_label"],
+            ),
+        )
+
+
+def test_tabicl_regression_uses_regressor_checkpoint(monkeypatch, tmp_path):
+    backend = TabICLBackend()
+    init_calls = _patch_fake_tabicl_estimator(monkeypatch, backend, classification=False)
+    train_csv = _tabicl_dataset(tmp_path, [float(idx) for idx in range(12)], target_column="Y")
+
+    result = backend.train_model(
+        str(train_csv),
+        str(tmp_path / "tabicl_regression"),
+        PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["Y"],
+        ),
+        extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_REGRESSOR_CHECKPOINT),
+    )
+
+    assert result["task_kind"] == "regression"
+    assert init_calls[0]["checkpoint_version"] == DEFAULT_TABICL_REGRESSOR_CHECKPOINT
 
 
 def test_prediction_model_record_as_dict():
