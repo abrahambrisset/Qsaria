@@ -64,5 +64,14 @@ From: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
     /opt/venv/bin/python -c "import chainlit, torch, lightgbm, tabicl; from agno.models.openrouter import OpenRouter; from chembl_structure_pipeline import checker, standardizer; print(chainlit.__file__); print(torch.__version__); print(lightgbm.__version__); print(tabicl.__file__); print('OpenRouter OK'); print('ChEMBL structure pipeline OK')"
 
+    mkdir -p /opt/model_assets/checkpoints/tabicl /app/data/model_assets/checkpoints/tabicl
+    for checkpoint in \
+        tabicl-regressor-v2-20260212.ckpt \
+        tabicl-classifier-v2-20260212.ckpt; \
+    do \
+        /opt/venv/bin/python -c "from pathlib import Path; import sys; from huggingface_hub import hf_hub_download; name = sys.argv[1]; target = Path('/opt/model_assets/checkpoints/tabicl'); downloaded = Path(hf_hub_download(repo_id='jingang/TabICL', filename=name, local_dir=target)); dest = target / name; downloaded.replace(dest) if downloaded.resolve() != dest.resolve() else None; assert dest.is_file() and dest.stat().st_size > 0, dest" "$checkpoint"; \
+    done
+    cp /opt/model_assets/checkpoints/tabicl/*.ckpt /app/data/model_assets/checkpoints/tabicl/
+
 %runscript
     exec /bin/bash "$@"

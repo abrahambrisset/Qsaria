@@ -33,7 +33,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .qsar_splitters import build_qsar_split_payload
+from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import project_now
 from .training_orchestration import (
     classification_task_kind,
@@ -83,6 +83,13 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
+    if len(split_sizes) == 1 and float(split_sizes[0]) == 1.0:
+        return [1.0]
+    if len(split_sizes) == 2 and float(split_sizes[0]) == 1.0 and float(split_sizes[1]) == 0.0:
+        raise InvalidPredictionInputError(
+            "split_sizes=[1.0, 0.0] is not a valid holdout. "
+            "Use validation_strategy={'type': 'full_train'} for 100% training without test metrics."
+        )
     if len(split_sizes) not in (2, 3):
         raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
     total = float(sum(split_sizes))
@@ -451,12 +458,13 @@ class TabICLBackend(PredictionBackend):
                 "TabICL checkpoint not found at the expected persistent path: "
                 f"{checkpoint_cfg['checkpoint_path']}. Provision this checkpoint before training."
             )
-        split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
+        raw_split_sizes = sanitized_args.pop("split_sizes", None)
         split_payload = sanitized_args.pop("split_payload", None)
         random_state = int(sanitized_args.get("random_state", 42))
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
         final_refit = bool(sanitized_args.get("final_refit", False))
+        split_sizes = [1.0] if final_refit and raw_split_sizes in (None, [1.0], (1.0,)) else _coerce_split_sizes(raw_split_sizes)
         started_at = project_now()
 
         with S3.open(train_csv, "r") as fh:
@@ -483,17 +491,7 @@ class TabICLBackend(PredictionBackend):
             raise InvalidPredictionInputError("TabICL requires at least 10 rows after target cleanup.")
 
         if final_refit:
-            split_payload = [
-                {
-                    "train": list(range(len(working))),
-                    "metadata": {
-                        "split_type": "final_refit",
-                        "split_counts": {"train": int(len(working))},
-                        "has_validation": False,
-                        "final_refit": True,
-                    },
-                }
-            ]
+            split_payload = build_full_train_split_payload(df=working)
         elif split_payload is None:
             split_payload = build_qsar_split_payload(
                 df=working,
@@ -740,6 +738,7 @@ class TabICLBackend(PredictionBackend):
             test_predictions_path = None
             metrics = {}
 
+        metrics_payload = {"test": metrics} if metrics else {}
         summary = {
             "backend_name": self.backend_name,
             "train_csv": train_csv,
@@ -760,7 +759,9 @@ class TabICLBackend(PredictionBackend):
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
             "checkpoint_present_after_run": checkpoint_path.exists(),
-            "metrics": {"test": metrics},
+            "metrics": metrics_payload,
+            "metrics_status": "not_evaluated" if final_refit else "evaluated",
+            "evaluation_required": bool(final_refit),
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,
@@ -797,7 +798,9 @@ class TabICLBackend(PredictionBackend):
             "train_csv": train_csv,
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
-            "metrics": {"test": metrics},
+            "metrics": metrics_payload,
+            "metrics_status": "not_evaluated" if final_refit else "evaluated",
+            "evaluation_required": bool(final_refit),
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,

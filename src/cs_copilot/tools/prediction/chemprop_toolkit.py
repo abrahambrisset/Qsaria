@@ -622,6 +622,11 @@ class ChempropToolkit(Toolkit):
                 splits_file=chemprop_input["chemprop_splits_file"],
             )
         )
+        if train_args.get("final_refit") and not result.get("metrics"):
+            result["metrics"] = {}
+            result["target_metrics"] = {}
+            result["metrics_status"] = "not_evaluated"
+            result["evaluation_required"] = True
         artifacts = self._resolve_chemprop_run_artifacts(run_output_dir)
         if artifacts.get("best_model_path"):
             result.setdefault("best_model_path", str(artifacts["best_model_path"]))
@@ -1122,6 +1127,10 @@ class ChempropToolkit(Toolkit):
                 }
                 if label in cv_split_payloads:
                     split_payload = cv_split_payloads[label]
+                elif split_run["backend_split_type"] == "final_refit":
+                    split_payload = build_full_train_split_payload(df=split_source_df)
+                    run_args["split_sizes"] = [1.0]
+                    run_args["final_refit"] = True
                 else:
                     split_payload = self._build_split_payload(
                         train_csv=local_train_csv,
@@ -1263,20 +1272,28 @@ class ChempropToolkit(Toolkit):
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
-            plot_artifacts = build_training_plots_if_possible(
-                train_csv=local_train_csv,
-                split_results=split_results,
-                primary_run=final_primary_run,
-                root_artifacts=root_artifacts,
-                root_output_dir=root_output_path,
-                target_column=target_column,
-                task_type=task.task_type,
-            )
+            if protocol_policy.get("validation_strategy_type") != "full_train":
+                plot_artifacts = build_training_plots_if_possible(
+                    train_csv=local_train_csv,
+                    split_results=split_results,
+                    primary_run=final_primary_run,
+                    root_artifacts=root_artifacts,
+                    root_output_dir=root_output_path,
+                    target_column=target_column,
+                    task_type=task.task_type,
+                )
 
             result = dict(final_primary_run)
             result["backend_name"] = self.backend.backend_name
             result["output_dir"] = resolved_output_dir
             result["validation_protocol"] = protocol_policy["protocol"]
+            if protocol_policy.get("validation_strategy_type") == "full_train":
+                result["metrics"] = {}
+                result["target_metrics"] = {}
+                result["test_predictions_path"] = None
+                result["test_predictions_file_ref"] = None
+                result["metrics_status"] = "not_evaluated"
+                result["evaluation_required"] = True
             result["validation_protocol_reason"] = protocol_policy["reason"]
             result["validation_strategy"] = protocol_policy.get("validation_strategy")
             result["validation_strategy_type"] = protocol_policy.get("validation_strategy_type")

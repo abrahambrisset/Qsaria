@@ -18,13 +18,29 @@ from cs_copilot.tools.chemistry.standardize import (
 )
 
 from .model_registry_toolkit import ModelRegistryToolkit
+from .external_evaluation import evaluate_model_on_external_dataset
 from .session_state import get_prediction_state
+
+
+_MISSING_TARGETS_ERROR = "missing required target columns"
 
 
 def prediction_output_path(model_id: str, preds_path: Optional[str] = None) -> Path:
     if preds_path:
         return Path(preds_path).expanduser()
     return (Path(".files") / "prediction_outputs" / f"{model_id}_predictions.csv").resolve()
+
+
+def _same_csv_path(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    if str(left) == str(right):
+        return True
+    left_path = Path(str(left)).expanduser()
+    right_path = Path(str(right)).expanduser()
+    if left_path.exists() and right_path.exists():
+        return left_path.resolve() == right_path.resolve()
+    return left_path.as_posix() == right_path.as_posix()
 
 
 class PredictionInferenceToolkit(Toolkit):
@@ -44,6 +60,7 @@ class PredictionInferenceToolkit(Toolkit):
         if register_tools:
             self.register(self.predict_from_csv)
             self.register(self.predict_from_smiles)
+            self.register(self.evaluate_model_on_dataset)
             self.register(self.export_prediction_summary)
 
     def get_backend(self, backend_name: str):
@@ -64,6 +81,30 @@ class PredictionInferenceToolkit(Toolkit):
         """Run prediction from a CSV file and persist the result path in session state."""
         if agent is None:
             raise ValueError("Agent is required for prediction")
+
+        prediction_state = get_prediction_state(agent)
+        failed_evaluation = prediction_state.get("last_failed_external_evaluation") or {}
+        if (
+            failed_evaluation.get("terminal_for_evaluation")
+            and failed_evaluation.get("model_id") == model_id
+            and _same_csv_path(failed_evaluation.get("test_csv"), input_csv)
+        ):
+            message = (
+                "A previous external evaluation on this model and CSV failed because required "
+                "target columns were missing. This dataset is not evaluable, so no prediction "
+                "fallback was generated from the failed evaluation request."
+            )
+            result = {
+                "status": "blocked_failed_external_evaluation",
+                "prediction_generated": False,
+                "model_id": model_id,
+                "input_csv": input_csv,
+                "message": message,
+                "report_to_user": failed_evaluation.get("error") or message,
+                "failed_external_evaluation": failed_evaluation,
+            }
+            prediction_state["last_prediction"] = result
+            return result
 
         record = self.registry_toolkit.resolve_record(model_id, agent)
         output_path = prediction_output_path(model_id, preds_path)
@@ -112,7 +153,6 @@ class PredictionInferenceToolkit(Toolkit):
         preview = preview_df.head(5).to_dict(orient="records")
         num_rows = int(len(preview_df))
 
-        prediction_state = get_prediction_state(agent)
         prediction_state["last_prediction"] = {
             "model_id": model_id,
             "input_csv": str(local_input),
@@ -175,6 +215,49 @@ class PredictionInferenceToolkit(Toolkit):
             agent=agent,
         )
         result["num_smiles"] = len(smiles)
+        return result
+
+    def evaluate_model_on_dataset(
+        self,
+        model_id: str,
+        test_csv: str,
+        smiles_column: str = "smiles",
+        target_columns: Optional[List[str]] = None,
+        evaluation_label: Optional[str] = None,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Append an external labelled-dataset evaluation to a persisted catalog model."""
+        if agent is None:
+            raise ValueError("Agent is required for external model evaluation")
+
+        record = self.registry_toolkit.resolve_record(model_id, agent)
+        backend = self.get_backend(record.backend_name)
+        prediction_state = get_prediction_state(agent)
+        try:
+            result = evaluate_model_on_external_dataset(
+                record=record,
+                backend=backend,
+                test_csv=test_csv,
+                smiles_column=smiles_column,
+                target_columns=target_columns,
+                evaluation_label=evaluation_label,
+            )
+        except ValueError as exc:
+            if _MISSING_TARGETS_ERROR in str(exc):
+                prediction_state["last_failed_external_evaluation"] = {
+                    "model_id": model_id,
+                    "test_csv": test_csv,
+                    "smiles_column": smiles_column,
+                    "target_columns": list(target_columns or record.task.target_columns or []),
+                    "error": str(exc),
+                    "terminal_for_evaluation": True,
+                }
+            raise
+        self.registry_toolkit.catalog.refresh_from_internal_store(persist=True)
+
+        prediction_state.pop("last_failed_external_evaluation", None)
+        prediction_state["last_external_evaluation"] = result
+        prediction_state.setdefault("external_evaluation_history", []).append(result)
         return result
 
     def export_prediction_summary(

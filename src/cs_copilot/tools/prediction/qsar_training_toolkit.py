@@ -447,12 +447,14 @@ class QSARTrainingToolkit(Toolkit):
         lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
+        block_prepare_training_dataset: bool = False,
     ):
         super().__init__("qsar_training")
         self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit(register_tools=False)
         self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit(register_tools=False)
         self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit(register_tools=False)
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
+        self.block_prepare_training_dataset = block_prepare_training_dataset
 
         self.register(self.describe_qsar_training_environment)
         self.register(self.prepare_training_dataset)
@@ -489,8 +491,26 @@ class QSARTrainingToolkit(Toolkit):
         smiles_column: str,
         target_columns: List[str] | str,
         output_csv: Optional[str] = None,
+        confirm_explicit_export_request: bool = False,
     ) -> Dict[str, Any]:
         """Normalize a QSAR training CSV into canonical `smiles` + target columns."""
+        if self.block_prepare_training_dataset:
+            raise ValueError(
+                "prepare_training_dataset is disabled in the QSAR training workflow. "
+                "For explicit Chemprop, LightGBM, or TabICL training, call "
+                "train_chemprop_model, train_lightgbm_model, or train_tabicl_model directly "
+                "with the curated dataset; those backend tools handle their required input "
+                "preparation."
+            )
+        if not confirm_explicit_export_request:
+            raise ValueError(
+                "prepare_training_dataset is an export/debug helper, not a required training step. "
+                "For backend training, call train_lightgbm_model, train_tabicl_model, or "
+                "train_chemprop_model directly with the curated dataset. Retry this helper with "
+                "confirm_explicit_export_request=True only when the user explicitly asked for a "
+                "separate training-ready CSV artifact."
+            )
+
         with S3.open(_agent_storage_path(input_csv), "r") as fh:
             df = pd.read_csv(fh)
 
@@ -866,11 +886,14 @@ class QSARTrainingToolkit(Toolkit):
         model_path = result.get("best_model_path") or result.get("model_path")
         cross_validation = result.get("cross_validation") or {}
         known_metrics = result.get("metrics") or {}
+        metrics_status = result.get("metrics_status") or ("not_evaluated" if result.get("evaluation_required") else "evaluated")
         if cross_validation.get("summary"):
             known_metrics = {
                 "cross_validation": cross_validation["summary"],
                 "final_refit": known_metrics,
             }
+        if metrics_status == "not_evaluated":
+            known_metrics = {}
         model_id = (
             f"{backend_name}_{result.get('representation_name') or 'model'}_"
             f"{_cache_key({'model_path': model_path, 'validation_protocol': result.get('validation_protocol')})}"
@@ -883,10 +906,14 @@ class QSARTrainingToolkit(Toolkit):
             "smiles_columns": [smiles_column],
             "target_columns": list(target_columns),
             "known_metrics": known_metrics,
+            "status": "workflow_demo" if metrics_status == "not_evaluated" else "experimental",
             "training_data_summary": {
                 "validation_protocol": result.get("validation_protocol"),
                 "validation_strategy_type": result.get("validation_strategy_type"),
                 "validation_strategy": result.get("validation_strategy"),
+                "metrics_status": metrics_status,
+                "evaluation_required": bool(result.get("evaluation_required")),
+                "external_evaluations": [],
                 "training_profile": result.get("training_profile"),
                 "seed_policy": result.get("seed_policy"),
                 "representation_name": result.get("representation_name"),

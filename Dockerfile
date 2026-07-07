@@ -110,6 +110,15 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
         uv sync --frozen --no-dev --no-install-project --extra prediction; \
     fi
 
+RUN mkdir -p /opt/model_assets/checkpoints/tabicl /app/data/model_assets/checkpoints/tabicl && \
+    for checkpoint in \
+        tabicl-regressor-v2-20260212.ckpt \
+        tabicl-classifier-v2-20260212.ckpt; \
+    do \
+        /app/.venv/bin/python -c "from pathlib import Path; import sys; from huggingface_hub import hf_hub_download; name = sys.argv[1]; target = Path('/opt/model_assets/checkpoints/tabicl'); downloaded = Path(hf_hub_download(repo_id='jingang/TabICL', filename=name, local_dir=target)); dest = target / name; downloaded.replace(dest) if downloaded.resolve() != dest.resolve() else None; assert dest.is_file() and dest.stat().st_size > 0, dest" "$checkpoint"; \
+    done && \
+    cp /opt/model_assets/checkpoints/tabicl/*.ckpt /app/data/model_assets/checkpoints/tabicl/
+
 # Application source
 COPY . .
 

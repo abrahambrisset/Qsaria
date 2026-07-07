@@ -60,6 +60,7 @@ def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monke
             smiles_column="smiles",
             target_columns=["pEC50", "Emax"],
             output_csv=".files/sessions/path-normalization/.files/sessions/path-normalization/pxr_training_ready.csv",
+            confirm_explicit_export_request=True,
         )
 
         assert (
@@ -70,6 +71,47 @@ def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monke
             assert handle.readline().strip() == "smiles,pEC50,Emax"
     finally:
         S3.set_session_prefix(original_prefix)
+
+
+def test_prepare_training_dataset_is_export_only_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with S3.open("pxr_curated.csv", "w") as handle:
+        handle.write("smiles,pEC50\nCCO,4.2\n")
+
+    toolkit = QSARTrainingToolkit()
+
+    try:
+        toolkit.prepare_training_dataset(
+            input_csv="pxr_curated.csv",
+            smiles_column="smiles",
+            target_columns=["pEC50"],
+        )
+    except ValueError as exc:
+        assert "train_lightgbm_model" in str(exc)
+        assert "confirm_explicit_export_request=True" in str(exc)
+    else:
+        raise AssertionError("prepare_training_dataset should be blocked unless explicit export is confirmed")
+
+
+def test_prepare_training_dataset_can_be_disabled_for_training_agent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with S3.open("pxr_curated.csv", "w") as handle:
+        handle.write("smiles,pEC50\nCCO,4.2\n")
+
+    toolkit = QSARTrainingToolkit(block_prepare_training_dataset=True)
+
+    try:
+        toolkit.prepare_training_dataset(
+            input_csv="pxr_curated.csv",
+            smiles_column="smiles",
+            target_columns=["pEC50"],
+            confirm_explicit_export_request=True,
+        )
+    except ValueError as exc:
+        assert "disabled in the QSAR training workflow" in str(exc)
+        assert "train_lightgbm_model" in str(exc)
+    else:
+        raise AssertionError("agent-scoped prepare_training_dataset should always be blocked")
 
 
 def test_training_csv_resolution_falls_back_to_latest_curation(tmp_path, monkeypatch):

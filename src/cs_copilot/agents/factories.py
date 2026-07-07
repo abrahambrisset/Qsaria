@@ -737,11 +737,11 @@ class QSARTrainingFactory(BaseAgentFactory):
             handoff for model governance.
             """,
             tools=[
-                QSARTrainingToolkit(),
+                QSARTrainingToolkit(block_prepare_training_dataset=True),
                 *_prediction_facade_tools(),
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
-                MolecularFeatureToolkit(),
+                MolecularFeatureToolkit(block_direct_qsar_training=True),
                 PointerPandasTools(),
             ],
             instructions=QSAR_TRAINING_INSTRUCTIONS,

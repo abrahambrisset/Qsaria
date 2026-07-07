@@ -20,6 +20,8 @@ import pandas as pd
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.activity_cliffs import ACTIVITY_CLIFF_ANNOTATION_PREFIX
+from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
+from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 from .backend import (
     BackendNotAvailableError,
@@ -30,8 +32,9 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .qsar_splitters import build_qsar_split_payload
+from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
+from .tabular_representations import get_tabular_representation
 from .training_orchestration import (
     classification_task_kind,
     compute_classification_metrics,
@@ -54,6 +57,13 @@ def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
     if not split_sizes:
         return [0.8, 0.1, 0.1]
+    if len(split_sizes) == 1 and float(split_sizes[0]) == 1.0:
+        return [1.0]
+    if len(split_sizes) == 2 and float(split_sizes[0]) == 1.0 and float(split_sizes[1]) == 0.0:
+        raise InvalidPredictionInputError(
+            "split_sizes=[1.0, 0.0] is not a valid holdout. "
+            "Use validation_strategy={'type': 'full_train'} for 100% training without test metrics."
+        )
     if len(split_sizes) not in (2, 3):
         raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
     total = float(sum(split_sizes))
@@ -453,6 +463,90 @@ class LightGBMBackend(PredictionBackend):
                     output.insert(0, column, source[column].reset_index(drop=True))
         return output
 
+    def _featurize_prediction_input_if_possible(
+        self,
+        df: pd.DataFrame,
+        *,
+        input_csv: str,
+        model_record: PredictionModelRecord,
+        feature_columns: List[str],
+    ) -> pd.DataFrame:
+        representation_name = (
+            (model_record.inference_profile or {}).get("representation_name")
+            or (model_record.training_data_summary or {}).get("representation_name")
+            or (model_record.selection_hints or {}).get("representation_name")
+        )
+        if not representation_name:
+            return df
+        try:
+            spec = get_tabular_representation(str(representation_name))
+        except ValueError:
+            return df
+        try:
+            smiles_column = resolve_smiles_column_name(df, "smiles")
+        except ValueError:
+            return df
+
+        input_path = Path(input_csv).expanduser()
+        feature_dir = (
+            input_path.parent / ".lightgbm_prediction_features"
+            if input_path.is_absolute()
+            else Path(".files") / "prediction_features" / safe_slug(model_record.model_id)
+        )
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        toolkit = MolecularFeatureToolkit()
+        feature_frames: List[pd.DataFrame] = []
+
+        if spec.use_morgan_binary:
+            output_csv = str(feature_dir / "morgan_binary.csv")
+            toolkit.smiles_to_morgan_fingerprints(
+                input_csv=input_csv,
+                smiles_column=smiles_column,
+                output_csv=output_csv,
+                include_input_columns=True,
+                input_columns_to_keep=["smiles"],
+                fingerprint_kind="binary",
+                n_jobs=1,
+            )
+            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
+        if spec.use_morgan_count:
+            output_csv = str(feature_dir / "morgan_count.csv")
+            toolkit.smiles_to_morgan_fingerprints(
+                input_csv=input_csv,
+                smiles_column=smiles_column,
+                output_csv=output_csv,
+                include_input_columns=True,
+                input_columns_to_keep=["smiles"],
+                fingerprint_kind="count",
+                n_jobs=1,
+            )
+            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
+        if spec.use_rdkit:
+            output_csv = str(feature_dir / "rdkit_descriptors.csv")
+            toolkit.smiles_to_rdkit_descriptors(
+                input_csv=input_csv,
+                smiles_column=smiles_column,
+                output_csv=output_csv,
+                descriptor_set=str(spec.descriptor_set or "basic"),
+                include_input_columns=True,
+                input_columns_to_keep=["smiles"],
+                n_jobs=1,
+            )
+            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
+
+        assembled = df.copy()
+        feature_additions: List[pd.DataFrame] = []
+        for feature_df in feature_frames:
+            columns_to_add = [
+                column for column in feature_columns
+                if column in feature_df.columns and column not in assembled.columns
+            ]
+            if columns_to_add:
+                feature_additions.append(feature_df[columns_to_add].reset_index(drop=True))
+        if feature_additions:
+            assembled = pd.concat([assembled.reset_index(drop=True), *feature_additions], axis=1)
+        return assembled
+
     def _is_gpu_runtime_unavailable(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "no opencl device found" in message or "opencl" in message
@@ -489,6 +583,14 @@ class LightGBMBackend(PredictionBackend):
         target_columns = list(model_record.task.target_columns)
 
         missing_features = [column for column in feature_columns if column not in df.columns]
+        if missing_features:
+            df = self._featurize_prediction_input_if_possible(
+                df,
+                input_csv=input_csv,
+                model_record=model_record,
+                feature_columns=feature_columns,
+            )
+            missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:
             raise InvalidPredictionInputError(
                 f"Prediction input is missing feature columns: {missing_features}"
@@ -548,7 +650,7 @@ class LightGBMBackend(PredictionBackend):
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
         sanitized_args = self._sanitize_train_extra_args(extra_args)
-        split_sizes = _coerce_split_sizes(sanitized_args.pop("split_sizes", None))
+        raw_split_sizes = sanitized_args.pop("split_sizes", None)
         split_payload = sanitized_args.pop("split_payload", None)
         excluded_train_indices = {
             int(idx) for idx in (sanitized_args.pop("excluded_train_indices", None) or [])
@@ -558,6 +660,7 @@ class LightGBMBackend(PredictionBackend):
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
         final_refit = bool(sanitized_args.get("final_refit", False))
+        split_sizes = [1.0] if final_refit and raw_split_sizes in (None, [1.0], (1.0,)) else _coerce_split_sizes(raw_split_sizes)
         target_column = task.target_columns[0]
         started_at = project_now()
 
@@ -592,17 +695,7 @@ class LightGBMBackend(PredictionBackend):
         encoded_working[feature_columns] = encoded_features
 
         if final_refit:
-            split_payload = [
-                {
-                    "train": list(range(len(encoded_working))),
-                    "metadata": {
-                        "split_type": "final_refit",
-                        "split_counts": {"train": int(len(encoded_working))},
-                        "has_validation": False,
-                        "final_refit": True,
-                    },
-                }
-            ]
+            split_payload = build_full_train_split_payload(df=encoded_working)
         elif not split_payload:
             split_payload = build_qsar_split_payload(
                 df=encoded_working,
@@ -836,6 +929,8 @@ class LightGBMBackend(PredictionBackend):
             "config_path": str(config_path),
             "task_type": task.task_type,
             "metrics": metrics,
+            "metrics_status": "not_evaluated" if final_refit else "evaluated",
+            "evaluation_required": bool(final_refit),
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
             "categorical_feature_columns": categorical_feature_columns,

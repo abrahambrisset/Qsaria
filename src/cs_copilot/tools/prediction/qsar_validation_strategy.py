@@ -92,6 +92,11 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
     if not isinstance(raw, (list, tuple)) or len(raw) not in (2, 3):
         raise ValueError("validation_strategy.split_sizes must be [train, test] or [train, validation, test].")
     values = [float(item) for item in raw]
+    if len(values) == 2 and values[0] == 1.0 and values[1] == 0.0:
+        raise ValueError(
+            "validation_strategy.split_sizes=[1.0, 0.0] is not a valid holdout. "
+            "Use validation_strategy={'type': 'full_train'} to train on 100% of the dataset without test metrics."
+        )
     total = sum(values)
     if values[0] <= 0 or values[-1] <= 0 or any(item < 0 for item in values) or abs(total - 1.0) > 1e-6:
         raise ValueError("validation_strategy.split_sizes must sum to 1.0 with positive train/test ratios.")
@@ -233,6 +238,36 @@ def resolve_validation_strategy(
     strategy_type = str(strategy.get("type") or strategy.get("strategy") or "holdout").strip().lower()
     selection_metric = str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
 
+    if strategy_type in {"full_train", "train_full", "final_refit"}:
+        seed_payload = _seed_policy_for_custom_strategy(
+            strategy_name="full_train",
+            run_count=1,
+            seed_policy_mode=seed_policy_mode,
+            seed_policy=seed_policy,
+            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+        )
+        seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])]
+        seed = seeds[0] if seeds else int(seed_payload.get("model_seed") or 42)
+        run = SplitRun(
+            label="full_train",
+            backend_split_type="final_refit",
+            seed=seed,
+            primary=True,
+            split_family="full_train",
+            split_sizes=[1.0],
+        )
+        return _build_policy(
+            strategy_name="full_train",
+            strategy_type="full_train",
+            reason="Train on 100% of the dataset without internal validation or test metrics.",
+            split_runs=[run],
+            seed_policy=seed_payload,
+            selection_metric=selection_metric,
+            validation_strategy={**strategy, "type": "full_train", "split_sizes": [1.0]},
+            aggregation="none",
+            final_refit=True,
+        )
+
     if strategy_type == "holdout":
         family = _infer_split_family(strategy)
         split_sizes = _coerce_strategy_split_sizes(strategy, family)
@@ -365,5 +400,5 @@ def resolve_validation_strategy(
 
     raise ValueError(
         "Unsupported validation_strategy.type. Expected one of "
-        "holdout, repeated_holdout, cross_validation."
+        "holdout, repeated_holdout, cross_validation, full_train."
     )

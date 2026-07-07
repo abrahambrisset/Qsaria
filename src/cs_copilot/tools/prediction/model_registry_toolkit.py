@@ -490,7 +490,7 @@ class ModelRegistryToolkit(Toolkit):
                     "canonical model_id instead of inventing a display name."
                 ),
             }
-        return self.register_model(
+        result = self.register_model(
             model_id=record.model_id,
             model_path=record.model_path,
             backend_name=record.backend_name,
@@ -518,6 +518,18 @@ class ModelRegistryToolkit(Toolkit):
             applicability_domain=record.applicability_domain,
             agent=agent,
         )
+        prediction_state = get_prediction_state(agent)
+        prediction_state["registered"][record.model_id] = record.as_dict()
+        result.update(
+            {
+                "metadata_path": record.metadata_path,
+                "persisted": True,
+                "catalog_persisted": True,
+                "persistence_state": "catalog_registered",
+                "next_required_tool": None,
+            }
+        )
+        return result
 
     def register_model(
         self,
@@ -983,6 +995,7 @@ class ModelRegistryToolkit(Toolkit):
             "not_recommended_for": list(record.not_recommended_for),
             "known_metrics": dict(record.known_metrics),
             "training_data_summary": dict(record.training_data_summary),
+            "external_evaluations": list(record.training_data_summary.get("external_evaluations") or []),
             "inference_profile": dict(record.inference_profile),
             "selection_hints": dict(record.selection_hints),
             "tags": dict(record.tags),
@@ -1084,6 +1097,7 @@ class ModelRegistryToolkit(Toolkit):
                 "domain_summary": record.domain_summary or "",
                 "known_metrics": dict(record.known_metrics),
                 "training_data_summary": dict(record.training_data_summary),
+                "external_evaluations": payload.get("external_evaluations") or record.training_data_summary.get("external_evaluations") or [],
                 "trained_at": (record.training_data_summary or {}).get("trained_at"),
                 "trained_date": (record.training_data_summary or {}).get("trained_date"),
                 "trained_time": (record.training_data_summary or {}).get("trained_time"),
@@ -1212,6 +1226,8 @@ class ModelRegistryToolkit(Toolkit):
                     (summary_payload.get("validation_assessment") or {}).get("governance") or {}
                 )
                 recommended_status = governance_assessment.get("recommended_status")
+                if summary_payload.get("metrics_status") == "not_evaluated":
+                    recommended_status = None
             except Exception:
                 governance_assessment = {}
                 resolved_applicability_domain = dict(applicability_domain or {})
@@ -1312,6 +1328,8 @@ class ModelRegistryToolkit(Toolkit):
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
         requested_status = status or current.status
+        if summary_payload.get("metrics_status") == "not_evaluated":
+            requested_status = "workflow_demo"
         resolved_status = requested_status
         status_reason = None
         if recommended_status and recommended_status != requested_status:
@@ -1343,7 +1361,11 @@ class ModelRegistryToolkit(Toolkit):
             limitations=limitations or current.limitations,
             recommended_for=recommended_for or current.recommended_for,
             not_recommended_for=not_recommended_for or current.not_recommended_for,
-            known_metrics=known_metrics or current.known_metrics,
+            known_metrics=(
+                {}
+                if known_metrics is None and summary_payload.get("metrics_status") == "not_evaluated"
+                else known_metrics or current.known_metrics
+            ),
             training_data_summary={
                 **current.training_data_summary,
                 **(training_data_summary or {}),
@@ -1353,6 +1375,22 @@ class ModelRegistryToolkit(Toolkit):
                 "endpoint_name": endpoint_name,
                 "dataset_name": dataset_name,
                 "validation_protocol": str(protocol_name or "protocol"),
+                "metrics_status": (
+                    summary_payload.get("metrics_status")
+                    or (training_data_summary or {}).get("metrics_status")
+                    or current.training_data_summary.get("metrics_status")
+                    or ("not_evaluated" if summary_payload.get("evaluation_required") else None)
+                ),
+                "evaluation_required": bool(
+                    summary_payload.get("evaluation_required")
+                    or (training_data_summary or {}).get("evaluation_required")
+                    or current.training_data_summary.get("evaluation_required")
+                ),
+                "external_evaluations": list(
+                    current.training_data_summary.get("external_evaluations")
+                    or (training_data_summary or {}).get("external_evaluations")
+                    or []
+                ),
                 "seed_policy": summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy"),
                 "seed_policy_report": seed_policy_reporting_text(
                     summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
@@ -1458,6 +1496,22 @@ class ModelRegistryToolkit(Toolkit):
     def resolve_record(self, model_id: str, agent: Agent) -> PredictionModelRecord:
         prediction_state = get_prediction_state(agent)
         payload = prediction_state["registered"].get(model_id)
-        if payload is None:
-            raise ValueError(f"Unknown model_id: {model_id}")
-        return PredictionModelRecord.from_dict(payload)
+        if payload is not None:
+            record = PredictionModelRecord.from_dict(payload)
+            if record.metadata_path:
+                return record
+            try:
+                self.catalog.refresh_from_internal_store(persist=True)
+                catalog_record = self.catalog.get_model(model_id)
+            except ValueError:
+                return record
+            prediction_state["registered"][model_id] = catalog_record.as_dict()
+            return catalog_record
+
+        self.catalog.refresh_from_internal_store(persist=True)
+        try:
+            record = self.catalog.get_model(model_id)
+        except ValueError as exc:
+            raise ValueError(f"Unknown model_id: {model_id}") from exc
+        prediction_state["registered"][model_id] = record.as_dict()
+        return record

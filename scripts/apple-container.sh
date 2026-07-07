@@ -137,6 +137,8 @@ exec container run --rm --name "$NAME" \
   -v "$ROOT/src:/app/src" \
   -v "$ROOT/public:/app/public" \
   -v "$ROOT/examples:/app/examples" \
+  -v "$ROOT/skills:/app/skills" \
+  -v "$ROOT/workflow_catalog:/app/workflow_catalog" \
   -v "$ROOT/chainlit_app.py:/app/chainlit_app.py" \
   "${env_args[@]}" \
   "$IMAGE"

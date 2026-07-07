@@ -25,6 +25,20 @@ SECRET_FILE="/app/data/.chainlit_secret"
 mkdir -p /app/data
 mkdir -p /app/.files   # Chainlit stages uploaded files here before app code processes them
 
+TABICL_CHECKPOINT_SOURCE="/opt/model_assets/checkpoints/tabicl"
+TABICL_CHECKPOINT_TARGET="/app/data/model_assets/checkpoints/tabicl"
+if [ -d "$TABICL_CHECKPOINT_SOURCE" ]; then
+    mkdir -p "$TABICL_CHECKPOINT_TARGET"
+    for checkpoint in \
+        tabicl-regressor-v2-20260212.ckpt \
+        tabicl-classifier-v2-20260212.ckpt; do
+        if [ -f "$TABICL_CHECKPOINT_SOURCE/$checkpoint" ] && [ ! -f "$TABICL_CHECKPOINT_TARGET/$checkpoint" ]; then
+            cp "$TABICL_CHECKPOINT_SOURCE/$checkpoint" "$TABICL_CHECKPOINT_TARGET/$checkpoint"
+            echo "✅ Provisioned TabICL checkpoint: $checkpoint"
+        fi
+    done
+fi
+
 # Priority order for CHAINLIT_AUTH_SECRET:
 # 1. Use if already set (from .env or docker-start.sh)
 # 2. Load from persisted file if exists

@@ -226,11 +226,22 @@ def _canonicalize_join_columns(
 class MolecularFeatureToolkit(Toolkit):
     """Explicit tools for transforming molecular datasets into tabular features."""
 
-    def __init__(self):
+    def __init__(self, *, block_direct_qsar_training: bool = False):
         super().__init__("molecular_features")
+        self.block_direct_qsar_training = block_direct_qsar_training
         self.register(self.smiles_to_morgan_fingerprints)
         self.register(self.smiles_to_rdkit_descriptors)
         self.register(self.build_tabular_qsar_dataset)
+
+    def _guard_direct_qsar_training(self, tool_name: str) -> None:
+        if not self.block_direct_qsar_training:
+            return
+        raise ValueError(
+            f"{tool_name} is a low-level export/debug helper and is blocked in the QSAR training agent. "
+            "For LightGBM or TabICL training with Morgan/RDKit representations, call "
+            "train_lightgbm_model or train_tabicl_model with representation_name instead; those tools "
+            "prepare and cache features internally."
+        )
 
     def smiles_to_morgan_fingerprints(
         self,
@@ -252,6 +263,7 @@ class MolecularFeatureToolkit(Toolkit):
         tabular backends (for example TabICL or tree models) can reuse the same
         featurization step without coupling it to training.
         """
+        self._guard_direct_qsar_training("smiles_to_morgan_fingerprints")
         started_at = time.monotonic()
         normalized_fingerprint_kind = _normalize_fingerprint_kind(fingerprint_kind)
         resolved_n_jobs = _coerce_n_jobs(n_jobs)
@@ -346,6 +358,7 @@ class MolecularFeatureToolkit(Toolkit):
         - `basic`: short, fixed descriptor set for lightweight workflows
         - `all`: full RDKit descriptor list exposed by `Descriptors._descList`
         """
+        self._guard_direct_qsar_training("smiles_to_rdkit_descriptors")
         started_at = time.monotonic()
         resolved_n_jobs = _coerce_n_jobs(n_jobs)
         descriptor_funcs = _resolve_rdkit_descriptor_funcs(descriptor_set)
@@ -425,6 +438,7 @@ class MolecularFeatureToolkit(Toolkit):
         Build a final tabular QSAR dataset by combining a curated base CSV with
         one or more precomputed molecular feature tables.
         """
+        self._guard_direct_qsar_training("build_tabular_qsar_dataset")
         started_at = time.monotonic()
         if not feature_csvs:
             raise ValueError("feature_csvs must contain at least one feature table.")

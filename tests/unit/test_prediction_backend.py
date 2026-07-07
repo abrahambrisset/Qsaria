@@ -1,4 +1,5 @@
 import json
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
@@ -48,6 +49,11 @@ from cs_copilot.tools.prediction.training_orchestration import (
     normalize_json_list_argument,
     write_training_summary,
 )
+
+
+class _FakeLightGBMPredictor:
+    def predict(self, features):
+        return [float(index) for index in range(len(features))]
 
 
 def test_backend_capabilities_registry_core_contracts():
@@ -428,6 +434,45 @@ def test_lightgbm_fit_with_validation_uses_early_stopping(monkeypatch):
     assert calls["early_stopping"] == 1
     assert "eval_set" in calls["fit_kwargs"]
     assert calls["fit_kwargs"]["callbacks"][1]["callback"] == "early_stopping"
+
+
+def test_lightgbm_predict_featurizes_smiles_for_morgan_model(tmp_path):
+    backend = LightGBMBackend()
+    model_path = tmp_path / "model.pkl"
+    feature_columns = [f"fp_{index:04d}" for index in range(2048)]
+    with model_path.open("wb") as fh:
+        pickle.dump(
+            {
+                "model": _FakeLightGBMPredictor(),
+                "feature_columns": feature_columns,
+                "categorical_feature_columns": [],
+                "task_type": "regression",
+            },
+            fh,
+        )
+    input_csv = tmp_path / "external.csv"
+    pd.DataFrame({"SMILES": ["CCO", "CCC"], "pEC50": [5.0, 6.0]}).to_csv(input_csv, index=False)
+    preds_path = tmp_path / "predictions.csv"
+
+    result = backend.predict_from_csv(
+        input_csv=str(input_csv),
+        model_record=PredictionModelRecord(
+            model_id="morgan_model",
+            backend_name="lightgbm",
+            model_path=str(model_path),
+            task=PredictionTaskSpec(
+                task_type="regression",
+                smiles_columns=["smiles"],
+                target_columns=["pEC50"],
+            ),
+            inference_profile={"representation_name": "morgan_only"},
+        ),
+        preds_path=str(preds_path),
+    )
+
+    predictions = pd.read_csv(preds_path)
+    assert result["rows"] == 2
+    assert predictions["prediction"].tolist() == [0.0, 1.0]
 
 
 def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path):
@@ -917,6 +962,141 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     assert persisted_metadata["inference_profile"]["representation_name"] == "morgan_count_only"
     assert result["status_reason"]
     assert "workflow_demo" in result["status_reason"]
+
+
+def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "full_train.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\nCCC,6.0\n")
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-07-07T12:00:00+02:00",
+                "validation_protocol": "full_train",
+                "validation_strategy_type": "full_train",
+                "validation_strategy": {"type": "full_train", "split_sizes": [1.0]},
+                "metrics_status": "not_evaluated",
+                "evaluation_required": True,
+                "metrics": {},
+                "known_metrics": {},
+                "validation_assessment": {
+                    "governance": {
+                        "recommended_status": "experimental",
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="experimental",
+        known_metrics={"stale": {"r2": 0.1}},
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        status="experimental",
+        agent=agent,
+    )
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    assert result["status"] == "workflow_demo"
+    assert result["record"]["known_metrics"] == {}
+    assert persisted_metadata["known_metrics"] == {}
+    assert persisted_metadata["external_evaluations"] == []
+    assert persisted_metadata["training_data_summary"]["metrics_status"] == "not_evaluated"
+    assert persisted_metadata["training_data_summary"]["evaluation_required"] is True
+    assert persisted_metadata["training_data_summary"]["external_evaluations"] == []
+    assert result["status_reason"] is None
+
+
+def test_model_registry_resolves_persisted_catalog_metadata(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    model_root = internal_root / "persisted_model"
+    model_root.mkdir(parents=True)
+    (model_root / "best.pkl").write_text("model")
+    metadata_path = model_root / "metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "model_id": "persisted_model",
+                "backend_name": "lightgbm",
+                "status": "workflow_demo",
+                "task": {
+                    "task_type": "regression",
+                    "smiles_columns": ["smiles"],
+                    "target_columns": ["pEC50"],
+                },
+                "artifacts": {"model_path": "best.pkl"},
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+
+    resolved = toolkit.resolve_record("persisted_model", agent)
+    assert resolved.metadata_path == str(metadata_path.resolve())
+
+    result = toolkit.register_catalog_model("persisted_model", agent=agent)
+    assert result["metadata_path"] == str(metadata_path.resolve())
+    assert get_prediction_state(agent)["registered"]["persisted_model"]["metadata_path"] == str(
+        metadata_path.resolve()
+    )
+
+    get_prediction_state(agent)["registered"]["persisted_model"]["metadata_path"] = None
+    resolved_again = toolkit.resolve_record("persisted_model", agent)
+    assert resolved_again.metadata_path == str(metadata_path.resolve())
 
 
 def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, tmp_path):

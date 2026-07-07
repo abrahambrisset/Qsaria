@@ -500,7 +500,10 @@ class TabICLToolkit(Toolkit):
                 split_payload = split_run.get("split_payload")
                 split_sizes_for_run = split_run.get("split_sizes") or split_sizes
                 if split_payload is None:
-                    if label in cv_split_payloads:
+                    if split_run["backend_split_type"] == "final_refit":
+                        split_payload = build_full_train_split_payload(df=split_source_df)
+                        split_sizes_for_run = [1.0]
+                    elif label in cv_split_payloads:
                         split_payload = cv_split_payloads[label]
                     else:
                         split_payload = build_qsar_split_payload(
@@ -524,6 +527,8 @@ class TabICLToolkit(Toolkit):
                     "heartbeat_run_index": run_index,
                     "heartbeat_total_runs": len(protocol_policy["split_runs"]),
                 }
+                if split_run["backend_split_type"] == "final_refit":
+                    run_args["final_refit"] = True
                 run_args.setdefault("heartbeat_seconds", 120.0)
                 run_args.setdefault("disk_offload_dir", str((run_output_dir / "disk_offload").resolve()))
 
@@ -650,15 +655,16 @@ class TabICLToolkit(Toolkit):
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
-        plot_artifacts = build_training_plots_if_possible(
-            train_csv=train_csv,
-            split_results=split_results,
-            primary_run=final_primary_run,
-            root_artifacts=root_artifacts,
-            root_output_dir=root_output_path,
-            target_column=target_column,
-            task_type=task.task_type,
-        )
+        if protocol_policy.get("validation_strategy_type") != "full_train":
+            plot_artifacts = build_training_plots_if_possible(
+                train_csv=train_csv,
+                split_results=split_results,
+                primary_run=final_primary_run,
+                root_artifacts=root_artifacts,
+                root_output_dir=root_output_path,
+                target_column=target_column,
+                task_type=task.task_type,
+            )
 
         validation_assessment = assess_protocol_results(split_results)
         total_completed_at = project_now()
@@ -672,6 +678,11 @@ class TabICLToolkit(Toolkit):
             "test_predictions_path"
         )
         result["validation_protocol"] = protocol_policy["protocol"]
+        if protocol_policy.get("validation_strategy_type") == "full_train":
+            result["metrics"] = {}
+            result["test_predictions_path"] = None
+            result["metrics_status"] = "not_evaluated"
+            result["evaluation_required"] = True
         result["validation_protocol_reason"] = protocol_policy["reason"]
         result["validation_strategy"] = protocol_policy.get("validation_strategy")
         result["validation_strategy_type"] = protocol_policy.get("validation_strategy_type")

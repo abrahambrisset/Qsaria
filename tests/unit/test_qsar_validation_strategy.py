@@ -257,6 +257,47 @@ def test_cross_validation_accepts_fold_aliases_and_repeats():
     assert policy["validation_strategy"]["n_repeats"] == 5
 
 
+def test_full_train_strategy_creates_single_final_refit_run():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={"type": "full_train", "seed": 99},
+        training_profile="heavy_validation",
+    )
+
+    assert policy["protocol"] == "full_train"
+    assert policy["validation_strategy_type"] == "full_train"
+    assert policy["final_refit"] is True
+    assert policy["aggregation"] == "none"
+    assert policy["split_runs"] == [
+        {
+            "label": "full_train",
+            "backend_split_type": "final_refit",
+            "seed": 99,
+            "primary": True,
+            "split_family": "full_train",
+            "split_sizes": [1.0],
+        }
+    ]
+    assert policy["validation_strategy"]["split_sizes"] == [1.0]
+
+
+def test_holdout_one_zero_split_sizes_points_to_full_train():
+    try:
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={
+                "type": "holdout",
+                "split_family": "random",
+                "split_sizes": [1.0, 0.0],
+            },
+            training_profile="heavy_validation",
+        )
+    except ValueError as exc:
+        assert "full_train" in str(exc)
+    else:
+        raise AssertionError("[1.0, 0.0] should be rejected in favor of full_train")
+
+
 def test_unknown_validation_strategy_is_rejected():
     try:
         resolve_validation_strategy(
@@ -265,6 +306,6 @@ def test_unknown_validation_strategy_is_rejected():
             training_profile="heavy_validation",
         )
     except ValueError as exc:
-        assert "holdout, repeated_holdout, cross_validation" in str(exc)
+        assert "holdout, repeated_holdout, cross_validation, full_train" in str(exc)
     else:
         raise AssertionError("unsupported validation strategy should be rejected")

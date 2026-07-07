@@ -56,6 +56,22 @@ def test_morgan_output_keeps_normalized_smiles_for_future_joins(tmp_path):
     assert "Y" in output_df.columns
 
 
+def test_guarded_feature_toolkit_blocks_direct_training_feature_generation(tmp_path):
+    toolkit = MolecularFeatureToolkit(block_direct_qsar_training=True)
+    input_csv = _sample_feature_input(tmp_path)
+
+    try:
+        toolkit.smiles_to_morgan_fingerprints(
+            input_csv=str(input_csv),
+            smiles_column="SMILES",
+        )
+    except ValueError as exc:
+        assert "blocked in the QSAR training agent" in str(exc)
+        assert "train_lightgbm_model" in str(exc)
+    else:
+        raise AssertionError("guarded feature toolkit should block direct Morgan generation")
+
+
 def test_morgan_accepts_original_smiles_name_on_curated_lowercase_dataset(tmp_path):
     toolkit = MolecularFeatureToolkit()
     input_csv = _sample_curated_feature_input(tmp_path)

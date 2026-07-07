@@ -71,7 +71,9 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
 
     model_root = metadata_path.parent
     resolved_model_path = str((model_root / model_path).resolve())
-    training_data_summary = dict(payload.get("training_data", {}) or {})
+    training_data_summary = dict(
+        payload.get("training_data_summary", {}) or payload.get("training_data", {}) or {}
+    )
     for key in ("trained_at", "trained_date", "trained_time", "validation_protocol"):
         if payload.get(key) is not None:
             training_data_summary[key] = payload.get(key)
