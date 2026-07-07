@@ -51,6 +51,7 @@ Agent Capabilities Breakdown:
   - QSAR-adjacent analysis: exploratory structural analyses that can support QSAR work, without replacing the isolated QSAR system
 """
 
+
 def __getattr__(name):
     if name in {"AgentConfig", "AgentCreationError", "BaseAgentFactory"}:
         from .factories import AgentConfig, AgentCreationError, BaseAgentFactory
@@ -80,6 +81,7 @@ def __getattr__(name):
 
         return get_last_agent_reply
     raise AttributeError(name)
+
 
 __all__ = [
     # Primary API

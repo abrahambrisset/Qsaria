@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 
@@ -44,8 +42,7 @@ def test_catalog_recommend_prefers_target_matching_entry(tmp_path):
     model_file.write_text("placeholder")
 
     catalog_path = tmp_path / "model_catalog.json"
-    catalog_path.write_text(
-        """
+    catalog_path.write_text("""
 {
   "schema_version": 1,
   "models": [
@@ -85,8 +82,7 @@ def test_catalog_recommend_prefers_target_matching_entry(tmp_path):
     }
   ]
 }
-""".replace("__MODEL_PATH__", str(model_file))
-    )
+""".replace("__MODEL_PATH__", str(model_file)))
 
     catalog = PredictionModelCatalog.load(str(catalog_path))
     recommendation = catalog.recommend(
@@ -101,8 +97,7 @@ def test_catalog_recommend_prefers_target_matching_entry(tmp_path):
 
 def test_catalog_search_excludes_missing_paths_by_default(tmp_path):
     catalog_path = tmp_path / "model_catalog.json"
-    catalog_path.write_text(
-        """
+    catalog_path.write_text("""
 {
   "schema_version": 1,
   "models": [
@@ -123,8 +118,7 @@ def test_catalog_search_excludes_missing_paths_by_default(tmp_path):
     }
   ]
 }
-"""
-    )
+""")
 
     catalog = PredictionModelCatalog.load(str(catalog_path))
 

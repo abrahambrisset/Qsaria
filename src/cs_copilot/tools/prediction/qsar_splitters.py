@@ -34,13 +34,17 @@ def _murcko_scaffold_smiles(smiles: str) -> str:
 
 def _normalize_split_sizes(split_sizes: List[float]) -> List[float]:
     if len(split_sizes) not in (2, 3):
-        raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
+        raise InvalidPredictionInputError(
+            "split_sizes must contain [train, test] or [train, val, test]."
+        )
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
     normalized = [float(value) / total for value in split_sizes]
     if normalized[0] <= 0 or normalized[-1] <= 0 or any(value < 0 for value in normalized):
-        raise InvalidPredictionInputError("split_sizes require positive train/test and non-negative validation.")
+        raise InvalidPredictionInputError(
+            "split_sizes require positive train/test and non-negative validation."
+        )
     if len(normalized) == 3 and normalized[1] == 0:
         return [normalized[0], normalized[2]]
     return normalized
@@ -76,7 +80,7 @@ def _finalize_split(
     random_state: int,
 ) -> List[Dict[str, Any]]:
     clean = {
-        split_name: sorted(set(int(i) for i in indices))
+        split_name: sorted({int(i) for i in indices})
         for split_name, indices in assigned.items()
         if indices
     }
@@ -116,7 +120,7 @@ def _group_balanced_split_payload(
 
     split_names = tuple(counts)
     assigned = {split_name: [] for split_name in split_names}
-    current = {split_name: 0 for split_name in split_names}
+    current = dict.fromkeys(split_names, 0)
 
     for _, indices in group_items:
         best_split = None
@@ -144,7 +148,9 @@ def _group_balanced_split_payload(
         if not assigned[split_name]:
             donor = max(split_names, key=lambda name: len(assigned[name]))
             if len(assigned[donor]) <= 1:
-                raise InvalidPredictionInputError("Grouped split could not create non-empty requested splits.")
+                raise InvalidPredictionInputError(
+                    "Grouped split could not create non-empty requested splits."
+                )
             assigned[split_name].append(assigned[donor].pop())
 
     return _finalize_split(
@@ -167,7 +173,9 @@ def _feature_cluster_labels(
     if missing:
         raise InvalidPredictionInputError(f"KMeans split is missing feature columns: {missing}")
     n_rows = len(df)
-    matrix = df[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    matrix = (
+        df[feature_columns].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
     scaled = StandardScaler().fit_transform(matrix)
     n_clusters = max(3, min(20, int(math.sqrt(max(n_rows, 1) / 2.0))))
     n_clusters = min(n_clusters, n_rows)

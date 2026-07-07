@@ -6,10 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-
-_IDENTITY_PATH = (
-    Path(__file__).resolve().parents[2] / "src/cs_copilot/tools/curation/identity.py"
-)
+_IDENTITY_PATH = Path(__file__).resolve().parents[2] / "src/cs_copilot/tools/curation/identity.py"
 _IDENTITY_SPEC = importlib.util.spec_from_file_location(
     "curation_identity_for_tests", _IDENTITY_PATH
 )
@@ -75,11 +72,11 @@ def test_stereo_strip_identity_collapses_enantiomeric_smiles() -> None:
     )
 
 
-def test_chembl_backend_stereo_identity_aggregates_close_duplicates(
-    tmp_path, monkeypatch
-) -> None:
+def test_chembl_backend_stereo_identity_aggregates_close_duplicates(tmp_path, monkeypatch) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "stereo.csv"
     output = tmp_path / "curated.csv"
     pd.DataFrame(
@@ -101,7 +98,10 @@ def test_chembl_backend_stereo_identity_aggregates_close_duplicates(
     assert result["duplicate_groups_aggregated"] == 1
     assert result["duplicate_conflicting_groups"] == 0
     assert len(curated) == 2
-    assert round(float(curated.loc[curated["curation_identity_key"] != "CCO", "pEC50"].iloc[0]), 2) == 5.1
+    assert (
+        round(float(curated.loc[curated["curation_identity_key"] != "CCO", "pEC50"].iloc[0]), 2)
+        == 5.1
+    )
     assert result["curation_artifacts"]["standardization_map_csv"].endswith(
         "curation_standardization_map.csv"
     )
@@ -111,7 +111,9 @@ def test_chembl_backend_stereo_identity_removes_conflicting_duplicates(
     tmp_path, monkeypatch
 ) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "stereo_conflict.csv"
     output = tmp_path / "curated_conflict.csv"
     pd.DataFrame(
@@ -140,7 +142,9 @@ def test_chembl_backend_classification_aggregates_concordant_duplicates(
     tmp_path, monkeypatch
 ) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "classification.csv"
     output = tmp_path / "classification_curated.csv"
     pd.DataFrame(
@@ -162,7 +166,9 @@ def test_chembl_backend_classification_aggregates_concordant_duplicates(
     assert result["duplicate_groups_aggregated"] == 1
     assert result["duplicate_conflicting_groups"] == 0
     assert len(curated) == 2
-    assert result["target_data_quality"]["classification_target_summary"]["active"]["class_count"] == 2
+    assert (
+        result["target_data_quality"]["classification_target_summary"]["active"]["class_count"] == 2
+    )
     assert set(curated["active"]) == {"yes", "no"}
 
 
@@ -170,7 +176,9 @@ def test_chembl_backend_classification_removes_conflicting_duplicates(
     tmp_path, monkeypatch
 ) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
-    monkeypatch.setattr(curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend)
+    monkeypatch.setattr(
+        curation_module, "standardize_with_chembl_structure_v1", _fake_chembl_backend
+    )
     source = tmp_path / "classification_conflict.csv"
     output = tmp_path / "classification_conflict_curated.csv"
     pd.DataFrame(

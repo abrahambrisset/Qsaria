@@ -22,8 +22,11 @@ from .ensemble_backend import EnsembleBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import project_now, safe_slug
 from .tabicl_backend import TabICLBackend
-from .training_orchestration import compute_classification_metrics, is_classification_task, is_multiclass_task
-
+from .training_orchestration import (
+    compute_classification_metrics,
+    is_classification_task,
+    is_multiclass_task,
+)
 
 ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_only", "rdkit_basic_only", "rdkit_all_only"}
 PROMOTED_STATUSES = {"production", "validated", "robust_validated"}
@@ -123,7 +126,12 @@ def _target_matches(record: PredictionModelRecord, target: str) -> bool:
 
 
 def _representation(record: PredictionModelRecord) -> str:
-    for source in (record.inference_profile, record.selection_hints, record.training_data_summary, record.tags):
+    for source in (
+        record.inference_profile,
+        record.selection_hints,
+        record.training_data_summary,
+        record.tags,
+    ):
         value = (source or {}).get("representation_name") or (source or {}).get("representation")
         if value:
             return str(value)
@@ -195,7 +203,9 @@ def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
         or _nested_metric(metrics, "scaffold", "balanced_accuracy")
         or _nested_metric(metrics, "scaffold_split", "balanced_accuracy")
     )
-    fallback_balanced_accuracy = _safe_float(metrics.get("balanced_accuracy")) if isinstance(metrics, dict) else None
+    fallback_balanced_accuracy = (
+        _safe_float(metrics.get("balanced_accuracy")) if isinstance(metrics, dict) else None
+    )
     scaffold_r2 = (
         _nested_metric(metrics, "scaffold", "r2_mean")
         or _nested_metric(metrics, "scaffold", "r2")
@@ -214,9 +224,8 @@ def _metric_summary(record: PredictionModelRecord) -> Dict[str, Any]:
             if metrics.get(key):
                 hardest_name = str(metrics.get(key))
         if hardest_name:
-            hardest_r2 = (
-                _nested_metric(metrics, hardest_name, "r2_mean")
-                or _nested_metric(metrics, hardest_name, "r2")
+            hardest_r2 = _nested_metric(metrics, hardest_name, "r2_mean") or _nested_metric(
+                metrics, hardest_name, "r2"
             )
     fallback_r2 = _safe_float(metrics.get("r2")) if isinstance(metrics, dict) else None
     return {
@@ -328,12 +337,18 @@ class EnsembleToolkit(Toolkit):
         backend = self.backends.get(backend_name)
         return bool(backend and backend.is_available())
 
-    def _candidate_evidence(self, record: PredictionModelRecord, target: str, task_type: str) -> Dict[str, Any]:
+    def _candidate_evidence(
+        self, record: PredictionModelRecord, target: str, task_type: str
+    ) -> Dict[str, Any]:
         representation = _representation(record)
         representation_slug = safe_slug(representation) or "unknown"
         metrics = _metric_summary(record)
         metadata = _load_json(record.metadata_path)
-        activity = metadata.get("activity_cliffs") or record.training_data_summary.get("activity_cliffs") or {}
+        activity = (
+            metadata.get("activity_cliffs")
+            or record.training_data_summary.get("activity_cliffs")
+            or {}
+        )
         is_ablation = representation_slug in ABLATION_REPRESENTATIONS or any(
             token in safe_slug(record.model_id) for token in ABLATION_REPRESENTATIONS
         )
@@ -357,12 +372,20 @@ class EnsembleToolkit(Toolkit):
             compatible = False
             warnings.append(f"Backend `{record.backend_name}` is not available.")
         if is_ablation:
-            warnings.append("Ablation representation; include only with explicit scientific justification.")
+            warnings.append(
+                "Ablation representation; include only with explicit scientific justification."
+            )
         if compatible:
             reasons.append("Compatible target, task, backend and model path.")
-        if metrics.get("hardest_split_r2") is not None or metrics.get("hardest_split_balanced_accuracy") is not None:
+        if (
+            metrics.get("hardest_split_r2") is not None
+            or metrics.get("hardest_split_balanced_accuracy") is not None
+        ):
             reasons.append("Has hardest/scaffold-style validation evidence.")
-        elif metrics.get("random_r2") is not None or metrics.get("random_balanced_accuracy") is not None:
+        elif (
+            metrics.get("random_r2") is not None
+            or metrics.get("random_balanced_accuracy") is not None
+        ):
             reasons.append("Has random-split validation evidence only.")
         else:
             reasons.append("No direct validation metric was extracted; usable only with caution.")
@@ -394,7 +417,9 @@ class EnsembleToolkit(Toolkit):
         evidence["selection_score"] = list(_sort_score(evidence))
         return evidence
 
-    def _component_payload(self, record: PredictionModelRecord, evidence: Dict[str, Any]) -> Dict[str, Any]:
+    def _component_payload(
+        self, record: PredictionModelRecord, evidence: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return {
             "model_id": record.model_id,
             "component_slug": safe_slug(record.model_id) or record.model_id,
@@ -405,11 +430,15 @@ class EnsembleToolkit(Toolkit):
             "status": record.status,
             "version": record.version,
             "description": record.description,
-            "task": record.task.as_dict() if hasattr(record.task, "as_dict") else {
-                "task_type": record.task.task_type,
-                "smiles_columns": list(record.task.smiles_columns),
-                "target_columns": list(record.task.target_columns),
-            },
+            "task": (
+                record.task.as_dict()
+                if hasattr(record.task, "as_dict")
+                else {
+                    "task_type": record.task.task_type,
+                    "smiles_columns": list(record.task.smiles_columns),
+                    "target_columns": list(record.task.target_columns),
+                }
+            ),
             "known_metrics": record.known_metrics,
             "training_data_summary": record.training_data_summary,
             "inference_profile": record.inference_profile,
@@ -459,7 +488,10 @@ class EnsembleToolkit(Toolkit):
         max_components: int,
     ) -> tuple[List[PredictionModelRecord], List[Dict[str, Any]], List[Dict[str, Any]]]:
         records_by_id = {record.model_id: record for record in self.catalog.list_models()}
-        all_evidence = [self._candidate_evidence(record, target, task_type) for record in self.catalog.list_models()]
+        all_evidence = [
+            self._candidate_evidence(record, target, task_type)
+            for record in self.catalog.list_models()
+        ]
         evidence_by_id = {item["model_id"]: item for item in all_evidence}
         selected: List[PredictionModelRecord] = []
         if model_ids:
@@ -469,7 +501,9 @@ class EnsembleToolkit(Toolkit):
             for model_id in model_ids:
                 evidence = evidence_by_id[model_id]
                 if not evidence["compatible"]:
-                    raise ValueError(f"Model `{model_id}` is not compatible: {evidence['warnings']}")
+                    raise ValueError(
+                        f"Model `{model_id}` is not compatible: {evidence['warnings']}"
+                    )
                 selected.append(records_by_id[model_id])
         else:
             compatible = [item for item in all_evidence if item["compatible"]]
@@ -481,7 +515,9 @@ class EnsembleToolkit(Toolkit):
                 key = str(evidence["representation_key"])
                 if key in seen_keys:
                     evidence["selection_decision"] = "excluded"
-                    evidence["selection_reason"] = "Redundant backend/representation combination for V1 default selection."
+                    evidence["selection_reason"] = (
+                        "Redundant backend/representation combination for V1 default selection."
+                    )
                     continue
                 selected.append(records_by_id[evidence["model_id"]])
                 seen_keys.add(key)
@@ -489,12 +525,18 @@ class EnsembleToolkit(Toolkit):
         for evidence in all_evidence:
             if evidence["model_id"] in selected_ids:
                 evidence["selection_decision"] = "included"
-                reason = "Explicitly requested by user." if model_ids else "Selected as a high-evidence, non-redundant component."
+                reason = (
+                    "Explicitly requested by user."
+                    if model_ids
+                    else "Selected as a high-evidence, non-redundant component."
+                )
                 if evidence.get("is_ablation"):
                     reason += " Warning: ablation representation included."
                 evidence["selection_reason"] = reason
             elif evidence["selection_decision"] == "not_selected":
-                evidence["selection_decision"] = "excluded" if evidence["compatible"] else "incompatible"
+                evidence["selection_decision"] = (
+                    "excluded" if evidence["compatible"] else "incompatible"
+                )
                 evidence["selection_reason"] = (
                     "Lower-ranked or redundant compatible candidate."
                     if evidence["compatible"]
@@ -516,7 +558,9 @@ class EnsembleToolkit(Toolkit):
         """Create and persist a post-hoc ensemble from compatible catalog models."""
         task_is_classification = is_classification_task(task_type)
         if task_is_classification and is_multiclass_task(task_type):
-            raise ValueError("Ensemble multiclass classification is not enabled in this QSARIA version.")
+            raise ValueError(
+                "Ensemble multiclass classification is not enabled in this QSARIA version."
+            )
         if task_is_classification and aggregation_strategy == "median":
             aggregation_strategy = "majority_vote"
         if task_is_classification:
@@ -537,7 +581,9 @@ class EnsembleToolkit(Toolkit):
 
         now = project_now()
         target_slug = safe_slug(target) or "target"
-        model_id = f"{target_slug}_catalog_consensus_ensemble_v1_0_{now.strftime('%d%m%Y_%H%M%S_%f')}"
+        model_id = (
+            f"{target_slug}_catalog_consensus_ensemble_v1_0_{now.strftime('%d%m%Y_%H%M%S_%f')}"
+        )
         model_root = DEFAULT_INTERNAL_MODEL_ROOT / model_id
         model_dir = model_root / "model"
         artifacts_dir = model_root / "artifacts"
@@ -546,7 +592,7 @@ class EnsembleToolkit(Toolkit):
 
         components = [
             self._component_payload(record, evidence)
-            for record, evidence in zip(selected, selected_evidence)
+            for record, evidence in zip(selected, selected_evidence, strict=False)
         ]
         class_labels: List[Any] = []
         if task_is_classification:
@@ -555,22 +601,34 @@ class EnsembleToolkit(Toolkit):
                 if labels and not class_labels:
                     class_labels = labels
                 elif labels and class_labels and list(labels) != class_labels:
-                    raise ValueError("Selected classification components do not share the same class labels.")
+                    raise ValueError(
+                        "Selected classification components do not share the same class labels."
+                    )
             if len(class_labels) > 2:
-                raise ValueError("Ensemble multiclass classification is not enabled in this QSARIA version.")
+                raise ValueError(
+                    "Ensemble multiclass classification is not enabled in this QSARIA version."
+                )
         ensemble_payload = {
             "schema_version": 1,
-            "ensemble_kind": "catalog_consensus_classification" if task_is_classification else "catalog_consensus_regression",
+            "ensemble_kind": (
+                "catalog_consensus_classification"
+                if task_is_classification
+                else "catalog_consensus_regression"
+            ),
             "target": target,
             "task_type": task_type,
             "aggregation_strategy": aggregation_strategy,
-            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+            "uncertainty_strategy": (
+                "vote_fraction" if task_is_classification else "component_disagreement_std"
+            ),
             "class_labels": class_labels,
             "created_from": "catalog",
             "created_at": now.isoformat(),
             "selection_policy": {
                 "max_components": max_components,
-                "component_selection": "top_diverse_by_evidence" if not model_ids else "explicit_model_ids",
+                "component_selection": (
+                    "top_diverse_by_evidence" if not model_ids else "explicit_model_ids"
+                ),
                 "status_policy": "workflow_demo_until_ensemble_level_evaluation",
             },
             "components": components,
@@ -613,7 +671,9 @@ class EnsembleToolkit(Toolkit):
             },
             inference_profile={
                 "aggregation_strategy": aggregation_strategy,
-                "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+                "uncertainty_strategy": (
+                    "vote_fraction" if task_is_classification else "component_disagreement_std"
+                ),
                 "class_labels": class_labels,
                 "class_count": len(class_labels) if class_labels else None,
                 "positive_class_label": class_labels[1] if len(class_labels) == 2 else None,
@@ -655,11 +715,16 @@ class EnsembleToolkit(Toolkit):
             "selection_evidence_path": str(evidence_path.resolve()),
             "selection_report_path": str(report_path.resolve()),
             "component_count": len(components),
-            "components": [{"model_id": item["model_id"], "backend_name": item["backend_name"]} for item in components],
+            "components": [
+                {"model_id": item["model_id"], "backend_name": item["backend_name"]}
+                for item in components
+            ],
             "known_metrics": {},
         }
 
-    def _selection_report(self, evidence_payload: Dict[str, Any], ensemble_payload: Dict[str, Any]) -> str:
+    def _selection_report(
+        self, evidence_payload: Dict[str, Any], ensemble_payload: Dict[str, Any]
+    ) -> str:
         included = set(evidence_payload.get("included_components") or [])
         lines = [
             f"# Rapport Ensemble — {ensemble_payload.get('target')}",
@@ -784,10 +849,14 @@ class EnsembleToolkit(Toolkit):
         predictions = pd.read_csv(preds_path)
         if target_column not in source.columns:
             raise ValueError(f"Target column `{target_column}` is missing from evaluation dataset.")
-        comparison = pd.concat([source.reset_index(drop=True), predictions.reset_index(drop=True)], axis=1)
+        comparison = pd.concat(
+            [source.reset_index(drop=True), predictions.reset_index(drop=True)], axis=1
+        )
         comparison.to_csv(preds_path, index=False)
 
-        prediction_columns = [column for column in predictions.columns if column.startswith("prediction_")]
+        prediction_columns = [
+            column for column in predictions.columns if column.startswith("prediction_")
+        ]
         metrics_rows = []
         task_is_classification = is_classification_task(record.task.task_type)
         if task_is_classification:
@@ -795,7 +864,9 @@ class EnsembleToolkit(Toolkit):
                 metrics_rows.append(
                     {
                         "model": column.removeprefix("prediction_"),
-                        **compute_classification_metrics(source[target_column], predictions[column]),
+                        **compute_classification_metrics(
+                            source[target_column], predictions[column]
+                        ),
                     }
                 )
             metrics_rows.append(
@@ -810,8 +881,18 @@ class EnsembleToolkit(Toolkit):
             )
         else:
             for column in prediction_columns:
-                metrics_rows.append({"model": column.removeprefix("prediction_"), **_metrics(source[target_column], predictions[column])})
-            metrics_rows.append({"model": "ensemble_median", **_metrics(source[target_column], predictions["ensemble_prediction_median"])})
+                metrics_rows.append(
+                    {
+                        "model": column.removeprefix("prediction_"),
+                        **_metrics(source[target_column], predictions[column]),
+                    }
+                )
+            metrics_rows.append(
+                {
+                    "model": "ensemble_median",
+                    **_metrics(source[target_column], predictions["ensemble_prediction_median"]),
+                }
+            )
         metrics_df = pd.DataFrame(metrics_rows)
         metrics_path = eval_dir / "metrics_by_component.csv"
         metrics_df.to_csv(metrics_path, index=False)
@@ -821,25 +902,38 @@ class EnsembleToolkit(Toolkit):
                 {
                     "y_true": source[target_column],
                     "ensemble_prediction": predictions["ensemble_prediction_class"],
-                    "ensemble_correct": source[target_column].astype(str) == predictions["ensemble_prediction_class"].astype(str),
-                    "ensemble_vote_fraction": pd.to_numeric(predictions["ensemble_vote_fraction"], errors="coerce"),
+                    "ensemble_correct": source[target_column].astype(str)
+                    == predictions["ensemble_prediction_class"].astype(str),
+                    "ensemble_vote_fraction": pd.to_numeric(
+                        predictions["ensemble_vote_fraction"], errors="coerce"
+                    ),
                 }
             )
         else:
             residuals = pd.DataFrame(
                 {
                     "y_true": pd.to_numeric(source[target_column], errors="coerce"),
-                    "ensemble_prediction": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce"),
-                    "ensemble_residual": pd.to_numeric(predictions["ensemble_prediction_median"], errors="coerce")
+                    "ensemble_prediction": pd.to_numeric(
+                        predictions["ensemble_prediction_median"], errors="coerce"
+                    ),
+                    "ensemble_residual": pd.to_numeric(
+                        predictions["ensemble_prediction_median"], errors="coerce"
+                    )
                     - pd.to_numeric(source[target_column], errors="coerce"),
-                    "ensemble_disagreement_std": pd.to_numeric(predictions["ensemble_prediction_std"], errors="coerce"),
+                    "ensemble_disagreement_std": pd.to_numeric(
+                        predictions["ensemble_prediction_std"], errors="coerce"
+                    ),
                 }
             )
         residuals_path = eval_dir / "residuals.csv"
         residuals.to_csv(residuals_path, index=False)
         disagreement_path = eval_dir / "disagreement_analysis.csv"
-        sort_column = "ensemble_vote_fraction" if task_is_classification else "ensemble_disagreement_std"
-        residuals.sort_values(sort_column, ascending=task_is_classification).to_csv(disagreement_path, index=False)
+        sort_column = (
+            "ensemble_vote_fraction" if task_is_classification else "ensemble_disagreement_std"
+        )
+        residuals.sort_values(sort_column, ascending=task_is_classification).to_csv(
+            disagreement_path, index=False
+        )
 
         component_predictions_path = eval_dir / "component_predictions.csv"
         predictions[prediction_columns].to_csv(component_predictions_path, index=False)
@@ -903,7 +997,9 @@ class EnsembleToolkit(Toolkit):
             "component_prediction_paths": result.get("component_prediction_paths") or {},
         }
 
-    def _evaluation_report(self, model_id: str, summary: Dict[str, Any], metrics_rows: List[Dict[str, Any]]) -> str:
+    def _evaluation_report(
+        self, model_id: str, summary: Dict[str, Any], metrics_rows: List[Dict[str, Any]]
+    ) -> str:
         lines = [
             f"# Evaluation Ensemble — {model_id}",
             "",

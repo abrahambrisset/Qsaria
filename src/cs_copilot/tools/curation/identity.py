@@ -37,4 +37,3 @@ def has_explicit_stereochemistry(smiles: str) -> bool:
         bond.GetStereo() not in (Chem.BondStereo.STEREONONE, Chem.BondStereo.STEREOANY)
         for bond in mol.GetBonds()
     )
-

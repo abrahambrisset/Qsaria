@@ -31,7 +31,9 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = list(argv or sys.argv[1:])
     if len(args) != 1:
-        sys.stderr.write("Usage: python -m cs_copilot.tools.prediction.tabicl_train_worker <job.json>\n")
+        sys.stderr.write(
+            "Usage: python -m cs_copilot.tools.prediction.tabicl_train_worker <job.json>\n"
+        )
         return 2
 
     job_path = Path(args[0]).expanduser().resolve()
@@ -53,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
             random_state=int(job.get("random_state", 42)),
             extra_args=dict(job.get("extra_args") or {}),
             prediction_state=None,
-            active_marker_path=Path(job["output_dir"]).expanduser().resolve() / ".training_in_progress",
+            active_marker_path=Path(job["output_dir"]).expanduser().resolve()
+            / ".training_in_progress",
             worker_pid=os.getpid(),
             worker_status="running",
         )

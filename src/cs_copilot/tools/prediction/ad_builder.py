@@ -234,9 +234,11 @@ def build_applicability_domain_from_training_data(
         "dominant_scaffolds": dominant_scaffolds,
         "coverage_summary": {
             "num_unique_scaffolds": int(scaffold_counts.size),
-            "largest_scaffold_fraction": float(scaffold_counts.iloc[0] / len(kept_smiles))
-            if len(scaffold_counts) > 0
-            else 0.0,
+            "largest_scaffold_fraction": (
+                float(scaffold_counts.iloc[0] / len(kept_smiles))
+                if len(scaffold_counts) > 0
+                else 0.0
+            ),
         },
     }
     ad_index_path = output_path / "applicability_domain.json"

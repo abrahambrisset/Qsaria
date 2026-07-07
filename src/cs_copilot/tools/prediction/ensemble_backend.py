@@ -46,7 +46,9 @@ def _prediction_column(frame: pd.DataFrame, target_columns: list[str]) -> str:
     numeric = [column for column in frame.columns if pd.api.types.is_numeric_dtype(frame[column])]
     if numeric:
         return numeric[-1]
-    raise InvalidPredictionInputError("Component prediction output does not contain a numeric prediction column.")
+    raise InvalidPredictionInputError(
+        "Component prediction output does not contain a numeric prediction column."
+    )
 
 
 def _component_representation(component: Dict[str, Any]) -> str:
@@ -148,19 +150,31 @@ class EnsembleBackend(PredictionBackend):
         if not path.exists():
             raise InvalidPredictionInputError(f"Ensemble model path does not exist: {model_path}")
         if path.name != "ensemble.json":
-            raise InvalidPredictionInputError("Ensemble model artifact must be named ensemble.json.")
+            raise InvalidPredictionInputError(
+                "Ensemble model artifact must be named ensemble.json."
+            )
         payload = self._load_payload(path)
         if int(payload.get("schema_version", 0)) != 1:
             raise InvalidPredictionInputError("Unsupported ensemble schema_version.")
-        if payload.get("ensemble_kind") not in {"catalog_consensus_regression", "catalog_consensus_classification"}:
+        if payload.get("ensemble_kind") not in {
+            "catalog_consensus_regression",
+            "catalog_consensus_classification",
+        }:
             raise InvalidPredictionInputError("Unsupported ensemble_kind for this V1 backend.")
-        if payload.get("ensemble_kind") == "catalog_consensus_regression" and payload.get("aggregation_strategy") != "median":
-            raise InvalidPredictionInputError("Only median aggregation is supported for regression ensemble V1.")
+        if (
+            payload.get("ensemble_kind") == "catalog_consensus_regression"
+            and payload.get("aggregation_strategy") != "median"
+        ):
+            raise InvalidPredictionInputError(
+                "Only median aggregation is supported for regression ensemble V1."
+            )
         if (
             payload.get("ensemble_kind") == "catalog_consensus_classification"
             and payload.get("aggregation_strategy") != "majority_vote"
         ):
-            raise InvalidPredictionInputError("Only majority_vote aggregation is supported for classification ensemble V1.")
+            raise InvalidPredictionInputError(
+                "Only majority_vote aggregation is supported for classification ensemble V1."
+            )
         components = payload.get("components")
         if not isinstance(components, list) or not components:
             raise InvalidPredictionInputError("Ensemble must contain at least one component.")
@@ -175,7 +189,9 @@ class EnsembleBackend(PredictionBackend):
             raise InvalidPredictionInputError("ensemble.json must contain a JSON object.")
         return payload
 
-    def _component_record(self, component: Dict[str, Any], ensemble_record: PredictionModelRecord) -> PredictionModelRecord:
+    def _component_record(
+        self, component: Dict[str, Any], ensemble_record: PredictionModelRecord
+    ) -> PredictionModelRecord:
         task_payload = component.get("task") or {}
         return PredictionModelRecord(
             model_id=str(component.get("model_id")),
@@ -193,8 +209,10 @@ class EnsembleBackend(PredictionBackend):
             applicability_domain=dict(component.get("applicability_domain") or {}),
             task=PredictionTaskSpec(
                 task_type=task_payload.get("task_type") or ensemble_record.task.task_type,
-                smiles_columns=task_payload.get("smiles_columns") or ensemble_record.task.smiles_columns,
-                target_columns=task_payload.get("target_columns") or ensemble_record.task.target_columns,
+                smiles_columns=task_payload.get("smiles_columns")
+                or ensemble_record.task.smiles_columns,
+                target_columns=task_payload.get("target_columns")
+                or ensemble_record.task.target_columns,
             ),
         )
 
@@ -250,7 +268,10 @@ class EnsembleBackend(PredictionBackend):
 
         if needs_rdkit:
             descriptor_set = "all" if "all" in representation else "basic"
-            if descriptor_set == "basic" and len([c for c in expected_columns if c.startswith("desc_")]) > 10:
+            if (
+                descriptor_set == "basic"
+                and len([c for c in expected_columns if c.startswith("desc_")]) > 10
+            ):
                 descriptor_set = "all"
             if descriptor_set == "basic" and prefer_rdkit_all:
                 descriptor_set = "all"
@@ -273,12 +294,15 @@ class EnsembleBackend(PredictionBackend):
                 raise InvalidPredictionInputError(
                     f"Feature table `{feature_csv}` has {len(feature_df)} rows for {len(assembled)} inputs."
                 )
-            if "smiles" in feature_df.columns and not feature_df["smiles"].equals(assembled["smiles"]):
+            if "smiles" in feature_df.columns and not feature_df["smiles"].equals(
+                assembled["smiles"]
+            ):
                 raise InvalidPredictionInputError(
                     f"Feature table `{feature_csv}` is not aligned with the ensemble input SMILES order."
                 )
             feature_columns = [
-                column for column in feature_df.columns
+                column
+                for column in feature_df.columns
                 if column != "smiles" and column not in assembled.columns
             ]
             assembled = pd.concat([assembled, feature_df[feature_columns]], axis=1)
@@ -305,9 +329,12 @@ class EnsembleBackend(PredictionBackend):
         if "ensemble_prediction_std" not in aggregate.columns:
             return []
         rows: list[Dict[str, Any]] = []
-        sorted_indices = aggregate["ensemble_prediction_std"].sort_values(ascending=False).head(limit).index
+        sorted_indices = (
+            aggregate["ensemble_prediction_std"].sort_values(ascending=False).head(limit).index
+        )
         id_columns = [
-            column for column in ("Molecule Name", "molecule_name", "OCNT_ID", "id", "smiles")
+            column
+            for column in ("Molecule Name", "molecule_name", "OCNT_ID", "id", "smiles")
             if column in source_df.columns
         ]
         for index in sorted_indices:
@@ -341,11 +368,14 @@ class EnsembleBackend(PredictionBackend):
         ensemble_path = self.validate_model_path(model_record.model_path)
         payload = self._load_payload(ensemble_path)
         ensemble_kind = str(payload.get("ensemble_kind") or "")
-        task_is_classification = ensemble_kind == "catalog_consensus_classification" or is_classification_task(
-            model_record.task.task_type
+        task_is_classification = (
+            ensemble_kind == "catalog_consensus_classification"
+            or is_classification_task(model_record.task.task_type)
         )
         if task_is_classification and is_multiclass_task(model_record.task.task_type):
-            raise InvalidPredictionInputError("Ensemble multiclass classification is not enabled in this QSARIA version.")
+            raise InvalidPredictionInputError(
+                "Ensemble multiclass classification is not enabled in this QSARIA version."
+            )
         components = payload.get("components") or []
         output_path = Path(preds_path).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,7 +401,10 @@ class EnsembleBackend(PredictionBackend):
             record = self._component_record(component, model_record)
             representation = _component_representation(component).strip().lower()
             expected_columns = _expected_feature_columns(record)
-            if "rdkit_all" in representation or len([c for c in expected_columns if c.startswith("desc_")]) > 10:
+            if (
+                "rdkit_all" in representation
+                or len([c for c in expected_columns if c.startswith("desc_")]) > 10
+            ):
                 prefer_rdkit_all = True
                 break
         failures: list[str] = []
@@ -380,10 +413,19 @@ class EnsembleBackend(PredictionBackend):
             backend_name = str(component.get("backend_name") or "")
             backend = self.backends.get(backend_name)
             if backend is None:
-                failures.append(f"{component.get('model_id')}: unsupported backend `{backend_name}`")
+                failures.append(
+                    f"{component.get('model_id')}: unsupported backend `{backend_name}`"
+                )
                 continue
             record = self._component_record(component, model_record)
-            slug = safe_slug(str(component.get("component_slug") or component.get("model_id") or backend_name)) or backend_name
+            slug = (
+                safe_slug(
+                    str(
+                        component.get("component_slug") or component.get("model_id") or backend_name
+                    )
+                )
+                or backend_name
+            )
             component_path = work_dir / f"{slug}_predictions.csv"
             try:
                 prepared_input_csv = self._prepare_component_input_csv(
@@ -406,9 +448,17 @@ class EnsembleBackend(PredictionBackend):
                 )
                 frame = _read_csv(component_path)
                 if task_is_classification:
-                    column = "prediction" if "prediction" in frame.columns else next(
-                        (target for target in record.task.target_columns if target in frame.columns),
-                        None,
+                    column = (
+                        "prediction"
+                        if "prediction" in frame.columns
+                        else next(
+                            (
+                                target
+                                for target in record.task.target_columns
+                                if target in frame.columns
+                            ),
+                            None,
+                        )
                     )
                     if column is None:
                         raise InvalidPredictionInputError(
@@ -416,10 +466,12 @@ class EnsembleBackend(PredictionBackend):
                         )
                     values = frame[column].map(json_safe_label)
                     if "positive_probability" in frame.columns:
-                        component_probability_columns[f"positive_probability_{slug}"] = pd.to_numeric(
-                            frame["positive_probability"],
-                            errors="coerce",
-                        ).reset_index(drop=True)
+                        component_probability_columns[f"positive_probability_{slug}"] = (
+                            pd.to_numeric(
+                                frame["positive_probability"],
+                                errors="coerce",
+                            ).reset_index(drop=True)
+                        )
                 else:
                     column = _prediction_column(frame, record.task.target_columns)
                     values = pd.to_numeric(frame[column], errors="coerce")
@@ -446,7 +498,9 @@ class EnsembleBackend(PredictionBackend):
                 failures.append(f"{component.get('model_id')}: {exc}")
 
         if failures:
-            raise PredictionExecutionError("Ensemble component inference failed: " + " | ".join(failures))
+            raise PredictionExecutionError(
+                "Ensemble component inference failed: " + " | ".join(failures)
+            )
         if not component_columns:
             raise PredictionExecutionError("No component predictions were produced.")
 
@@ -454,7 +508,9 @@ class EnsembleBackend(PredictionBackend):
         if task_is_classification:
             modes = component_df.mode(axis=1, dropna=True)
             majority = modes[0] if 0 in modes.columns else pd.Series([None] * len(component_df))
-            vote_fraction = component_df.eq(majority, axis=0).sum(axis=1) / float(len(component_columns))
+            vote_fraction = component_df.eq(majority, axis=0).sum(axis=1) / float(
+                len(component_columns)
+            )
             aggregate = pd.DataFrame(
                 {
                     "prediction": majority,
@@ -466,7 +522,9 @@ class EnsembleBackend(PredictionBackend):
             if component_probability_columns:
                 probability_df = pd.DataFrame(component_probability_columns)
                 aggregate["positive_probability"] = probability_df.mean(axis=1, skipna=True)
-                aggregate["ensemble_positive_probability_std"] = probability_df.std(axis=1, ddof=0).fillna(0.0)
+                aggregate["ensemble_positive_probability_std"] = probability_df.std(
+                    axis=1, ddof=0
+                ).fillna(0.0)
                 component_df = pd.concat([component_df, probability_df], axis=1)
         else:
             aggregate = pd.DataFrame(
@@ -491,8 +549,14 @@ class EnsembleBackend(PredictionBackend):
             "rows_predicted": int(len(result_df)),
             "rows_failed": 0,
             "aggregation_strategy": "majority_vote" if task_is_classification else "median",
-            "official_prediction_column": "ensemble_prediction_class" if task_is_classification else "ensemble_prediction_median",
-            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+            "official_prediction_column": (
+                "ensemble_prediction_class"
+                if task_is_classification
+                else "ensemble_prediction_median"
+            ),
+            "uncertainty_strategy": (
+                "vote_fraction" if task_is_classification else "component_disagreement_std"
+            ),
             "uncertainty_note": (
                 "ensemble_vote_fraction is component agreement, not calibrated predictive uncertainty."
                 if task_is_classification
@@ -511,11 +575,13 @@ class EnsembleBackend(PredictionBackend):
                 if task_is_classification
                 else _numeric_summary(aggregate["ensemble_prediction_std"])
             ),
-            "top_disagreement_rows": []
-            if task_is_classification
-            else self._top_disagreement_rows(
-                source_df=source_df,
-                aggregate=aggregate,
+            "top_disagreement_rows": (
+                []
+                if task_is_classification
+                else self._top_disagreement_rows(
+                    source_df=source_df,
+                    aggregate=aggregate,
+                )
             ),
             "applicability_domain_applied": False,
         }
@@ -527,7 +593,9 @@ class EnsembleBackend(PredictionBackend):
             "components": component_summaries,
             "component_count": len(component_columns),
             "aggregation_strategy": "majority_vote" if task_is_classification else "median",
-            "uncertainty_strategy": "vote_fraction" if task_is_classification else "component_disagreement_std",
+            "uncertainty_strategy": (
+                "vote_fraction" if task_is_classification else "component_disagreement_std"
+            ),
             "ensemble_inference_summary": ensemble_inference_summary,
             "download_file_ref": str(output_path),
             "download_file_tag": f"<file>{output_path}</file>",
@@ -542,4 +610,6 @@ class EnsembleBackend(PredictionBackend):
         *,
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        raise BackendNotAvailableError("EnsembleBackend is post-hoc only and does not train component models.")
+        raise BackendNotAvailableError(
+            "EnsembleBackend is post-hoc only and does not train component models."
+        )

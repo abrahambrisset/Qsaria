@@ -7,4 +7,3 @@ __all__ = [
     "standardize_with_chembl_structure_v1",
     "standardize_with_legacy_rdkit_v1",
 ]
-

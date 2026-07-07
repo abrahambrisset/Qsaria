@@ -10,7 +10,9 @@ from cs_copilot.tools.prediction.qsar_training_toolkit import (
 )
 
 
-def _fake_train_result(tmp_path: Path, *, backend_name: str, representation_name: str, validation_protocol: str):
+def _fake_train_result(
+    tmp_path: Path, *, backend_name: str, representation_name: str, validation_protocol: str
+):
     model_path = tmp_path / backend_name / representation_name / "model_0" / "best.pkl"
     model_path.parent.mkdir(parents=True, exist_ok=True)
     model_path.write_text("fake-model")
@@ -90,7 +92,9 @@ def test_prepare_training_dataset_is_export_only_by_default(tmp_path, monkeypatc
         assert "train_lightgbm_model" in str(exc)
         assert "confirm_explicit_export_request=True" in str(exc)
     else:
-        raise AssertionError("prepare_training_dataset should be blocked unless explicit export is confirmed")
+        raise AssertionError(
+            "prepare_training_dataset should be blocked unless explicit export is confirmed"
+        )
 
 
 def test_prepare_training_dataset_can_be_disabled_for_training_agent(tmp_path, monkeypatch):
@@ -176,12 +180,21 @@ def _fake_repeated_train_result(tmp_path: Path, *, backend_name: str, representa
 
 
 def _fake_cv_train_result(tmp_path: Path, *, backend_name: str, representation_name: str):
-    final_model_path = tmp_path / backend_name / representation_name / "final_refit" / "model_0" / "best.pkl"
+    final_model_path = (
+        tmp_path / backend_name / representation_name / "final_refit" / "model_0" / "best.pkl"
+    )
     final_model_path.parent.mkdir(parents=True, exist_ok=True)
     final_model_path.write_text("fake-final-model")
     split_results = []
     for fold in range(1, 4):
-        model_path = tmp_path / backend_name / representation_name / f"cv_repeat_1_fold_{fold}" / "model_0" / "best.pkl"
+        model_path = (
+            tmp_path
+            / backend_name
+            / representation_name
+            / f"cv_repeat_1_fold_{fold}"
+            / "model_0"
+            / "best.pkl"
+        )
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model_path.write_text("fake-fold-model")
         split_results.append(
@@ -268,7 +281,9 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
     assert result["persistence_plan"]["persist_all_candidates"] is True
     assert result["persistence_plan"]["candidate_count"] == 3
     assert len(result["candidate_registry_payloads"]) == 3
-    assert all(item["registry_payload"].get("model_id") for item in result["candidate_registry_payloads"])
+    assert all(
+        item["registry_payload"].get("model_id") for item in result["candidate_registry_payloads"]
+    )
     assert result["campaign_duration_seconds"] >= 0
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
@@ -324,7 +339,9 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
     assert result["recommended_registry_payload"]["model_id"]
 
 
-def test_repeated_holdout_single_representation_returns_registry_payload_for_each_split(tmp_path, monkeypatch):
+def test_repeated_holdout_single_representation_returns_registry_payload_for_each_split(
+    tmp_path, monkeypatch
+):
     toolkit = QSARTrainingToolkit()
 
     monkeypatch.setattr(
@@ -377,7 +394,12 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
         "random_repeat_2",
         "random_repeat_3",
     ]
-    assert len({item["registry_payload"]["model_id"] for item in result["candidate_registry_payloads"]}) == 3
+    assert (
+        len(
+            {item["registry_payload"]["model_id"] for item in result["candidate_registry_payloads"]}
+        )
+        == 3
+    )
 
 
 def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_path, monkeypatch):
@@ -422,7 +444,9 @@ def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_pa
 
     assert "candidate_registry_payloads" not in result
     assert "persistence_plan" not in result
-    assert result["recommended_registry_payload"]["model_path"].endswith("final_refit/model_0/best.pkl")
+    assert result["recommended_registry_payload"]["model_path"].endswith(
+        "final_refit/model_0/best.pkl"
+    )
     assert "cross_validation" in result["recommended_registry_payload"]["known_metrics"]
 
 

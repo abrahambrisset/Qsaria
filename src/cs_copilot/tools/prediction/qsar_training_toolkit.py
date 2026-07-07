@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import time
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -427,7 +427,7 @@ def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[
         random_family = aggregated.get("random") or {}
         hardest_r2 = (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
         random_r2 = random_family.get("r2_mean", random_family.get("r2"))
-        duration = ((item.get("training_durations") or {}).get("total_duration_seconds"))
+        duration = (item.get("training_durations") or {}).get("total_duration_seconds")
         return (
             float(hardest_r2) if hardest_r2 is not None else float("-inf"),
             float(random_r2) if random_r2 is not None else float("-inf"),
@@ -514,17 +514,22 @@ class QSARTrainingToolkit(Toolkit):
         with S3.open(_agent_storage_path(input_csv), "r") as fh:
             df = pd.read_csv(fh)
 
-        normalized_target_columns = normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        normalized_target_columns = (
+            normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
         df = standardize_smiles_column(df, resolved_smiles_column)
         if resolved_smiles_column != "smiles":
             df["smiles"] = df[resolved_smiles_column]
             df = df.drop(columns=[resolved_smiles_column])
-        missing_targets = [column for column in normalized_target_columns if column not in df.columns]
+        missing_targets = [
+            column for column in normalized_target_columns if column not in df.columns
+        ]
         if missing_targets:
             raise ValueError(f"Missing target columns: {missing_targets}")
 
@@ -560,7 +565,11 @@ class QSARTrainingToolkit(Toolkit):
         output_path = Path(output_dir).expanduser().resolve()
         features_dir = output_path / "features"
         features_dir.mkdir(parents=True, exist_ok=True)
-        cache_root = Path(feature_cache_dir).expanduser().resolve() if feature_cache_dir else features_dir / "cache"
+        cache_root = (
+            Path(feature_cache_dir).expanduser().resolve()
+            if feature_cache_dir
+            else features_dir / "cache"
+        )
         cache_root.mkdir(parents=True, exist_ok=True)
 
         step_started_at = time.monotonic()
@@ -655,7 +664,11 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                     feature_prefix="fp_",
                     fingerprint_kind="binary",
                     n_jobs=resolved_feature_n_jobs,
@@ -699,7 +712,11 @@ class QSARTrainingToolkit(Toolkit):
                     radius=2,
                     n_bits=2048,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                     feature_prefix="cfp_",
                     fingerprint_kind="count",
                     n_jobs=resolved_feature_n_jobs,
@@ -744,7 +761,11 @@ class QSARTrainingToolkit(Toolkit):
                     output_csv=component["output_csv"],
                     descriptor_set=descriptor_set,
                     include_input_columns=True,
-                    input_columns_to_keep=[QSAR_ROW_ID_COLUMN, feature_smiles_column, *target_columns],
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
                     n_jobs=resolved_feature_n_jobs,
                 )
                 persist_component_cache(component, result)
@@ -781,10 +802,16 @@ class QSARTrainingToolkit(Toolkit):
         }
         tabular_cache_key = _cache_key(tabular_key_payload)
         tabular_output_csv = cache_root / f"tabular_{representation_name}_{tabular_cache_key}.csv"
-        tabular_metadata_path = cache_root / f"tabular_{representation_name}_{tabular_cache_key}.json"
+        tabular_metadata_path = (
+            cache_root / f"tabular_{representation_name}_{tabular_cache_key}.json"
+        )
         cached_tabular = _read_json_if_exists(tabular_metadata_path)
         tabular_cache_status = "generated"
-        if cached_tabular and cached_tabular.get("cache_key") == tabular_cache_key and _storage_path_exists(tabular_output_csv):
+        if (
+            cached_tabular
+            and cached_tabular.get("cache_key") == tabular_cache_key
+            and _storage_path_exists(tabular_output_csv)
+        ):
             tabular_cache_status = "reused_from_cache"
             tabular = cached_tabular.get("result") or {"output_csv": str(tabular_output_csv)}
             tabular["output_csv"] = str(tabular_output_csv)
@@ -886,7 +913,9 @@ class QSARTrainingToolkit(Toolkit):
         model_path = result.get("best_model_path") or result.get("model_path")
         cross_validation = result.get("cross_validation") or {}
         known_metrics = result.get("metrics") or {}
-        metrics_status = result.get("metrics_status") or ("not_evaluated" if result.get("evaluation_required") else "evaluated")
+        metrics_status = result.get("metrics_status") or (
+            "not_evaluated" if result.get("evaluation_required") else "evaluated"
+        )
         if cross_validation.get("summary"):
             known_metrics = {
                 "cross_validation": cross_validation["summary"],
@@ -955,7 +984,11 @@ class QSARTrainingToolkit(Toolkit):
             model_path = split_result.get("best_model_path") or split_result.get("model_path")
             if not model_path:
                 continue
-            label = split_result.get("strategy_label") or split_result.get("strategy") or f"split_{index}"
+            label = (
+                split_result.get("strategy_label")
+                or split_result.get("strategy")
+                or f"split_{index}"
+            )
             split_context = {
                 **result,
                 **split_result,
@@ -1028,11 +1061,15 @@ class QSARTrainingToolkit(Toolkit):
             "candidate_train_csv": result.get("candidate_train_csv"),
             "summary_path": result.get("summary_path") or result.get("canonical_summary_path"),
             "random_r2": (random_family or {}).get("r2_mean", (random_family or {}).get("r2")),
-            "scaffold_r2": (scaffold_family or {}).get("r2_mean", (scaffold_family or {}).get("r2")),
+            "scaffold_r2": (scaffold_family or {}).get(
+                "r2_mean", (scaffold_family or {}).get("r2")
+            ),
             "hardest_split": hardest,
-            "hardest_split_r2": (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
-            if hardest_family
-            else None,
+            "hardest_split_r2": (
+                (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
+                if hardest_family
+                else None
+            ),
             **_feature_columns_summary_from_result(result),
             "feature_cache_key": feature_prep.get("feature_cache_key"),
             "feature_cache_status": feature_prep.get("feature_cache_status"),
@@ -1070,7 +1107,9 @@ class QSARTrainingToolkit(Toolkit):
         campaign_started_at = time.monotonic()
         campaign_root = Path(output_dir).expanduser().resolve()
         campaign_root.mkdir(parents=True, exist_ok=True)
-        feature_cache_dir = str(Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache"))
+        feature_cache_dir = str(
+            Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache")
+        )
         candidate_results: List[Dict[str, Any]] = []
 
         for representation_name in AUTOMATIC_TABULAR_REPRESENTATION_NAMES:
@@ -1210,10 +1249,13 @@ class QSARTrainingToolkit(Toolkit):
         """Train a QSAR model with the requested backend."""
         train_csv = _resolve_existing_training_csv(train_csv, agent)
         normalized_backend = backend_name.strip().lower()
-        normalized_target_columns = normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        normalized_target_columns = (
+            normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
         normalized_feature_columns = normalize_json_list_argument(
             feature_columns,
             argument_name="feature_columns",
@@ -1224,7 +1266,9 @@ class QSARTrainingToolkit(Toolkit):
         )
         requested_extra_args = dict(extra_args or {})
         requested_validation_strategy = (
-            validation_strategy if validation_strategy is not None else requested_extra_args.pop("validation_strategy", None)
+            validation_strategy
+            if validation_strategy is not None
+            else requested_extra_args.pop("validation_strategy", None)
         )
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
 
@@ -1280,9 +1324,12 @@ class QSARTrainingToolkit(Toolkit):
             working_train_csv = train_csv
             resolved_representation = representation_name
             if not normalized_feature_columns:
-                resolved_representation = resolved_representation or default_tabular_representation_for_protocol(
-                    validation_protocol,
-                    training_profile=requested_extra_args.get("training_profile"),
+                resolved_representation = (
+                    resolved_representation
+                    or default_tabular_representation_for_protocol(
+                        validation_protocol,
+                        training_profile=requested_extra_args.get("training_profile"),
+                    )
                 )
                 prepared = self._prepare_tabular_training_dataset(
                     train_csv=train_csv,
@@ -1291,7 +1338,8 @@ class QSARTrainingToolkit(Toolkit):
                     target_columns=list(normalized_target_columns),
                     representation_name=resolved_representation,
                     feature_cache_dir=requested_extra_args.get("feature_cache_dir"),
-                    feature_n_jobs=requested_extra_args.get("feature_n_jobs") or requested_extra_args.get("n_jobs"),
+                    feature_n_jobs=requested_extra_args.get("feature_n_jobs")
+                    or requested_extra_args.get("n_jobs"),
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
@@ -1376,7 +1424,10 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
-        if len(split_registry_payloads) > 1 and result.get("validation_strategy_type") != "cross_validation":
+        if (
+            len(split_registry_payloads) > 1
+            and result.get("validation_strategy_type") != "cross_validation"
+        ):
             result["candidate_registry_payloads"] = split_registry_payloads
             result["recommended_registry_payloads"] = [
                 item["registry_payload"] for item in split_registry_payloads
@@ -1395,7 +1446,9 @@ class QSARTrainingToolkit(Toolkit):
             result=result,
             output_dir=output_dir,
         )
-        if normalized_backend in {"lightgbm", "tabicl"} and isinstance(result.get("feature_columns"), list):
+        if normalized_backend in {"lightgbm", "tabicl"} and isinstance(
+            result.get("feature_columns"), list
+        ):
             full_feature_columns = list(result.pop("feature_columns") or [])
             result.update(
                 _feature_columns_summary(

@@ -56,8 +56,8 @@ def _apply_legacy_row_fallback(
     checker_issues: str,
     reason: str,
 ) -> Tuple[str | None, str | None, bool, bool, str, str]:
-    standardized, qsar_identity, parent_structure_changed, stereo_removed = (
-        _legacy_row_fallback(raw)
+    standardized, qsar_identity, parent_structure_changed, stereo_removed = _legacy_row_fallback(
+        raw
     )
     checker_issues = f"{checker_issues}; {reason}" if checker_issues else reason
     if standardized and qsar_identity:

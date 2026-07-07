@@ -20,7 +20,6 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .backend import PredictionModelRecord
 
-
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
 DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated")
@@ -62,10 +61,7 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
     model_id = payload.get("model_id")
     backend_name = payload.get("backend_name")
     task_payload = payload.get("task", {}) or {}
-    model_path = (
-        (payload.get("artifacts", {}) or {}).get("model_path")
-        or payload.get("model_path")
-    )
+    model_path = (payload.get("artifacts", {}) or {}).get("model_path") or payload.get("model_path")
     if not (model_id and backend_name and model_path):
         return None
 
@@ -296,9 +292,7 @@ class PredictionModelCatalog:
                 continue
 
             if require_uncertainty:
-                reasons.append(
-                    f"Supports uncertainty via `{record.task.uncertainty_method}`."
-                )
+                reasons.append(f"Supports uncertainty via `{record.task.uncertainty_method}`.")
 
             status_weight = STATUS_WEIGHTS.get(status, 0)
             if status_weight:
@@ -321,9 +315,7 @@ class PredictionModelCatalog:
                     reasons.append(f"Target hint `{target_hint}` matches catalog metadata.")
                 elif normalized_target in _flatten_text(record.not_recommended_for):
                     score -= 10
-                    warnings.append(
-                        f"Catalog flags this model as a weak fit for `{target_hint}`."
-                    )
+                    warnings.append(f"Catalog flags this model as a weak fit for `{target_hint}`.")
 
             domain_text = _flatten_text(
                 [
@@ -342,9 +334,7 @@ class PredictionModelCatalog:
                     )
                 elif normalized_domain in _flatten_text(record.not_recommended_for):
                     score -= 8
-                    warnings.append(
-                        f"Catalog indicates limited suitability for `{domain_hint}`."
-                    )
+                    warnings.append(f"Catalog indicates limited suitability for `{domain_hint}`.")
 
             if path_exists:
                 score += 6
@@ -384,9 +374,7 @@ class PredictionModelCatalog:
             else:
                 runtime_compatible = False
                 score -= 12
-                warnings.append(
-                    "Runtime execution has not yet been validated in this project."
-                )
+                warnings.append("Runtime execution has not yet been validated in this project.")
 
             recommendations.append(
                 CatalogRecommendation(

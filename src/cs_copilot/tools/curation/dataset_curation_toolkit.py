@@ -18,6 +18,7 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 from rdkit import Chem
 
+from cs_copilot.storage import S3
 from cs_copilot.tools.curation.backends import (
     standardize_with_chembl_structure_v1,
     standardize_with_legacy_rdkit_v1,
@@ -29,7 +30,6 @@ from cs_copilot.tools.curation.policies import (
     LEGACY_CURATION_BACKEND,
     LEGACY_QSAR_POLICY,
 )
-from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.training_orchestration import (
     is_classification_task,
     normalize_classification_label,
@@ -90,13 +90,18 @@ def _count_stereo_markers_removed(original: pd.Series, standardized: pd.Series) 
     return count
 
 
-_UNIT_COLUMN_PATTERN = re.compile(r"(?:^|_)(unit|units|uom|measurement_unit|conc_unit)(?:$|_)", re.I)
+_UNIT_COLUMN_PATTERN = re.compile(
+    r"(?:^|_)(unit|units|uom|measurement_unit|conc_unit)(?:$|_)", re.I
+)
 _ASSAY_CONTEXT_PATTERNS = {
     "assay_columns": re.compile(r"(assay|protocol|experiment|screen)", re.I),
     "ph_columns": re.compile(r"(^|_)(ph|p_h)(_|$)", re.I),
     "temperature_columns": re.compile(r"(temp|temperature)", re.I),
     "replicate_columns": re.compile(r"(replicate|replicates|repeat|n_repl|nrep)", re.I),
-    "fit_quality_columns": re.compile(r"(fit_quality|fitscore|fit_score|curve_quality|r2_fit|hill_fit|dose_response_quality)", re.I),
+    "fit_quality_columns": re.compile(
+        r"(fit_quality|fitscore|fit_score|curve_quality|r2_fit|hill_fit|dose_response_quality)",
+        re.I,
+    ),
     "cytotoxicity_columns": re.compile(r"(cytotox|cytotoxicity|cell_viability|viability)", re.I),
     "interference_columns": re.compile(r"(interference|artifact|fluorescence|quench|signal)", re.I),
     "time_columns": re.compile(r"(time|incubation)", re.I),
@@ -251,10 +256,67 @@ def _detect_measurement_context(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 _METAL_ATOMIC_NUMBERS = {
-    3, 4, 11, 12, 13, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 55, 56,
-    57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
-    74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+    3,
+    4,
+    11,
+    12,
+    13,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
 }
 
 
@@ -407,7 +469,9 @@ def _resolve_classification_duplicates(
                 "target_spreads": "{}",
                 "target_values": json.dumps(target_values, sort_keys=True),
                 "row_indices": ",".join(str(idx) for idx in group.index.tolist()),
-                "raw_smiles": " | ".join(str(v) for v in group.get("raw_smiles", pd.Series()).tolist()),
+                "raw_smiles": " | ".join(
+                    str(v) for v in group.get("raw_smiles", pd.Series()).tolist()
+                ),
                 "standardized_smiles": " | ".join(
                     str(v) for v in group.get("standardized_smiles", group["smiles"]).tolist()
                 ),
@@ -588,7 +652,11 @@ class DatasetCurationToolkit(Toolkit):
                 else "coerce_numeric -> remove_non_numeric -> remove_infinite -> remove_missing -> flag_constant_targets"
             ),
             "unit_policy": "detect explicit unit columns -> block on unresolved heterogeneous units -> infer unit context only when no explicit unit column exists",
-            "outlier_policy": "not_applicable_for_classification" if classification_task else "detect_iqr_1.5 -> flag_only",
+            "outlier_policy": (
+                "not_applicable_for_classification"
+                if classification_task
+                else "detect_iqr_1.5 -> flag_only"
+            ),
             "measurement_context_policy": "detect assay/context/fit-quality columns -> report availability without filtering rows",
         }
 
@@ -680,9 +748,7 @@ class DatasetCurationToolkit(Toolkit):
             backend_result.get("fallback_used")
         )
         if backend_result.get("fallback_reason"):
-            curation_policy["curation_backend_fallback_reason"] = backend_result[
-                "fallback_reason"
-            ]
+            curation_policy["curation_backend_fallback_reason"] = backend_result["fallback_reason"]
         standardization_map = backend_result["standardization_map"].copy()
         standardization_map = standardization_map.set_index("row_index", drop=False)
         working["raw_smiles"] = standardization_map.reindex(working.index)["raw_smiles"].values
@@ -705,20 +771,22 @@ class DatasetCurationToolkit(Toolkit):
         working["curation_backend_status"] = standardization_map.reindex(working.index)[
             "curation_backend_status"
         ].values
-        working["checker_issues"] = standardization_map.reindex(working.index)["checker_issues"].values
+        working["checker_issues"] = standardization_map.reindex(working.index)[
+            "checker_issues"
+        ].values
         working["checker_max_penalty"] = standardization_map.reindex(working.index)[
             "checker_max_penalty"
         ].values
         working["parent_structure_changed"] = standardization_map.reindex(working.index)[
             "parent_structure_changed"
         ].values
-        working["stereochemistry_removed_for_identity"] = standardization_map.reindex(working.index)[
-            "stereochemistry_removed_for_identity"
-        ].values
+        working["stereochemistry_removed_for_identity"] = standardization_map.reindex(
+            working.index
+        )["stereochemistry_removed_for_identity"].values
         working["smiles"] = working["standardized_smiles"]
-        checker_warning_mask = pd.to_numeric(
-            working["checker_max_penalty"], errors="coerce"
-        ).fillna(0) > 0
+        checker_warning_mask = (
+            pd.to_numeric(working["checker_max_penalty"], errors="coerce").fillna(0) > 0
+        )
         invalid_or_rejected_mask = working["smiles"].isna()
         invalid_before_drop = int(invalid_or_rejected_mask.sum())
         stereochemistry_markers_removed = _count_stereo_markers_removed(
@@ -757,7 +825,9 @@ class DatasetCurationToolkit(Toolkit):
                 working[column] = normalized
                 curated_targets.append(column)
             if not curated_targets:
-                blocking_issues.append("No classification target column was retained after curation.")
+                blocking_issues.append(
+                    "No classification target column was retained after curation."
+                )
             working = working.dropna(subset=curated_targets).copy()
             for column in curated_targets:
                 labels = resolve_class_labels(working[column])
@@ -779,7 +849,9 @@ class DatasetCurationToolkit(Toolkit):
                 raw_missing = int(working[column].isna().sum())
                 coerced_missing = int(numeric.isna().sum())
                 non_numeric_target_removed += max(coerced_missing - raw_missing, 0)
-                infinite_mask = numeric.apply(lambda v: isinstance(v, (int, float)) and not math.isfinite(v))
+                infinite_mask = numeric.apply(
+                    lambda v: isinstance(v, (int, float)) and not math.isfinite(v)
+                )
                 infinite_target_removed += int(infinite_mask.sum())
                 numeric = numeric.mask(infinite_mask, other=pd.NA)
                 missing_target_removed += int(numeric.isna().sum())
@@ -840,9 +912,7 @@ class DatasetCurationToolkit(Toolkit):
                             {
                                 target: [
                                     float(value)
-                                    for value in pd.to_numeric(
-                                        group[target], errors="coerce"
-                                    )
+                                    for value in pd.to_numeric(group[target], errors="coerce")
                                     .dropna()
                                     .tolist()
                                 ]
@@ -859,7 +929,9 @@ class DatasetCurationToolkit(Toolkit):
                     for key, group in working.groupby(duplicate_identity_column, dropna=False)
                     if len(group) > 1
                 ]
-                working = working.drop_duplicates(subset=[duplicate_identity_column], keep="first").copy()
+                working = working.drop_duplicates(
+                    subset=[duplicate_identity_column], keep="first"
+                ).copy()
                 actions.append("remove duplicate QSAR identities")
         else:
             actions.append("check duplicate QSAR identities")
@@ -897,7 +969,9 @@ class DatasetCurationToolkit(Toolkit):
         if task_type == "regression" and len(constant_target_columns) == len(curated_targets):
             blocking_issues.append("All retained target columns are constant after curation.")
         if classification_task and len(constant_target_columns) == len(curated_targets):
-            blocking_issues.append("All retained classification targets have fewer than two classes after curation.")
+            blocking_issues.append(
+                "All retained classification targets have fewer than two classes after curation."
+            )
 
         unit_quality = _detect_target_unit_quality(
             df=df,
@@ -905,16 +979,20 @@ class DatasetCurationToolkit(Toolkit):
             dataset_id=dataset_id or Path(dataset_path).stem,
             target_columns=curated_targets or target_columns,
         )
-        outlier_quality = _detect_target_outliers(
-            working,
-            target_columns=curated_targets,
-        ) if not classification_task else {
-            "outlier_method": None,
-            "outliers_flagged_total": 0,
-            "outliers_flagged_by_target": {},
-            "outlier_bounds_by_target": {},
-            "outlier_policy": "not_applicable_for_classification",
-        }
+        outlier_quality = (
+            _detect_target_outliers(
+                working,
+                target_columns=curated_targets,
+            )
+            if not classification_task
+            else {
+                "outlier_method": None,
+                "outliers_flagged_total": 0,
+                "outliers_flagged_by_target": {},
+                "outlier_bounds_by_target": {},
+                "outlier_policy": "not_applicable_for_classification",
+            }
+        )
         measurement_context = _detect_measurement_context(df)
 
         target_data_quality = {
@@ -942,9 +1020,7 @@ class DatasetCurationToolkit(Toolkit):
                 "Conflicting target units detected in the dataset; unit harmonization is required before QSAR training."
             )
         elif unit_quality.get("target_unit_detected"):
-            actions.append(
-                f"detect target unit context: {unit_quality['target_unit_detected']}"
-            )
+            actions.append(f"detect target unit context: {unit_quality['target_unit_detected']}")
         if measurement_context.get("experimental_context_columns_detected"):
             actions.append("detect experimental context columns")
 
@@ -955,7 +1031,9 @@ class DatasetCurationToolkit(Toolkit):
                 "Requested ChEMBL curation backend fell back to legacy RDKit backend: "
                 + str(backend_result.get("fallback_reason"))
             )
-        parent_changed_count = int(standardization_map["parent_structure_changed"].fillna(False).sum())
+        parent_changed_count = int(
+            standardization_map["parent_structure_changed"].fillna(False).sum()
+        )
         if parent_changed_count:
             warnings.append(
                 f"{parent_changed_count} structures changed during parent/salt standardization."
@@ -963,17 +1041,14 @@ class DatasetCurationToolkit(Toolkit):
         checker_warning_count = int(checker_warning_mask.sum())
         if checker_warning_count:
             max_checker_penalty = int(
-                pd.to_numeric(working["checker_max_penalty"], errors="coerce")
-                .fillna(0)
-                .max()
+                pd.to_numeric(working["checker_max_penalty"], errors="coerce").fillna(0).max()
             )
             warnings.append(
                 f"ChEMBL checker flagged {checker_warning_count} standardized parent structures; max penalty={max_checker_penalty}. Rows were retained because checker policy is warn_only."
             )
         row_fallback_count = int(
             (
-                standardization_map["curation_backend_status"]
-                == "chembl_row_fallback_legacy_rdkit"
+                standardization_map["curation_backend_status"] == "chembl_row_fallback_legacy_rdkit"
             ).sum()
         )
         if row_fallback_count:
@@ -990,9 +1065,13 @@ class DatasetCurationToolkit(Toolkit):
         if inorganic_rows_removed:
             warnings.append(f"{inorganic_rows_removed} inorganic structures were removed.")
         if organometallic_rows_removed:
-            warnings.append(f"{organometallic_rows_removed} organometallic structures were removed.")
+            warnings.append(
+                f"{organometallic_rows_removed} organometallic structures were removed."
+            )
         if mixture_rows_removed:
-            warnings.append(f"{mixture_rows_removed} multi-component organic mixtures were removed.")
+            warnings.append(
+                f"{mixture_rows_removed} multi-component organic mixtures were removed."
+            )
         if salt_or_counterion_rows_processed:
             warnings.append(
                 f"{salt_or_counterion_rows_processed} rows were processed as salt/counterion cases via fragment-parent standardization."
@@ -1114,9 +1193,9 @@ class DatasetCurationToolkit(Toolkit):
             "checker_policy": curation_policy.get("checker_policy"),
             "checker_flagged_rows": checker_warning_count,
             "checker_rejected_rows": 0,
-            "backend_status_counts": standardization_map[
-                "curation_backend_status"
-            ].value_counts(dropna=False).to_dict(),
+            "backend_status_counts": standardization_map["curation_backend_status"]
+            .value_counts(dropna=False)
+            .to_dict(),
             "chembl_row_fallback_legacy_rdkit_rows": row_fallback_count,
             "removed_reason_counts": removed_reason_counts,
             "parent_structure_changed_rows": parent_changed_count,
@@ -1298,17 +1377,15 @@ class DatasetCurationToolkit(Toolkit):
         curated_dataset_path = curation_result.get("curated_dataset_path")
         if curated_dataset_path:
             curated_path = Path(curated_dataset_path).expanduser()
-            manifest_ref = (curation_result.get("curation_artifacts") or {}).get(
-                "manifest_json"
-            )
+            manifest_ref = (curation_result.get("curation_artifacts") or {}).get("manifest_json")
             if manifest_ref:
                 manifest_path = Path(manifest_ref).expanduser()
                 if manifest_path.exists():
                     try:
                         manifest = json.loads(manifest_path.read_text())
-                        manifest.setdefault("files", {}).setdefault(
-                            "curation_report_json", {}
-                        )["path"] = str(destination)
+                        manifest.setdefault("files", {}).setdefault("curation_report_json", {})[
+                            "path"
+                        ] = str(destination)
                         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
                     except Exception:
                         pass
@@ -1318,9 +1395,7 @@ class DatasetCurationToolkit(Toolkit):
                 if path
             ]
             bundle_path = (
-                Path(".files")
-                / "qsar_curation"
-                / f"{dataset_id}_curation_bundle.zip"
+                Path(".files") / "qsar_curation" / f"{dataset_id}_curation_bundle.zip"
             ).resolve()
             bundle = _bundle_files(bundle_path, [curated_path, destination, *artifact_files])
             payload["bundle_file_ref"] = str(bundle)
@@ -1331,7 +1406,5 @@ class DatasetCurationToolkit(Toolkit):
                 state["last_result"]["report_path"] = str(destination)
                 if payload.get("bundle_file_ref"):
                     state["last_result"]["bundle_file_ref"] = payload["bundle_file_ref"]
-                    state["last_result"]["bundle_download_tag"] = payload[
-                        "bundle_download_tag"
-                    ]
+                    state["last_result"]["bundle_download_tag"] = payload["bundle_download_tag"]
         return payload

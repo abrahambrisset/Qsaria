@@ -61,7 +61,9 @@ def test_select_feature_columns_auto_includes_explicit_categorical_columns():
             "series": ["A", "B"],
         }
     )
-    task = PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"], target_columns=["Y"])
+    task = PredictionTaskSpec(
+        task_type="regression", smiles_columns=["smiles"], target_columns=["Y"]
+    )
 
     feature_columns, categorical_feature_columns = backend._select_feature_columns(
         df,
@@ -82,7 +84,9 @@ def test_select_feature_columns_rejects_non_numeric_non_categorical_explicit_col
             "series": ["A", "B"],
         }
     )
-    task = PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"], target_columns=["Y"])
+    task = PredictionTaskSpec(
+        task_type="regression", smiles_columns=["smiles"], target_columns=["Y"]
+    )
 
     with pytest.raises(InvalidPredictionInputError):
         backend._select_feature_columns(
@@ -138,7 +142,9 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
     result = backend.train_model(
         str(train_csv),
         str(tmp_path / "model"),
-        PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["active"]),
+        PredictionTaskSpec(
+            task_type="classification", smiles_columns=["smiles"], target_columns=["active"]
+        ),
         extra_args={
             "feature_columns": ["x"],
             "split_payload": [{"train": list(range(8)), "test": list(range(8, 12))}],
@@ -159,7 +165,9 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
         model_id="binary",
         backend_name="lightgbm",
         model_path=result["model_path"],
-        task=PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["active"]),
+        task=PredictionTaskSpec(
+            task_type="classification", smiles_columns=["smiles"], target_columns=["active"]
+        ),
     )
     backend.predict_from_csv(str(train_csv), record, str(prediction_csv))
     assert "positive_probability" in pd.read_csv(prediction_csv).columns
@@ -182,7 +190,11 @@ def test_lightgbm_multiclass_classification_roundtrip(tmp_path, monkeypatch):
     result = backend.train_model(
         str(train_csv),
         str(tmp_path / "model"),
-        PredictionTaskSpec(task_type="multiclass_classification", smiles_columns=["smiles"], target_columns=["class_label"]),
+        PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["class_label"],
+        ),
         extra_args={
             "feature_columns": ["x"],
             "split_payload": [{"train": list(range(9)), "test": list(range(9, 12))}],

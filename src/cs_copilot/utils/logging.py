@@ -112,7 +112,7 @@ def compact_log_data(
     if isinstance(value, Mapping):
         parts = []
         items = list(value.items())
-        for idx, (key, item) in enumerate(items[:max_items]):
+        for key, item in items[:max_items]:
             parts.append(
                 f"{key}={compact_log_data(item, max_items=max_items, max_string_length=max_string_length, depth=depth + 1, max_depth=max_depth)}"
             )

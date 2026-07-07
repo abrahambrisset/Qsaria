@@ -17,10 +17,9 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
-from .model_registry_toolkit import ModelRegistryToolkit
 from .external_evaluation import evaluate_model_on_external_dataset
+from .model_registry_toolkit import ModelRegistryToolkit
 from .session_state import get_prediction_state
-
 
 _MISSING_TARGETS_ERROR = "missing required target columns"
 

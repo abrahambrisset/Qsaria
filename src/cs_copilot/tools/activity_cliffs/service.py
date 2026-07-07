@@ -27,7 +27,6 @@ from cs_copilot.storage import S3
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 ACTIVITY_CLIFF_ANNOTATION_PREFIX = "activity_cliff_"
 DEFAULT_ACTIVITY_CLIFF_INDEX = "sali"
 DEFAULT_SIMILARITY_THRESHOLD = 0.70
@@ -194,7 +193,9 @@ class SALIIndex:
         norm_scores = pd.Series(raw_scores, index=working.index).div(p95).clip(0.0, 1.0)
 
         working["activity_cliff_index_name"] = self.index_name
-        working["activity_cliff_score_raw"] = pd.Series(raw_scores, index=working.index).astype(float)
+        working["activity_cliff_score_raw"] = pd.Series(raw_scores, index=working.index).astype(
+            float
+        )
         working["activity_cliff_score_norm"] = norm_scores.astype(float)
         working["activity_cliff_neighbor_count"] = pd.Series(
             neighbor_counts, index=working.index
@@ -222,19 +223,21 @@ def default_registry() -> ActivityCliffIndexRegistry:
 
 
 def strip_activity_cliff_columns(df: pd.DataFrame) -> pd.DataFrame:
-    return df.loc[:, ~df.columns.astype(str).str.startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)].copy()
+    return df.loc[
+        :, ~df.columns.astype(str).str.startswith(ACTIVITY_CLIFF_ANNOTATION_PREFIX)
+    ].copy()
 
 
-def split_activity_cliff_args(extra_args: Optional[Dict[str, Any]]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+def split_activity_cliff_args(
+    extra_args: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
     raw = dict(extra_args or {})
     activity_args: Dict[str, Any] = {}
     cleaned: Dict[str, Any] = {}
     for key, value in raw.items():
         if key in ACTIVITY_CLIFF_ARG_KEYS:
             normalized_key = (
-                "activity_cliff_top_k_neighbors"
-                if key == "activity_cliff_k_neighbors"
-                else key
+                "activity_cliff_top_k_neighbors" if key == "activity_cliff_k_neighbors" else key
             )
             activity_args[normalized_key] = value
         else:
@@ -263,8 +266,8 @@ def parse_activity_cliff_config(
         raise ValueError(
             "activity_cliff_feedback_loops must be between 1 and 3 when feedback loops are requested."
         )
-    if not (0.0 < float(activity_cliff_similarity_threshold) <= 1.0):
-        raise ValueError("activity_cliff_similarity_threshold must be in (0, 1].")
+    if not (0.0 <= float(activity_cliff_similarity_threshold) <= 1.0):
+        raise ValueError("activity_cliff_similarity_threshold must be in [0, 1].")
     if int(activity_cliff_top_k_neighbors) < 1:
         raise ValueError("activity_cliff_top_k_neighbors must be >= 1.")
     if not (0.0 < float(activity_cliff_flag_threshold) <= 1.0):
@@ -381,7 +384,12 @@ def _plot_score_histogram(
         ha="right",
         va="top",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.28", facecolor="white", alpha=0.88, edgecolor="#d0d0d0"),
+        bbox={
+            "boxstyle": "round,pad=0.28",
+            "facecolor": "white",
+            "alpha": 0.88,
+            "edgecolor": "#d0d0d0",
+        },
     )
 
     ax_zoom = axes[1]
@@ -408,7 +416,9 @@ def _plot_score_histogram(
         ax_zoom.set_xlim(max(0.0, min(flagged_values.min(), flag_threshold) - 0.04), 1.02)
         ax_zoom.legend(frameon=False, fontsize=8)
     else:
-        ax_zoom.text(0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes)
+        ax_zoom.text(
+            0.5, 0.5, "No flagged compounds", ha="center", va="center", transform=ax_zoom.transAxes
+        )
         ax_zoom.set_xlim(flag_threshold, 1.02)
     ax_zoom.axvline(
         flag_threshold,
@@ -433,7 +443,7 @@ def _plot_tier_distribution(annotated: pd.DataFrame, output_path: Path) -> Optio
     labels = ["low", "medium", "high"]
     values = [counts[label] for label in labels]
     bars = ax.bar(labels, values, color=[ACTIVITY_CLIFF_COLORS[label] for label in labels])
-    for bar, value in zip(bars, values):
+    for bar, value in zip(bars, values, strict=False):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + max(values + [1]) * 0.03,
@@ -479,12 +489,16 @@ def _plot_gap_vs_similarity(
         return None
     fig, ax = plt.subplots(figsize=(8, 5))
     tiers = annotated.loc[valid, "activity_cliff_priority_tier"].fillna("none").astype(str)
-    tier_counts = annotated["activity_cliff_priority_tier"].fillna("none").astype(str).value_counts()
+    tier_counts = (
+        annotated["activity_cliff_priority_tier"].fillna("none").astype(str).value_counts()
+    )
     x_plot = x[valid].copy().astype(float)
     stacked_at_one = x_plot >= 0.999
     if stacked_at_one.any():
         jitter = np.linspace(-0.006, 0.006, int(stacked_at_one.sum()))
-        x_plot.loc[stacked_at_one] = (x_plot.loc[stacked_at_one].to_numpy() + jitter).clip(0.0, 1.01)
+        x_plot.loc[stacked_at_one] = (x_plot.loc[stacked_at_one].to_numpy() + jitter).clip(
+            0.0, 1.01
+        )
     none_mask = tiers == "none"
     if none_mask.any():
         ax.scatter(
@@ -530,7 +544,11 @@ def _plot_gap_vs_similarity(
             label=f"activity gap reference {activity_gap_reference:g}",
         )
     positive_x = x_plot[x_plot > 0]
-    data_x_min = float(positive_x.min()) - 0.03 if not positive_x.empty else float(similarity_threshold) - 0.04
+    data_x_min = (
+        float(positive_x.min()) - 0.03
+        if not positive_x.empty
+        else float(similarity_threshold) - 0.04
+    )
     x_min = max(0.0, min(float(similarity_threshold) - 0.04, data_x_min))
     ax.set_xlim(x_min, 1.02)
     y_max = float(y[valid].max()) if valid.any() else activity_gap_reference
@@ -664,7 +682,9 @@ def _plot_loop_metric_comparison(
     if pivot.empty:
         return None
 
-    ordered_labels = rows.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
+    ordered_labels = (
+        rows.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
+    )
     pivot = pivot.reindex(ordered_labels)
     fig, ax = plt.subplots(figsize=(8.2, 4.8))
     colors = {"random": "#224f75", "scaffold": "#d98b36"}
@@ -698,7 +718,9 @@ def _plot_loop_metric_comparison(
         )
         for x_pos, value in enumerate(pivot[split_name].tolist()):
             if pd.notna(value):
-                ax.text(x_pos, float(value), f"{float(value):.3f}", ha="center", va="bottom", fontsize=8)
+                ax.text(
+                    x_pos, float(value), f"{float(value):.3f}", ha="center", va="bottom", fontsize=8
+                )
     metric_label = "R²" if metric == "r2" else ylabel
     direction_note = "higher is better" if metric == "r2" else "lower is better"
     ax.set_title(f"Activity-cliff loop comparison - {metric_label}")
@@ -747,14 +769,22 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
                 "variant_label": row["variant_label"],
                 "variant_order": row["variant_order"],
                 "split": split,
-                "delta_r2": float(row["r2"]) - float(base["r2"]) if pd.notna(row.get("r2")) else np.nan,
-                "delta_rmse": float(row["rmse"]) - float(base["rmse"]) if pd.notna(row.get("rmse")) else np.nan,
+                "delta_r2": (
+                    float(row["r2"]) - float(base["r2"]) if pd.notna(row.get("r2")) else np.nan
+                ),
+                "delta_rmse": (
+                    float(row["rmse"]) - float(base["rmse"])
+                    if pd.notna(row.get("rmse"))
+                    else np.nan
+                ),
             }
         )
     delta = pd.DataFrame(plot_rows)
     if delta.empty:
         return None
-    delta = delta[delta["variant_label"] != _short_variant_label("baseline_loop_0")].sort_values(["variant_order", "split"])
+    delta = delta[delta["variant_label"] != _short_variant_label("baseline_loop_0")].sort_values(
+        ["variant_order", "split"]
+    )
     if delta.empty:
         return None
 
@@ -764,8 +794,14 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
         (axes[0], "delta_r2", "Delta R2 vs baseline", "baseline"),
         (axes[1], "delta_rmse", "Delta RMSE vs baseline", "baseline"),
     ):
-        pivot = delta.pivot_table(index="variant_label", columns="split", values=metric, aggfunc="first")
-        labels = delta.drop_duplicates("variant_label").sort_values("variant_order")["variant_label"].tolist()
+        pivot = delta.pivot_table(
+            index="variant_label", columns="split", values=metric, aggfunc="first"
+        )
+        labels = (
+            delta.drop_duplicates("variant_label")
+            .sort_values("variant_order")["variant_label"]
+            .tolist()
+        )
         pivot = pivot.reindex(labels)
         vals = pivot.to_numpy(dtype=float)
         finite_vals = vals[np.isfinite(vals)]
@@ -791,14 +827,25 @@ def _plot_loop_delta_comparison(table: pd.DataFrame, output_path: Path) -> Optio
             )
             for x_pos, value in enumerate(pivot[split_name].tolist()):
                 if pd.notna(value):
-                    ax.text(x_pos, float(value), f"{float(value):+.3f}", ha="center", va="bottom", fontsize=8)
+                    ax.text(
+                        x_pos,
+                        float(value),
+                        f"{float(value):+.3f}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=8,
+                    )
         ax.axhline(0.0, color="#5f6972", linewidth=1, linestyle="--", label=zero_label)
         ax.set_title(title)
         ax.grid(alpha=0.2, linestyle="--", axis="y")
     axes[0].set_ylabel("Delta R²")
     axes[1].set_ylabel("Delta RMSE")
-    axes[0].text(0.02, 0.04, "positive is better", transform=axes[0].transAxes, fontsize=8, color="#5f6972")
-    axes[1].text(0.02, 0.04, "negative is better", transform=axes[1].transAxes, fontsize=8, color="#5f6972")
+    axes[0].text(
+        0.02, 0.04, "positive is better", transform=axes[0].transAxes, fontsize=8, color="#5f6972"
+    )
+    axes[1].text(
+        0.02, 0.04, "negative is better", transform=axes[1].transAxes, fontsize=8, color="#5f6972"
+    )
     axes[1].legend(frameon=False)
     fig.tight_layout()
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
@@ -854,11 +901,7 @@ def _load_activity_cliff_tier_map(activity_cliffs: Dict[str, Any]) -> Dict[int, 
     if "activity_cliff_priority_tier" not in annotated.columns:
         return {}
     tiers = annotated["activity_cliff_priority_tier"].astype(str).str.lower()
-    return {
-        int(idx): tier
-        for idx, tier in tiers.items()
-        if tier in {"low", "medium", "high"}
-    }
+    return {int(idx): tier for idx, tier in tiers.items() if tier in {"low", "medium", "high"}}
 
 
 def _draw_variant_parity(
@@ -884,7 +927,13 @@ def _draw_variant_parity(
     r2 = float(1.0 - (ss_res / ss_tot)) if ss_tot > 0 else None
 
     point_alpha = 0.45 if len(frame) > 250 else 0.65
-    ax.scatter(frame["y_true"], frame["y_pred"], s=18, alpha=point_alpha, color=ACTIVITY_CLIFF_COLORS["none"])
+    ax.scatter(
+        frame["y_true"],
+        frame["y_pred"],
+        s=18,
+        alpha=point_alpha,
+        color=ACTIVITY_CLIFF_COLORS["none"],
+    )
     if retained_tiers and "activity_cliff_tier" in frame.columns:
         tier_styles = {
             "low": {"color": ACTIVITY_CLIFF_COLORS["low"], "label": "low retained"},
@@ -964,20 +1013,33 @@ def _draw_variant_parity(
             va="bottom",
             fontsize=8,
             color="#2f6f4e",
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="#d8eadf", alpha=0.85, edgecolor="#9fceb3"),
+            bbox={
+                "boxstyle": "round,pad=0.25",
+                "facecolor": "#d8eadf",
+                "alpha": 0.85,
+                "edgecolor": "#9fceb3",
+            },
         )
     ax.set_xlabel("Observed")
     ax.set_ylabel("Predicted" if show_ylabel else "")
     ax.set_xlim(min_val, max_val)
     ax.set_ylim(min_val, max_val)
     ax.set_aspect("equal", adjustable="box")
-    within_1x = float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
-    within_2x = float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0) if band_value > 0 else 0.0
+    within_1x = (
+        float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
+    )
+    within_2x = (
+        float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0)
+        if band_value > 0
+        else 0.0
+    )
     metrics = [f"RMSE = {rmse:.3f}", f"MAE = {mae:.3f}"]
     if r2 is not None:
         metrics.insert(0, f"R² = {r2:.3f}")
     if band_value > 0:
-        metrics.extend([f"{within_1x:.1f}% within 1x {band_label}", f"{within_2x:.1f}% within 2x {band_label}"])
+        metrics.extend(
+            [f"{within_1x:.1f}% within 1x {band_label}", f"{within_2x:.1f}% within 2x {band_label}"]
+        )
     ax.text(
         0.03,
         0.97,
@@ -986,7 +1048,12 @@ def _draw_variant_parity(
         ha="left",
         va="top",
         fontsize=metrics_fontsize,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+        bbox={
+            "boxstyle": "round,pad=0.3",
+            "facecolor": "white",
+            "alpha": 0.85,
+            "edgecolor": "#cccccc",
+        },
     )
     ax.grid(alpha=0.2, linestyle="--")
     if show_legend:
@@ -1028,7 +1095,9 @@ def _plot_variant_parity_grid(
     variants = activity_cliffs.get("variant_training") or []
     tier_map = _load_activity_cliff_tier_map(activity_cliffs)
     frames: List[tuple[str, str, List[str], pd.DataFrame]] = []
-    for variant in sorted(variants, key=lambda item: _variant_order(str(item.get("variant_id") or ""))):
+    for variant in sorted(
+        variants, key=lambda item: _variant_order(str(item.get("variant_id") or ""))
+    ):
         variant_id = str(variant.get("variant_id") or "")
         if not variant_id:
             continue
@@ -1042,15 +1111,16 @@ def _plot_variant_parity_grid(
         )
         if not scaffold_result or not scaffold_result.get("test_predictions_path"):
             continue
-        frame = _load_variant_prediction_frame(Path(str(scaffold_result["test_predictions_path"])).expanduser())
+        frame = _load_variant_prediction_frame(
+            Path(str(scaffold_result["test_predictions_path"])).expanduser()
+        )
         if frame is not None:
             test_indices = _load_test_indices_from_split_result(scaffold_result)
             if tier_map and len(test_indices) == len(frame):
                 frame = frame.copy()
                 frame["source_row_index"] = test_indices
                 frame["activity_cliff_tier"] = [
-                    tier_map.get(int(idx), "none")
-                    for idx in test_indices
+                    tier_map.get(int(idx), "none") for idx in test_indices
                 ]
             frames.append(
                 (
@@ -1062,13 +1132,21 @@ def _plot_variant_parity_grid(
             )
     if not frames:
         return None
-    min_val = min(float(min(frame["y_true"].min(), frame["y_pred"].min())) for _, _, _, frame in frames)
-    max_val = max(float(max(frame["y_true"].max(), frame["y_pred"].max())) for _, _, _, frame in frames)
+    min_val = min(
+        float(min(frame["y_true"].min(), frame["y_pred"].min())) for _, _, _, frame in frames
+    )
+    max_val = max(
+        float(max(frame["y_true"].max(), frame["y_pred"].max())) for _, _, _, frame in frames
+    )
     pad = max(0.05, (max_val - min_val) * 0.04)
     axis_limits = (min_val - pad, max_val + pad)
-    fig, axes = plt.subplots(1, len(frames), figsize=(4.9 * len(frames), 4.8), sharex=True, sharey=True)
+    fig, axes = plt.subplots(
+        1, len(frames), figsize=(4.9 * len(frames), 4.8), sharex=True, sharey=True
+    )
     axes_array = np.atleast_1d(axes)
-    for idx, (ax, (variant_id, label, removed_tiers, frame)) in enumerate(zip(axes_array, frames)):
+    for idx, (ax, (variant_id, label, removed_tiers, frame)) in enumerate(
+        zip(axes_array, frames, strict=False)
+    ):
         retained_tiers = {"low", "medium", "high"} - set(removed_tiers)
         _draw_variant_parity(
             ax,
@@ -1085,7 +1163,9 @@ def _plot_variant_parity_grid(
             retained_tiers=retained_tiers,
         )
     band_label = "MAE" if band_metric == "mae" else "RMSE"
-    fig.suptitle(f"Scaffold parity by activity-cliff loop ({band_label} bands)", fontsize=14, y=0.98)
+    fig.suptitle(
+        f"Scaffold parity by activity-cliff loop ({band_label} bands)", fontsize=14, y=0.98
+    )
     fig.tight_layout(rect=[0, 0, 1, 0.94], w_pad=1.2)
     fig.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -1264,7 +1344,8 @@ def prepare_activity_cliff_context(
         annotated.attrs.get("activity_cliff_similarity_diagnostics") or {}
     )
     flagged = (
-        pd.to_numeric(annotated["activity_cliff_score_norm"], errors="coerce") >= config.flag_threshold
+        pd.to_numeric(annotated["activity_cliff_score_norm"], errors="coerce")
+        >= config.flag_threshold
     ) & (annotated["activity_cliff_neighbor_count"].astype(int) >= 1)
     annotated["activity_cliff_flag"] = flagged.astype(bool)
     annotated["activity_cliff_priority_tier"] = _assign_tiers(

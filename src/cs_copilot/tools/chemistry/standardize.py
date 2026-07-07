@@ -244,6 +244,4 @@ def resolve_smiles_column_name(df: pd.DataFrame, requested_column: str = "smiles
         if candidate_lower in by_lower:
             return by_lower[candidate_lower]
 
-    raise KeyError(
-        f"SMILES column '{requested_column}' not found. Available columns: {columns}"
-    )
+    raise KeyError(f"SMILES column '{requested_column}' not found. Available columns: {columns}")

@@ -213,7 +213,7 @@ class S3(metaclass=_S3Meta):
             return None
         raw = rel[2:] if rel.startswith("./") else rel
         prefix = cls.current_prefix().strip("/")
-        for root in (str(LOCAL_STORAGE_ROOT).strip("/"), "data"):
+        for root in {str(LOCAL_STORAGE_ROOT).strip("/"), ".files", "data"}:
             scoped = f"{root}/{prefix}/"
             if raw.startswith(scoped):
                 return Path(raw)

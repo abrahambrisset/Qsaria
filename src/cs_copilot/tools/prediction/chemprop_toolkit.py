@@ -15,19 +15,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import torch
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.storage.client import S3
-from cs_copilot.tools.activity_cliffs import prepare_activity_cliff_context, split_activity_cliff_args
+from cs_copilot.tools.activity_cliffs import (
+    prepare_activity_cliff_context,
+    split_activity_cliff_args,
+)
 
 from .backend import PredictionTaskSpec
 from .chemprop_adapter import materialize_chemprop_inputs
 from .chemprop_backend import ChempropBackend
+from .qsar_splitters import (
+    build_full_train_split_payload,
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from .qsar_training_policy import (
-    QSAR_HARDEST_SPLIT_R2_MIN,
-    QSAR_RANDOM_STABILITY_R2_STD_MAX,
     assess_protocol_results,
     describe_compute_environment,
     project_now,
@@ -42,11 +47,6 @@ from .session_state import (
     bundle_artifacts,
     get_prediction_state,
     write_active_training_marker,
-)
-from .qsar_splitters import (
-    build_full_train_split_payload,
-    build_qsar_split_payload,
-    build_repeated_kfold_split_payloads,
 )
 from .training_orchestration import (
     apply_training_profile,
@@ -170,7 +170,9 @@ class ChempropToolkit(Toolkit):
         output_path = output_dir.expanduser().resolve()
         replicate_dirs = sorted(
             output_path.glob("replicate_*"),
-            key=lambda path: int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0,
+            key=lambda path: (
+                int(path.name.split("_")[-1]) if path.name.split("_")[-1].isdigit() else 0
+            ),
         )
         artifacts: List[Dict[str, Any]] = []
         for replicate_dir in replicate_dirs:
@@ -182,7 +184,9 @@ class ChempropToolkit(Toolkit):
                 {
                     "replicate_index": replicate_index,
                     "model_path": str(model_path) if model_path.exists() else None,
-                    "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                    "raw_test_predictions_path": (
+                        str(predictions_path) if predictions_path.exists() else None
+                    ),
                 }
             )
 
@@ -194,7 +198,9 @@ class ChempropToolkit(Toolkit):
                     {
                         "replicate_index": 0,
                         "model_path": str(model_path) if model_path.exists() else None,
-                        "raw_test_predictions_path": str(predictions_path) if predictions_path.exists() else None,
+                        "raw_test_predictions_path": (
+                            str(predictions_path) if predictions_path.exists() else None
+                        ),
                     }
                 )
         return artifacts
@@ -220,7 +226,9 @@ class ChempropToolkit(Toolkit):
             return {}
 
         output_path = output_dir.expanduser().resolve()
-        splits_path = Path(str(splits_file)).expanduser() if splits_file else output_path / "splits.json"
+        splits_path = (
+            Path(str(splits_file)).expanduser() if splits_file else output_path / "splits.json"
+        )
         if not splits_path.exists():
             return {}
 
@@ -228,13 +236,17 @@ class ChempropToolkit(Toolkit):
         if not any(item.get("raw_test_predictions_path") for item in replicate_artifacts):
             return {}
 
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
+        dataset = _strip_unnamed_columns(
+            pd.read_csv(Path(_agent_local_path(train_csv)).expanduser())
+        )
         split_payload = json.loads(splits_path.read_text())
         if not split_payload or "test" not in split_payload[0]:
             return {}
         test_indices = split_payload[0].get("test") or []
         actual = dataset.iloc[test_indices].reset_index(drop=True)
-        missing_actual_targets = [column for column in target_columns if column not in actual.columns]
+        missing_actual_targets = [
+            column for column in target_columns if column not in actual.columns
+        ]
         if missing_actual_targets:
             return {}
 
@@ -244,7 +256,9 @@ class ChempropToolkit(Toolkit):
             if smiles_column in actual.columns
             else None
         )
-        prediction_series_by_target: Dict[str, List[pd.Series]] = {column: [] for column in target_columns}
+        prediction_series_by_target: Dict[str, List[pd.Series]] = {
+            column: [] for column in target_columns
+        }
         prediction_source_paths: List[str] = []
         included_replicate_indices: List[int] = []
         normalized_replicate_artifacts: List[Dict[str, Any]] = []
@@ -264,7 +278,9 @@ class ChempropToolkit(Toolkit):
                 continue
             predictions = _strip_unnamed_columns(pd.read_csv(prediction_path))
             exclusion_reason = None
-            missing_prediction_targets = [column for column in target_columns if column not in predictions.columns]
+            missing_prediction_targets = [
+                column for column in target_columns if column not in predictions.columns
+            ]
             if missing_prediction_targets:
                 exclusion_reason = "missing_target_prediction_column"
             elif len(predictions) != len(actual):
@@ -288,7 +304,9 @@ class ChempropToolkit(Toolkit):
             artifact["exclusion_reason"] = None
             normalized_replicate_artifacts.append(artifact)
             for column in target_columns:
-                prediction_series_by_target[column].append(pd.to_numeric(predictions[column], errors="coerce"))
+                prediction_series_by_target[column].append(
+                    pd.to_numeric(predictions[column], errors="coerce")
+                )
             prediction_source_paths.append(str(prediction_path))
             included_replicate_indices.append(replicate_index)
 
@@ -326,7 +344,9 @@ class ChempropToolkit(Toolkit):
             class_labels = list(class_info.get("class_labels") or [0, 1])
             positive_probability = y_pred_numeric.clip(lower=0.0, upper=1.0)
             predicted_codes = (positive_probability >= 0.5).astype(int)
-            true_labels = decode_classification_labels(y_true_numeric.fillna(-1).astype(int).tolist(), class_labels)
+            true_labels = decode_classification_labels(
+                y_true_numeric.fillna(-1).astype(int).tolist(), class_labels
+            )
             predicted_labels = decode_classification_labels(predicted_codes.tolist(), class_labels)
             normalized = pd.DataFrame(
                 {
@@ -351,12 +371,19 @@ class ChempropToolkit(Toolkit):
                 extra_frame = pd.concat(extra_series, axis=1)
                 extra_pred = extra_frame.mean(axis=1, skipna=True).clip(lower=0.0, upper=1.0)
                 extra_codes = (extra_pred >= 0.5).astype(int)
-                extra_labels = list((classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1])
+                extra_labels = list(
+                    (classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1]
+                )
                 normalized[f"{extra_target}_true"] = decode_classification_labels(
-                    pd.to_numeric(actual[extra_target], errors="coerce").fillna(-1).astype(int).tolist(),
+                    pd.to_numeric(actual[extra_target], errors="coerce")
+                    .fillna(-1)
+                    .astype(int)
+                    .tolist(),
                     extra_labels,
                 )
-                normalized[f"{extra_target}_prediction"] = decode_classification_labels(extra_codes.tolist(), extra_labels)
+                normalized[f"{extra_target}_prediction"] = decode_classification_labels(
+                    extra_codes.tolist(), extra_labels
+                )
                 normalized[f"{extra_target}_positive_probability"] = extra_pred
         else:
             normalized = pd.DataFrame(
@@ -390,7 +417,9 @@ class ChempropToolkit(Toolkit):
         normalized_path = output_path / "model_0" / "test_predictions.csv"
         normalized_path.parent.mkdir(parents=True, exist_ok=True)
         normalized.to_csv(normalized_path, index=False)
-        aggregation = "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
+        aggregation = (
+            "mean_aligned_replicates" if len(prediction_series) > 1 else "single_aligned_replicate"
+        )
         return {
             "test_predictions_path": str(normalized_path),
             "raw_test_prediction_paths": prediction_source_paths,
@@ -412,7 +441,12 @@ class ChempropToolkit(Toolkit):
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
             page_count = os.sysconf("SC_PHYS_PAGES")
-            if isinstance(page_size, int) and isinstance(page_count, int) and page_size > 0 and page_count > 0:
+            if (
+                isinstance(page_size, int)
+                and isinstance(page_count, int)
+                and page_size > 0
+                and page_count > 0
+            ):
                 return page_size * page_count
         except Exception:
             return None
@@ -504,7 +538,9 @@ class ChempropToolkit(Toolkit):
         self,
         extra_args: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+        def _limit(
+            profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
+        ) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
                     # On high-compute GPU runs, treat the profile values as floor values:
@@ -653,14 +689,18 @@ class ChempropToolkit(Toolkit):
         split_sizes: List[float],
         seed: int,
     ) -> List[Dict[str, List[int]]]:
-        dataset = strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
+        dataset = strip_unnamed_columns(
+            pd.read_csv(Path(_agent_local_path(train_csv)).expanduser())
+        )
         normalized_split_sizes = normalize_json_list_argument(
             split_sizes,
             argument_name="split_sizes",
             coerce_numbers=True,
         )
         if not normalized_split_sizes or len(normalized_split_sizes) not in (2, 3):
-            raise ValueError("Chemprop split_sizes must contain [train, test] or [train, validation, test].")
+            raise ValueError(
+                "Chemprop split_sizes must contain [train, test] or [train, validation, test]."
+            )
         if split_type == "kmeans":
             raise ValueError(
                 "Chemprop graph training does not support cluster holdout without an explicit "
@@ -733,7 +773,7 @@ class ChempropToolkit(Toolkit):
         families: Dict[str, List[Dict[str, Any]]] = {}
         for item in split_results:
             family = item.get("strategy_family") or item.get("strategy")
-            metrics = ((item.get("metrics") or {}).get("test") or {})
+            metrics = (item.get("metrics") or {}).get("test") or {}
             if not family or not metrics:
                 continue
             families.setdefault(family, []).append(item)
@@ -749,7 +789,7 @@ class ChempropToolkit(Toolkit):
                 "test_n_values": [],
             }
             for item in items:
-                metrics = ((item.get("metrics") or {}).get("test") or {})
+                metrics = (item.get("metrics") or {}).get("test") or {}
                 entry["runs"].append(
                     {
                         "label": item.get("strategy_label"),
@@ -884,12 +924,24 @@ class ChempropToolkit(Toolkit):
             if explicit_splits_path is not None and explicit_splits_path.exists()
             else resolved_artifacts["splits_path"]
         )
-        preds_path = Path(str(normalized_predictions.get("test_predictions_path") or resolved_artifacts["test_predictions_path"]))
+        preds_path = Path(
+            str(
+                normalized_predictions.get("test_predictions_path")
+                or resolved_artifacts["test_predictions_path"]
+            )
+        )
 
-        if splits_path is None or preds_path is None or not splits_path.exists() or not preds_path.exists():
+        if (
+            splits_path is None
+            or preds_path is None
+            or not splits_path.exists()
+            or not preds_path.exists()
+        ):
             return {}
 
-        dataset = _strip_unnamed_columns(pd.read_csv(Path(_agent_local_path(train_csv)).expanduser()))
+        dataset = _strip_unnamed_columns(
+            pd.read_csv(Path(_agent_local_path(train_csv)).expanduser())
+        )
         predictions = _strip_unnamed_columns(pd.read_csv(preds_path))
 
         split_payload = json.loads(splits_path.read_text())
@@ -918,8 +970,8 @@ class ChempropToolkit(Toolkit):
                 try:
                     manifest = json.loads(manifest_path.read_text())
                     classification_targets = manifest.get("classification_targets") or {}
-                    class_labels = (
-                        (classification_targets.get(target_column) or {}).get("class_labels")
+                    class_labels = (classification_targets.get(target_column) or {}).get(
+                        "class_labels"
                     )
                 except Exception:
                     class_labels = None
@@ -948,7 +1000,9 @@ class ChempropToolkit(Toolkit):
                 target_metrics[extra_target] = compute_classification_metrics(
                     predictions[true_col],
                     predictions[pred_col],
-                    class_labels=(classification_targets.get(extra_target) or {}).get("class_labels"),
+                    class_labels=(classification_targets.get(extra_target) or {}).get(
+                        "class_labels"
+                    ),
                     positive_scores=predictions.get(f"{extra_target}_positive_probability"),
                     target_column=extra_target,
                 )
@@ -960,22 +1014,32 @@ class ChempropToolkit(Toolkit):
                 )
 
         return {
-            "best_model_path": str(resolved_artifacts["best_model_path"]) if resolved_artifacts.get("best_model_path") else None,
+            "best_model_path": (
+                str(resolved_artifacts["best_model_path"])
+                if resolved_artifacts.get("best_model_path")
+                else None
+            ),
             "test_predictions_path": str(preds_path),
-            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths") or [],
+            "raw_test_prediction_paths": normalized_predictions.get("raw_test_prediction_paths")
+            or [],
             "splits_path": str(splits_path),
             "train_size": len(split_payload[0].get("train") or []),
-            "val_size": len(split_payload[0].get("val") or split_payload[0].get("validation") or []),
+            "val_size": len(
+                split_payload[0].get("val") or split_payload[0].get("validation") or []
+            ),
             "test_size": len(test_indices),
-            "replicate_artifacts": normalized_predictions.get("replicate_artifacts") or self._replicate_artifacts(output_path),
+            "replicate_artifacts": normalized_predictions.get("replicate_artifacts")
+            or self._replicate_artifacts(output_path),
             "replicate_count": normalized_predictions.get("replicate_count") or 1,
             "detected_replicate_count": normalized_predictions.get("detected_replicate_count"),
             "excluded_replicate_count": normalized_predictions.get("excluded_replicate_count"),
-            "prediction_aggregation": normalized_predictions.get("prediction_aggregation") or "single_replicate",
+            "prediction_aggregation": normalized_predictions.get("prediction_aggregation")
+            or "single_replicate",
             "replicate_alignment_policy": normalized_predictions.get("replicate_alignment_policy"),
             "prediction_column": normalized_predictions.get("prediction_column") or target_column,
             "target_true_column": normalized_predictions.get("target_true_column") or target_column,
-            "target_prediction_column": normalized_predictions.get("target_prediction_column") or target_column,
+            "target_prediction_column": normalized_predictions.get("target_prediction_column")
+            or target_column,
             "metrics": {"test": metric_values},
             "target_metrics": target_metrics,
         }
@@ -1020,7 +1084,9 @@ class ChempropToolkit(Toolkit):
         trained_at = project_now()
         cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
         requested_validation_strategy = (
-            validation_strategy if validation_strategy is not None else cleaned_extra_args.pop("validation_strategy", None)
+            validation_strategy
+            if validation_strategy is not None
+            else cleaned_extra_args.pop("validation_strategy", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1107,7 +1173,9 @@ class ChempropToolkit(Toolkit):
                 df=split_source_df,
                 n_splits=int(cv_strategy.get("n_folds") or cv_strategy.get("n_splits") or 5),
                 n_repeats=int(cv_strategy.get("n_repeats") or 1),
-                random_state=int(cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0),
+                random_state=int(
+                    cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
+                ),
             )
 
         try:
@@ -1119,7 +1187,11 @@ class ChempropToolkit(Toolkit):
                     else root_output_path
                 )
                 run_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "split_type": split_run["backend_split_type"],
                     "split_sizes": split_run.get("split_sizes")
                     or training_policy["extra_args"].get("split_sizes"),
@@ -1208,7 +1280,11 @@ class ChempropToolkit(Toolkit):
                 final_refit_output_dir = root_output_path / "final_refit"
                 final_split_payload = build_full_train_split_payload(df=split_source_df)
                 final_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "split_type": "final_refit",
                     "split_sizes": [1.0],
                     "data_seed": protocol_policy["seed_policy"]["model_seed"],
@@ -1301,8 +1377,12 @@ class ChempropToolkit(Toolkit):
             result["selection_metric"] = protocol_policy.get("selection_metric")
             result["final_refit"] = protocol_policy.get("final_refit")
             result["seed_policy"] = protocol_policy["seed_policy"]
-            result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
-            result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
+            result["seed_policy_report"] = seed_policy_reporting_text(
+                protocol_policy["seed_policy"]
+            )
+            result["reproducibility"] = seed_policy_reproducibility_metadata(
+                protocol_policy["seed_policy"]
+            )
             result["split_results"] = split_results
             result["cross_validation"] = cross_validation_artifacts
             result["cv_artifacts"] = cross_validation_artifacts
@@ -1317,14 +1397,20 @@ class ChempropToolkit(Toolkit):
             result["training_profile"] = training_policy["training_profile"]
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = {
-                key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+                key: value
+                for key, value in training_policy["extra_args"].items()
+                if key != "seed_policy"
             }
-            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get("model_seed")
+            result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get(
+                "model_seed"
+            )
             if primary_run.get("seed") is not None:
                 result["effective_train_args"]["data_seed"] = primary_run.get("seed")
                 result["effective_train_args"]["data_seed_scope"] = "primary_split"
             result["replicate_policy"] = {
-                "num_replicates_requested": int(result["effective_train_args"].get("num_replicates") or 1),
+                "num_replicates_requested": int(
+                    result["effective_train_args"].get("num_replicates") or 1
+                ),
                 "protocol_override_note": protocol_override_note,
                 "prediction_aggregation": primary_run.get("prediction_aggregation"),
                 "catalog_primary_replicate_index": 0,
@@ -1366,14 +1452,20 @@ class ChempropToolkit(Toolkit):
 
             training_summary_path = Path(resolved_output_dir) / "cs_copilot_training_summary.json"
 
-            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(Path(resolved_output_dir))
+            resolved_primary_artifacts = self._resolve_chemprop_run_artifacts(
+                Path(resolved_output_dir)
+            )
             best_model_path = Path(
                 root_artifacts.get("best_model_path")
                 or resolved_primary_artifacts.get("best_model_path")
                 or (Path(resolved_output_dir) / "model_0" / "best.pt")
             )
-            config_path = Path(root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"])
-            splits_path = Path(root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"])
+            config_path = Path(
+                root_artifacts.get("config_path") or resolved_primary_artifacts["config_path"]
+            )
+            splits_path = Path(
+                root_artifacts.get("splits_path") or resolved_primary_artifacts["splits_path"]
+            )
             result["summary_path"] = str(training_summary_path)
             if best_model_path.exists():
                 result["best_model_path"] = str(best_model_path)

@@ -11,10 +11,10 @@ CSV files, which fits the project's S3/local file abstraction well.
 
 from __future__ import annotations
 
-import json
 import csv
 import importlib.metadata
 import importlib.util
+import json
 import logging
 import os
 import queue
@@ -33,6 +33,8 @@ import pandas as pd
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
 
+from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
+
 from .backend import (
     BackendNotAvailableError,
     InvalidPredictionInputError,
@@ -43,7 +45,6 @@ from .backend import (
 )
 from .backend_capabilities import enrich_backend_environment
 from .training_orchestration import normalize_task_type
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +132,7 @@ class ChempropBackend(PredictionBackend):
                 f"Environment snapshot: {env}"
             )
 
-    def _sanitize_train_extra_args(
-        self, extra_args: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _sanitize_train_extra_args(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Normalize or drop legacy/internal Chemprop CLI arguments before training.
 
         We keep a blacklist here because the agent may legitimately propose
@@ -248,7 +247,8 @@ class ChempropBackend(PredictionBackend):
         applicability_domain = model_record.applicability_domain or {}
         index_path = self._resolve_artifact_path(
             model_record,
-            applicability_domain.get("index_path") or applicability_domain.get("applicability_domain_path"),
+            applicability_domain.get("index_path")
+            or applicability_domain.get("applicability_domain_path"),
         )
         store_path = self._resolve_artifact_path(
             model_record,
@@ -267,7 +267,11 @@ class ChempropBackend(PredictionBackend):
             index_payload = json.loads(index_path.read_text())
             store_payload = np.load(store_path, allow_pickle=True)
         except Exception as exc:
-            logger.warning("Could not load applicability-domain artifacts for %s: %s", model_record.model_id, exc)
+            logger.warning(
+                "Could not load applicability-domain artifacts for %s: %s",
+                model_record.model_id,
+                exc,
+            )
             return None
 
         fingerprint_matrix = store_payload.get("fingerprints")
@@ -300,7 +304,7 @@ class ChempropBackend(PredictionBackend):
             "index_path": index_path,
         }
         cache[cache_key] = payload
-        setattr(self, "_ad_cache", cache)
+        self._ad_cache = cache
         return payload
 
     def _compute_applicability_domain_scores(
@@ -413,7 +417,7 @@ class ChempropBackend(PredictionBackend):
     def _parse_run_index(self, name: str, prefix: str) -> Optional[int]:
         if not name.startswith(prefix):
             return None
-        suffix = name[len(prefix):]
+        suffix = name[len(prefix) :]
         if not suffix.isdigit():
             return None
         return int(suffix)
@@ -613,7 +617,9 @@ class ChempropBackend(PredictionBackend):
                         if observed_total_epochs:
                             percent = min(
                                 100.0,
-                                max(0.0, (float(last_epoch) / float(observed_total_epochs)) * 100.0),
+                                max(
+                                    0.0, (float(last_epoch) / float(observed_total_epochs)) * 100.0
+                                ),
                             )
                             logger.info(
                                 "Chemprop status [%s]: still running after %dm%02ds, epoch %s/%s (%.1f%%).",
@@ -664,8 +670,7 @@ class ChempropBackend(PredictionBackend):
         if process.returncode != 0:
             details = stderr or stdout or "Chemprop CLI exited with a non-zero status."
             raise PredictionExecutionError(
-                "Chemprop execution failed. "
-                f"Command: {' '.join(args)} | Details: {details}"
+                "Chemprop execution failed. " f"Command: {' '.join(args)} | Details: {details}"
             )
 
         return subprocess.CompletedProcess(
@@ -729,7 +734,11 @@ class ChempropBackend(PredictionBackend):
         ad_summary: Dict[str, Any] = {}
         try:
             input_df = pd.read_csv(input_path)
-            smiles_column = model_record.task.smiles_columns[0] if model_record.task.smiles_columns else "smiles"
+            smiles_column = (
+                model_record.task.smiles_columns[0]
+                if model_record.task.smiles_columns
+                else "smiles"
+            )
             if smiles_column in input_df.columns:
                 standardized_df = standardize_smiles_column(input_df.copy(), smiles_column)
                 smiles_values = standardized_df["smiles"].tolist()
@@ -741,13 +750,25 @@ class ChempropBackend(PredictionBackend):
                     ad_frame = pd.DataFrame(ad_columns)
                     predictions_df = pd.read_csv(output_path)
                     if len(predictions_df) == len(ad_frame):
-                        merged_df = pd.concat([predictions_df.reset_index(drop=True), ad_frame], axis=1)
+                        merged_df = pd.concat(
+                            [predictions_df.reset_index(drop=True), ad_frame], axis=1
+                        )
                         merged_df.to_csv(output_path, index=False)
                         counts = merged_df["ad_status"].value_counts(dropna=False).to_dict()
                         ad_summary = {
                             "available": True,
-                            "method": (ad_frame["ad_method"].dropna().iloc[0] if "ad_method" in ad_frame and not ad_frame["ad_method"].dropna().empty else None),
-                            "reference_size": int(ad_frame["ad_reference_size"].dropna().iloc[0]) if "ad_reference_size" in ad_frame and not ad_frame["ad_reference_size"].dropna().empty else None,
+                            "method": (
+                                ad_frame["ad_method"].dropna().iloc[0]
+                                if "ad_method" in ad_frame
+                                and not ad_frame["ad_method"].dropna().empty
+                                else None
+                            ),
+                            "reference_size": (
+                                int(ad_frame["ad_reference_size"].dropna().iloc[0])
+                                if "ad_reference_size" in ad_frame
+                                and not ad_frame["ad_reference_size"].dropna().empty
+                                else None
+                            ),
                             "status_counts": {
                                 str(key): int(value) for key, value in counts.items()
                             },
@@ -783,7 +804,11 @@ class ChempropBackend(PredictionBackend):
         started_at = datetime.now().astimezone()
 
         chemprop_task_type = normalize_task_type(task.task_type)
-        if chemprop_task_type in {"binary_classification", "multiclass", "multiclass_classification"}:
+        if chemprop_task_type in {
+            "binary_classification",
+            "multiclass",
+            "multiclass_classification",
+        }:
             chemprop_task_type = "classification"
 
         args = [
@@ -822,9 +847,21 @@ class ChempropBackend(PredictionBackend):
             args,
             progress_label=output_path.name,
             output_dir=output_path,
-            total_epochs=int(sanitized_extra_args.get("epochs")) if sanitized_extra_args.get("epochs") is not None else None,
-            total_replicates=int(sanitized_extra_args.get("num_replicates")) if sanitized_extra_args.get("num_replicates") is not None else None,
-            total_models=int(sanitized_extra_args.get("ensemble_size")) if sanitized_extra_args.get("ensemble_size") is not None else None,
+            total_epochs=(
+                int(sanitized_extra_args.get("epochs"))
+                if sanitized_extra_args.get("epochs") is not None
+                else None
+            ),
+            total_replicates=(
+                int(sanitized_extra_args.get("num_replicates"))
+                if sanitized_extra_args.get("num_replicates") is not None
+                else None
+            ),
+            total_models=(
+                int(sanitized_extra_args.get("ensemble_size"))
+                if sanitized_extra_args.get("ensemble_size") is not None
+                else None
+            ),
         )
         completed_at = datetime.now().astimezone()
         return {

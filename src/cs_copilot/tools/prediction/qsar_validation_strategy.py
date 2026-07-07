@@ -69,8 +69,7 @@ def _coerce_split_family(raw: Any) -> str:
     family = str(raw or "random").strip().lower()
     if family not in SPLIT_FAMILY_TO_BACKEND_TYPE:
         raise ValueError(
-            "Unsupported split_family. Expected one of "
-            f"{sorted(SPLIT_FAMILY_TO_BACKEND_TYPE)}."
+            "Unsupported split_family. Expected one of " f"{sorted(SPLIT_FAMILY_TO_BACKEND_TYPE)}."
         )
     if family in {"cluster_kmeans", "kmeans"}:
         return "cluster"
@@ -90,7 +89,9 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
     if raw is None:
         return list(DEFAULT_SPLIT_SIZES)
     if not isinstance(raw, (list, tuple)) or len(raw) not in (2, 3):
-        raise ValueError("validation_strategy.split_sizes must be [train, test] or [train, validation, test].")
+        raise ValueError(
+            "validation_strategy.split_sizes must be [train, test] or [train, validation, test]."
+        )
     values = [float(item) for item in raw]
     if len(values) == 2 and values[0] == 1.0 and values[1] == 0.0:
         raise ValueError(
@@ -98,8 +99,15 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
             "Use validation_strategy={'type': 'full_train'} to train on 100% of the dataset without test metrics."
         )
     total = sum(values)
-    if values[0] <= 0 or values[-1] <= 0 or any(item < 0 for item in values) or abs(total - 1.0) > 1e-6:
-        raise ValueError("validation_strategy.split_sizes must sum to 1.0 with positive train/test ratios.")
+    if (
+        values[0] <= 0
+        or values[-1] <= 0
+        or any(item < 0 for item in values)
+        or abs(total - 1.0) > 1e-6
+    ):
+        raise ValueError(
+            "validation_strategy.split_sizes must sum to 1.0 with positive train/test ratios."
+        )
     if len(values) == 3 and values[1] == 0:
         return [values[0], values[2]]
     return values
@@ -113,12 +121,16 @@ def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]
         return None
     if val_ratio is None:
         if test_ratio is None:
-            raise ValueError("validation_strategy requires test_ratio when validation_ratio is omitted.")
+            raise ValueError(
+                "validation_strategy requires test_ratio when validation_ratio is omitted."
+            )
         if train_ratio is None and test_ratio is not None:
             train_ratio = round(1.0 - float(test_ratio), 12)
         return _coerce_split_sizes([train_ratio, test_ratio])
     if test_ratio is None:
-        raise ValueError("validation_strategy requires test_ratio when validation_ratio is provided.")
+        raise ValueError(
+            "validation_strategy requires test_ratio when validation_ratio is provided."
+        )
     if train_ratio is None and test_ratio is not None:
         train_ratio = round(1.0 - float(val_ratio) - float(test_ratio), 12)
     return _coerce_split_sizes([train_ratio, val_ratio, test_ratio])
@@ -127,7 +139,9 @@ def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]
 def _coerce_strategy_split_sizes(strategy: Mapping[str, Any], family: str) -> List[float]:
     aliases = [f"{family}_split", f"{family}_holdout"]
     if family == "cluster":
-        aliases.extend(["kmeans_split", "kmeans_holdout", "cluster_kmeans_split", "cluster_kmeans_holdout"])
+        aliases.extend(
+            ["kmeans_split", "kmeans_holdout", "cluster_kmeans_split", "cluster_kmeans_holdout"]
+        )
     for alias in aliases:
         split_config = strategy.get(alias)
         if isinstance(split_config, Mapping):
@@ -158,7 +172,9 @@ def _seed_policy_for_custom_strategy(
     base_seed: Optional[int],
 ) -> Dict[str, Any]:
     # Reuse the robust policy when we need many generated seeds, then relabel runs below.
-    protocol = "robust_qsar" if run_count > 2 else "standard_qsar" if run_count == 2 else "fast_local"
+    protocol = (
+        "robust_qsar" if run_count > 2 else "standard_qsar" if run_count == 2 else "fast_local"
+    )
     policy = resolve_seed_policy(
         protocol=protocol,
         mode=seed_policy_mode,
@@ -235,8 +251,12 @@ def resolve_validation_strategy(
             base_seed=base_seed,
         )
 
-    strategy_type = str(strategy.get("type") or strategy.get("strategy") or "holdout").strip().lower()
-    selection_metric = str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
+    strategy_type = (
+        str(strategy.get("type") or strategy.get("strategy") or "holdout").strip().lower()
+    )
+    selection_metric = (
+        str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
+    )
 
     if strategy_type in {"full_train", "train_full", "final_refit"}:
         seed_payload = _seed_policy_for_custom_strategy(
@@ -300,7 +320,9 @@ def resolve_validation_strategy(
 
     if strategy_type == "repeated_holdout":
         family = _infer_split_family(strategy)
-        n_repeats = _coerce_positive_int(strategy.get("n_repeats"), default=3, name="n_repeats", minimum=2)
+        n_repeats = _coerce_positive_int(
+            strategy.get("n_repeats"), default=3, name="n_repeats", minimum=2
+        )
         split_sizes = _coerce_strategy_split_sizes(strategy, family)
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name=f"repeated_{family}_holdout",
@@ -361,7 +383,9 @@ def resolve_validation_strategy(
             seed_policy=seed_policy,
             base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
         )
-        seed = int((seed_payload.get("generated_split_seeds") or [seed_payload.get("model_seed") or 0])[0])
+        seed = int(
+            (seed_payload.get("generated_split_seeds") or [seed_payload.get("model_seed") or 0])[0]
+        )
         runs: List[SplitRun] = []
         for repeat_index in range(1, n_repeats + 1):
             for fold_index in range(1, n_folds + 1):

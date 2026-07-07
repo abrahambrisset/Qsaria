@@ -65,13 +65,17 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
             "Use validation_strategy={'type': 'full_train'} for 100% training without test metrics."
         )
     if len(split_sizes) not in (2, 3):
-        raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
+        raise InvalidPredictionInputError(
+            "split_sizes must contain [train, test] or [train, val, test]."
+        )
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
     normalized = [float(value) / total for value in split_sizes]
     if normalized[0] <= 0 or normalized[-1] <= 0 or any(value < 0 for value in normalized):
-        raise InvalidPredictionInputError("split_sizes require positive train/test and non-negative validation.")
+        raise InvalidPredictionInputError(
+            "split_sizes require positive train/test and non-negative validation."
+        )
     if len(normalized) == 3 and normalized[1] == 0:
         return [normalized[0], normalized[2]]
     return normalized
@@ -247,7 +251,9 @@ class LightGBMBackend(PredictionBackend):
             )
             missing = [column for column in feature_columns if column not in df.columns]
             if missing:
-                raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
+                raise InvalidPredictionInputError(
+                    f"Requested feature columns are missing: {missing}"
+                )
             invalid = []
             for column in feature_columns:
                 if column in categorical_feature_columns:
@@ -270,7 +276,8 @@ class LightGBMBackend(PredictionBackend):
         ]
         categorical_feature_columns = self._resolve_categorical_feature_columns(
             df,
-            feature_columns=numeric_columns + list(extra_args.get("categorical_feature_columns") or []),
+            feature_columns=numeric_columns
+            + list(extra_args.get("categorical_feature_columns") or []),
             extra_args=extra_args,
         )
         feature_columns = list(numeric_columns)
@@ -424,7 +431,9 @@ class LightGBMBackend(PredictionBackend):
         callbacks: List[Any] = [lgb.log_evaluation(period=0)]
         has_validation = X_val is not None and y_val is not None
         if has_validation and early_stopping_rounds > 0:
-            callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False))
+            callbacks.append(
+                lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False)
+            )
         fit_kwargs: Dict[str, Any] = {"callbacks": callbacks}
         if has_validation:
             fit_kwargs["eval_set"] = [(X_val, y_val)]
@@ -538,7 +547,8 @@ class LightGBMBackend(PredictionBackend):
         feature_additions: List[pd.DataFrame] = []
         for feature_df in feature_frames:
             columns_to_add = [
-                column for column in feature_columns
+                column
+                for column in feature_columns
                 if column in feature_df.columns and column not in assembled.columns
             ]
             if columns_to_add:
@@ -561,7 +571,9 @@ class LightGBMBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
-            raise InvalidPredictionInputError("LightGBM V1 does not support predictive uncertainty export.")
+            raise InvalidPredictionInputError(
+                "LightGBM V1 does not support predictive uncertainty export."
+            )
 
         model_path = self.validate_model_path(model_record.model_path)
         try:
@@ -576,9 +588,7 @@ class LightGBMBackend(PredictionBackend):
             df = _strip_unnamed_columns(pd.read_csv(fh))
 
         feature_columns = list((payload or {}).get("feature_columns") or [])
-        categorical_feature_columns = list(
-            (payload or {}).get("categorical_feature_columns") or []
-        )
+        categorical_feature_columns = list((payload or {}).get("categorical_feature_columns") or [])
         category_mappings = dict((payload or {}).get("categorical_mappings") or {})
         target_columns = list(model_record.task.target_columns)
 
@@ -602,14 +612,22 @@ class LightGBMBackend(PredictionBackend):
             categorical_feature_columns,
             category_mappings=category_mappings,
         )
-        task_type = str((payload or {}).get("task_type") or model_record.task.task_type or "regression")
+        task_type = str(
+            (payload or {}).get("task_type") or model_record.task.task_type or "regression"
+        )
         try:
             if is_classification_task(task_type):
                 class_labels = list((payload or {}).get("class_labels") or [])
                 if not class_labels:
-                    raise InvalidPredictionInputError("LightGBM classification artifact is missing class_labels metadata.")
+                    raise InvalidPredictionInputError(
+                        "LightGBM classification artifact is missing class_labels metadata."
+                    )
                 y_pred = payload["model"].predict(features)
-                probabilities = payload["model"].predict_proba(features) if hasattr(payload["model"], "predict_proba") else None
+                probabilities = (
+                    payload["model"].predict_proba(features)
+                    if hasattr(payload["model"], "predict_proba")
+                    else None
+                )
                 output = self._classification_output_frame(
                     predictions=y_pred,
                     probabilities=probabilities,
@@ -645,7 +663,9 @@ class LightGBMBackend(PredictionBackend):
         self._ensure_available()
         task_is_classification = is_classification_task(task.task_type)
         if task.task_type != "regression" and not task_is_classification:
-            raise InvalidPredictionInputError("LightGBM V1 supports regression and classification tasks.")
+            raise InvalidPredictionInputError(
+                "LightGBM V1 supports regression and classification tasks."
+            )
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
@@ -660,7 +680,11 @@ class LightGBMBackend(PredictionBackend):
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
         final_refit = bool(sanitized_args.get("final_refit", False))
-        split_sizes = [1.0] if final_refit and raw_split_sizes in (None, [1.0], (1.0,)) else _coerce_split_sizes(raw_split_sizes)
+        split_sizes = (
+            [1.0]
+            if final_refit and raw_split_sizes in (None, [1.0], (1.0,))
+            else _coerce_split_sizes(raw_split_sizes)
+        )
         target_column = task.target_columns[0]
         started_at = project_now()
 
@@ -680,7 +704,9 @@ class LightGBMBackend(PredictionBackend):
             sanitized_args,
         )
         working = dataset[
-            feature_columns + [target_column] + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
+            feature_columns
+            + [target_column]
+            + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
         ].copy()
         if len(working) < 10:
             raise InvalidPredictionInputError(
@@ -735,13 +761,19 @@ class LightGBMBackend(PredictionBackend):
         if task_is_classification:
             class_labels = resolve_class_labels(encoded_working[target_column])
             if len(class_labels) < 2:
-                raise InvalidPredictionInputError("LightGBM classification requires at least two target classes.")
+                raise InvalidPredictionInputError(
+                    "LightGBM classification requires at least two target classes."
+                )
             if is_multiclass_task(task.task_type) is False and len(class_labels) > 2:
                 # Plain `classification` may still infer multiclass from data; keep it explicit in metadata.
                 pass
-            encoded_target, class_mapping = encode_classification_labels(encoded_working[target_column], class_labels)
+            encoded_target, class_mapping = encode_classification_labels(
+                encoded_working[target_column], class_labels
+            )
             if encoded_target.isna().any():
-                raise InvalidPredictionInputError("LightGBM classification target contains labels outside class_labels.")
+                raise InvalidPredictionInputError(
+                    "LightGBM classification target contains labels outside class_labels."
+                )
             y_all = encoded_target.astype(int)
         else:
             y_all = pd.to_numeric(encoded_working[target_column], errors="coerce").astype(float)
@@ -766,7 +798,9 @@ class LightGBMBackend(PredictionBackend):
         model_params = self._default_model_params(sanitized_args)
         if task_is_classification:
             model_params["objective"] = "multiclass" if len(class_labels) > 2 else "binary"
-            model_params["metric"] = sanitized_args.get("metric") or ("multi_logloss" if len(class_labels) > 2 else "binary_logloss")
+            model_params["metric"] = sanitized_args.get("metric") or (
+                "multi_logloss" if len(class_labels) > 2 else "binary_logloss"
+            )
             if len(class_labels) > 2:
                 model_params["num_class"] = len(class_labels)
         model_params["device_type"] = requested_device_type
@@ -815,7 +849,11 @@ class LightGBMBackend(PredictionBackend):
             try:
                 if task_is_classification:
                     y_pred = pd.Series(regressor.predict(X_test), index=X_test.index)
-                    y_proba = regressor.predict_proba(X_test) if hasattr(regressor, "predict_proba") else None
+                    y_proba = (
+                        regressor.predict_proba(X_test)
+                        if hasattr(regressor, "predict_proba")
+                        else None
+                    )
                 else:
                     y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
             except Exception as exc:
@@ -838,7 +876,11 @@ class LightGBMBackend(PredictionBackend):
                 )
             }
         else:
-            metrics = {"test": compute_regression_metrics(y_test, y_pred, target_column=target_column)} if y_pred is not None else {}
+            metrics = (
+                {"test": compute_regression_metrics(y_test, y_pred, target_column=target_column)}
+                if y_pred is not None
+                else {}
+            )
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
@@ -864,7 +906,9 @@ class LightGBMBackend(PredictionBackend):
                     "class_labels": [json_safe_label(label) for label in class_labels],
                     "class_count": len(class_labels),
                     "label_mapping": class_mapping,
-                    "positive_class_label": json_safe_label(class_labels[1]) if len(class_labels) == 2 else None,
+                    "positive_class_label": (
+                        json_safe_label(class_labels[1]) if len(class_labels) == 2 else None
+                    ),
                 }
             )
 
@@ -936,11 +980,19 @@ class LightGBMBackend(PredictionBackend):
             "categorical_feature_columns": categorical_feature_columns,
             "categorical_mappings": categorical_mappings,
             "target_column": target_column,
-            "task_kind": classification_task_kind(task.task_type, len(class_labels)) if task_is_classification else "regression",
+            "task_kind": (
+                classification_task_kind(task.task_type, len(class_labels))
+                if task_is_classification
+                else "regression"
+            ),
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,
-            "positive_class_label": json_safe_label(class_labels[1]) if task_is_classification and len(class_labels) == 2 else None,
+            "positive_class_label": (
+                json_safe_label(class_labels[1])
+                if task_is_classification and len(class_labels) == 2
+                else None
+            ),
             "split_payload": split_payload,
             "effective_split_payload": effective_split_payload,
             "split_metadata": split_indices.get("metadata") or {},

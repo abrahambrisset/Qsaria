@@ -91,13 +91,17 @@ def _coerce_split_sizes(split_sizes: Optional[List[float]]) -> List[float]:
             "Use validation_strategy={'type': 'full_train'} for 100% training without test metrics."
         )
     if len(split_sizes) not in (2, 3):
-        raise InvalidPredictionInputError("split_sizes must contain [train, test] or [train, val, test].")
+        raise InvalidPredictionInputError(
+            "split_sizes must contain [train, test] or [train, val, test]."
+        )
     total = float(sum(split_sizes))
     if total <= 0:
         raise InvalidPredictionInputError("split_sizes must sum to a positive value.")
     normalized = [float(value) / total for value in split_sizes]
     if normalized[0] <= 0 or normalized[-1] <= 0 or any(value < 0 for value in normalized):
-        raise InvalidPredictionInputError("split_sizes require positive train/test and non-negative validation.")
+        raise InvalidPredictionInputError(
+            "split_sizes require positive train/test and non-negative validation."
+        )
     if len(normalized) == 3 and normalized[1] == 0:
         return [normalized[0], normalized[2]]
     return normalized
@@ -119,7 +123,9 @@ class TabICLBackend(PredictionBackend):
         return importlib.util.find_spec("tabicl") is not None
 
     def describe_environment(self) -> Dict[str, Any]:
-        regressor_checkpoint_path = DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        regressor_checkpoint_path = (
+            DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+        )
         classifier_checkpoint_path = (
             DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
         )
@@ -287,7 +293,9 @@ class TabICLBackend(PredictionBackend):
                 explicit = [explicit]
             missing = [column for column in explicit if column not in df.columns]
             if missing:
-                raise InvalidPredictionInputError(f"Requested feature columns are missing: {missing}")
+                raise InvalidPredictionInputError(
+                    f"Requested feature columns are missing: {missing}"
+                )
             leaked = [
                 column
                 for column in explicit
@@ -360,7 +368,9 @@ class TabICLBackend(PredictionBackend):
                     shutil.copy2(candidate_path, destination)
                     return str(destination)
                 except Exception as exc:
-                    logger.warning("Could not persist TabICL checkpoint to %s: %s", destination, exc)
+                    logger.warning(
+                        "Could not persist TabICL checkpoint to %s: %s", destination, exc
+                    )
                     return None
         return None
 
@@ -374,14 +384,18 @@ class TabICLBackend(PredictionBackend):
         extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
-            raise InvalidPredictionInputError("TabICL does not support predictive uncertainty export.")
+            raise InvalidPredictionInputError(
+                "TabICL does not support predictive uncertainty export."
+            )
 
         model_path = self.validate_model_path(model_record.model_path)
         try:
             with model_path.open("rb") as fh:
                 estimator = pickle.load(fh)
         except Exception as exc:
-            raise PredictionExecutionError(f"Could not load TabICL model artifact {model_path}: {exc}") from exc
+            raise PredictionExecutionError(
+                f"Could not load TabICL model artifact {model_path}: {exc}"
+            ) from exc
 
         with S3.open(input_csv, "r") as fh:
             df = _strip_unnamed_columns(pd.read_csv(fh))
@@ -393,14 +407,20 @@ class TabICLBackend(PredictionBackend):
 
         missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:
-            raise InvalidPredictionInputError(f"Prediction input is missing feature columns: {missing_features}")
+            raise InvalidPredictionInputError(
+                f"Prediction input is missing feature columns: {missing_features}"
+            )
 
         X = df[feature_columns].copy()
         try:
             if is_classification_task(model_record.task.task_type):
-                class_labels = list((model_record.inference_profile or {}).get("class_labels") or [])
+                class_labels = list(
+                    (model_record.inference_profile or {}).get("class_labels") or []
+                )
                 if not class_labels:
-                    raise InvalidPredictionInputError("TabICL classification artifact is missing class_labels metadata.")
+                    raise InvalidPredictionInputError(
+                        "TabICL classification artifact is missing class_labels metadata."
+                    )
                 raw_pred = estimator.predict(X)
                 predicted = decode_classification_labels(raw_pred, class_labels)
                 output = pd.DataFrame(
@@ -414,9 +434,13 @@ class TabICLBackend(PredictionBackend):
                 if hasattr(estimator, "predict_proba"):
                     proba = pd.DataFrame(estimator.predict_proba(X))
                     for index, class_label in enumerate(class_labels[: proba.shape[1]]):
-                        output[f"probability_{json_safe_label(class_label)}"] = pd.to_numeric(proba.iloc[:, index], errors="coerce")
+                        output[f"probability_{json_safe_label(class_label)}"] = pd.to_numeric(
+                            proba.iloc[:, index], errors="coerce"
+                        )
                     if len(class_labels) == 2 and proba.shape[1] >= 2:
-                        output["positive_probability"] = pd.to_numeric(proba.iloc[:, 1], errors="coerce")
+                        output["positive_probability"] = pd.to_numeric(
+                            proba.iloc[:, 1], errors="coerce"
+                        )
             else:
                 y_pred = estimator.predict(X)
                 output = pd.DataFrame({"prediction": pd.Series(y_pred).astype(float)})
@@ -444,7 +468,9 @@ class TabICLBackend(PredictionBackend):
         self._ensure_available()
         task_is_classification = is_classification_task(task.task_type)
         if task.task_type != "regression" and not task_is_classification:
-            raise InvalidPredictionInputError("TabICL supports regression and classification tasks.")
+            raise InvalidPredictionInputError(
+                "TabICL supports regression and classification tasks."
+            )
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("TabICL requires exactly one target column.")
 
@@ -464,7 +490,11 @@ class TabICLBackend(PredictionBackend):
         split_type = str(sanitized_args.get("split_type", "random"))
         validation_protocol = str(sanitized_args.get("validation_protocol", "standard_qsar"))
         final_refit = bool(sanitized_args.get("final_refit", False))
-        split_sizes = [1.0] if final_refit and raw_split_sizes in (None, [1.0], (1.0,)) else _coerce_split_sizes(raw_split_sizes)
+        split_sizes = (
+            [1.0]
+            if final_refit and raw_split_sizes in (None, [1.0], (1.0,))
+            else _coerce_split_sizes(raw_split_sizes)
+        )
         started_at = project_now()
 
         with S3.open(train_csv, "r") as fh:
@@ -475,20 +505,30 @@ class TabICLBackend(PredictionBackend):
             raise InvalidPredictionInputError(f"Missing target column: {target_column}")
 
         feature_columns = self._select_feature_columns(dataset, [target_column], sanitized_args)
-        working = dataset[feature_columns + [target_column] + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]].copy()
+        working = dataset[
+            feature_columns
+            + [target_column]
+            + [c for c in ("smiles", "Drug_ID") if c in dataset.columns]
+        ].copy()
         class_labels: List[Any] = []
         class_mapping: Dict[str, int] = {}
         if task_is_classification:
             class_labels = resolve_class_labels(working[target_column])
             if len(class_labels) < 2:
-                raise InvalidPredictionInputError("TabICL classification requires at least two classes.")
-            encoded_target, class_mapping = encode_classification_labels(working[target_column], class_labels)
+                raise InvalidPredictionInputError(
+                    "TabICL classification requires at least two classes."
+                )
+            encoded_target, class_mapping = encode_classification_labels(
+                working[target_column], class_labels
+            )
             working[target_column] = encoded_target
         else:
             working[target_column] = pd.to_numeric(working[target_column], errors="coerce")
         working = working.dropna(subset=[target_column]).reset_index(drop=True)
         if len(working) < 10:
-            raise InvalidPredictionInputError("TabICL requires at least 10 rows after target cleanup.")
+            raise InvalidPredictionInputError(
+                "TabICL requires at least 10 rows after target cleanup."
+            )
 
         if final_refit:
             split_payload = build_full_train_split_payload(df=working)
@@ -501,7 +541,11 @@ class TabICLBackend(PredictionBackend):
                 smiles_column="smiles" if "smiles" in working.columns else None,
                 feature_columns=feature_columns,
             )
-        if not isinstance(split_payload, list) or not split_payload or not isinstance(split_payload[0], dict):
+        if (
+            not isinstance(split_payload, list)
+            or not split_payload
+            or not isinstance(split_payload[0], dict)
+        ):
             raise InvalidPredictionInputError(
                 "TabICL split_payload must be a non-empty list with train/test index mappings."
             )
@@ -511,7 +555,9 @@ class TabICLBackend(PredictionBackend):
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
         if not train_indices or (not final_refit and not test_indices):
-            raise InvalidPredictionInputError("TabICL split payload must provide non-empty train/test indices.")
+            raise InvalidPredictionInputError(
+                "TabICL split payload must provide non-empty train/test indices."
+            )
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
         test_df = working.iloc[test_indices].reset_index(drop=True)
@@ -522,7 +568,11 @@ class TabICLBackend(PredictionBackend):
         X_train = train_df[feature_columns].copy()
         y_train = train_df[target_column].astype(int if task_is_classification else float).copy()
         X_test = test_df[feature_columns].copy() if not test_df.empty else None
-        y_test = test_df[target_column].astype(int if task_is_classification else float).copy() if not test_df.empty else None
+        y_test = (
+            test_df[target_column].astype(int if task_is_classification else float).copy()
+            if not test_df.empty
+            else None
+        )
         if task_is_classification:
             missing_train_classes = sorted(
                 set(range(len(class_labels))) - {int(value) for value in y_train.tolist()}
@@ -533,7 +583,11 @@ class TabICLBackend(PredictionBackend):
                     f"TabICL classification training split is missing target classes {missing}."
                 )
 
-        Estimator = self._import_tabicl_classifier() if task_is_classification else self._import_tabicl_regressor()
+        Estimator = (
+            self._import_tabicl_classifier()
+            if task_is_classification
+            else self._import_tabicl_regressor()
+        )
         model_path_arg = str(checkpoint_cfg["checkpoint_path"])
         init_kwargs = {
             "model_path": model_path_arg,
@@ -573,16 +627,16 @@ class TabICLBackend(PredictionBackend):
         heartbeat_label = str(sanitized_args.get("heartbeat_label") or split_type)
         heartbeat_run_index = sanitized_args.get("heartbeat_run_index")
         heartbeat_total_runs = sanitized_args.get("heartbeat_total_runs")
-        heartbeat_path = Path(str(heartbeat_path_raw)).expanduser().resolve() if heartbeat_path_raw else None
+        heartbeat_path = (
+            Path(str(heartbeat_path_raw)).expanduser().resolve() if heartbeat_path_raw else None
+        )
         heartbeat_stop = threading.Event()
         heartbeat_thread: Optional[threading.Thread] = None
 
         def _emit_heartbeat() -> None:
             progress_message = None
             if heartbeat_run_index and heartbeat_total_runs:
-                progress_message = (
-                    f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
-                )
+                progress_message = f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
             payload = {
                 "status": "running",
                 "phase": "fit",
@@ -642,7 +696,9 @@ class TabICLBackend(PredictionBackend):
             )
             y_proba = (
                 estimator.predict_proba(X_test)
-                if task_is_classification and X_test is not None and hasattr(estimator, "predict_proba")
+                if task_is_classification
+                and X_test is not None
+                and hasattr(estimator, "predict_proba")
                 else None
             )
         except Exception as exc:
@@ -685,8 +741,12 @@ class TabICLBackend(PredictionBackend):
                 if column in test_df.columns
             }
             if task_is_classification:
-                y_true_labels = decode_classification_labels(y_test.reset_index(drop=True), class_labels)
-                y_pred_labels = decode_classification_labels(y_pred.reset_index(drop=True), class_labels)
+                y_true_labels = decode_classification_labels(
+                    y_test.reset_index(drop=True), class_labels
+                )
+                y_pred_labels = decode_classification_labels(
+                    y_pred.reset_index(drop=True), class_labels
+                )
                 predictions_df = pd.DataFrame(
                     {
                         **id_columns,
@@ -702,9 +762,11 @@ class TabICLBackend(PredictionBackend):
                 if y_proba is not None:
                     proba = pd.DataFrame(y_proba)
                     for index, class_label in enumerate(class_labels[: proba.shape[1]]):
-                        predictions_df[f"probability_{json_safe_label(class_label)}"] = pd.to_numeric(
-                            proba.iloc[:, index],
-                            errors="coerce",
+                        predictions_df[f"probability_{json_safe_label(class_label)}"] = (
+                            pd.to_numeric(
+                                proba.iloc[:, index],
+                                errors="coerce",
+                            )
                         )
                     if proba.shape[1] >= 2:
                         positive_scores = pd.to_numeric(proba.iloc[:, 1], errors="coerce")
@@ -743,7 +805,11 @@ class TabICLBackend(PredictionBackend):
             "backend_name": self.backend_name,
             "train_csv": train_csv,
             "task_type": task.task_type,
-            "task_kind": classification_task_kind(task.task_type, len(class_labels)) if task_is_classification else "regression",
+            "task_kind": (
+                classification_task_kind(task.task_type, len(class_labels))
+                if task_is_classification
+                else "regression"
+            ),
             "target_column": target_column,
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
@@ -765,7 +831,9 @@ class TabICLBackend(PredictionBackend):
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,
-            "positive_class_label": json_safe_label(class_labels[1]) if task_is_classification else None,
+            "positive_class_label": (
+                json_safe_label(class_labels[1]) if task_is_classification else None
+            ),
             "model_artifact_path": str(model_artifact_path),
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "config_path": str(config_path),
@@ -777,7 +845,7 @@ class TabICLBackend(PredictionBackend):
             'backend_name = "tabicl"',
             f'task_type = "{task.task_type}"',
             f'target_column = "{target_column}"',
-            f'random_state = {random_state}',
+            f"random_state = {random_state}",
             f'split_type = "{split_type}"',
             f'validation_protocol = "{validation_protocol}"',
             f'checkpoint_version = "{checkpoint_cfg["checkpoint_version"]}"',
@@ -804,11 +872,17 @@ class TabICLBackend(PredictionBackend):
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,
-            "positive_class_label": json_safe_label(class_labels[1]) if task_is_classification else None,
+            "positive_class_label": (
+                json_safe_label(class_labels[1]) if task_is_classification else None
+            ),
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
             "target_column": target_column,
-            "task_kind": classification_task_kind(task.task_type, len(class_labels)) if task_is_classification else "regression",
+            "task_kind": (
+                classification_task_kind(task.task_type, len(class_labels))
+                if task_is_classification
+                else "regression"
+            ),
             "split_type": split_type,
             "validation_protocol": validation_protocol,
             "split_sizes": split_sizes,

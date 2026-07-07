@@ -8,10 +8,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+import matplotlib
 import numpy as np
 import pandas as pd
-
-import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -60,10 +59,14 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(_json_safe(dict(payload)), indent=2) + "\n")
 
 
-def _resolve_target_columns(record: PredictionModelRecord, target_columns: Optional[Sequence[str]]) -> List[str]:
+def _resolve_target_columns(
+    record: PredictionModelRecord, target_columns: Optional[Sequence[str]]
+) -> List[str]:
     resolved = list(target_columns or record.task.target_columns or [])
     if not resolved:
-        raise ValueError("External evaluation requires target_columns or model metadata target columns.")
+        raise ValueError(
+            "External evaluation requires target_columns or model metadata target columns."
+        )
     return resolved
 
 
@@ -164,7 +167,7 @@ def _confusion_counts(y_true: pd.Series, y_pred: pd.Series, labels: Sequence[Any
     normalized_labels = [json_safe_label(label) for label in labels]
     label_to_index = {str(label): index for index, label in enumerate(normalized_labels)}
     matrix = np.zeros((len(labels), len(labels)), dtype=float)
-    for truth, pred in zip(y_true, y_pred):
+    for truth, pred in zip(y_true, y_pred, strict=False):
         truth_key = str(json_safe_label(truth))
         pred_key = str(json_safe_label(pred))
         if truth_key in label_to_index and pred_key in label_to_index:
@@ -205,7 +208,9 @@ def _plot_binary_curves(
         from sklearn.metrics import precision_recall_curve, roc_curve
     except Exception:
         return
-    encoded = y_true.map(lambda value: 1 if json_safe_label(value) == json_safe_label(labels[1]) else 0)
+    encoded = y_true.map(
+        lambda value: 1 if json_safe_label(value) == json_safe_label(labels[1]) else 0
+    )
     frame = pd.DataFrame({"y": encoded, "score": pd.to_numeric(scores, errors="coerce")}).dropna()
     if frame.empty or frame["y"].nunique() < 2:
         return
@@ -372,11 +377,18 @@ def evaluate_model_on_external_dataset(
         return_uncertainty=False,
     )
 
-    predictions_only = _normalize_prediction_columns(pd.read_csv(predictions_path), resolved_targets)
+    predictions_only = _normalize_prediction_columns(
+        pd.read_csv(predictions_path), resolved_targets
+    )
     predictions_only.to_csv(predictions_path, index=False)
-    prediction_columns = [column for column in predictions_only.columns if column not in source_df.columns]
+    prediction_columns = [
+        column for column in predictions_only.columns if column not in source_df.columns
+    ]
     enriched = pd.concat(
-        [source_df.reset_index(drop=True), predictions_only[prediction_columns].reset_index(drop=True)],
+        [
+            source_df.reset_index(drop=True),
+            predictions_only[prediction_columns].reset_index(drop=True),
+        ],
         axis=1,
     )
     enriched.to_csv(predictions_path, index=False)
@@ -397,7 +409,9 @@ def evaluate_model_on_external_dataset(
                 positive_scores=scores,
                 target_column=target,
             )
-            target_plot_dir = eval_dir / "plots" / target if len(resolved_targets) > 1 else eval_dir / "plots"
+            target_plot_dir = (
+                eval_dir / "plots" / target if len(resolved_targets) > 1 else eval_dir / "plots"
+            )
             plot_artifacts[target] = _plot_classification(
                 enriched[target],
                 enriched[pred_col],
@@ -410,19 +424,27 @@ def evaluate_model_on_external_dataset(
                 enriched[pred_col],
                 target_column=target,
             )
-            target_plot_dir = eval_dir / "plots" / target if len(resolved_targets) > 1 else eval_dir / "plots"
-            plot_artifacts[target] = _plot_regression(enriched[target], enriched[pred_col], target_plot_dir)
+            target_plot_dir = (
+                eval_dir / "plots" / target if len(resolved_targets) > 1 else eval_dir / "plots"
+            )
+            plot_artifacts[target] = _plot_regression(
+                enriched[target], enriched[pred_col], target_plot_dir
+            )
         target_metrics[target] = metric_values
         metrics_by_target_rows.append({"target": target, **metric_values})
 
     if not target_metrics:
         raise ValueError("External evaluation did not produce any metrics.")
-    metrics = target_metrics[resolved_targets[0]] if single_target else {
-        "target_count": len(resolved_targets),
-        "row_count": int(len(enriched)),
-        "task_type": task_type,
-        "target_metrics": target_metrics,
-    }
+    metrics = (
+        target_metrics[resolved_targets[0]]
+        if single_target
+        else {
+            "target_count": len(resolved_targets),
+            "row_count": int(len(enriched)),
+            "task_type": task_type,
+            "target_metrics": target_metrics,
+        }
+    )
 
     artifacts: Dict[str, Any] = {
         "evaluation_dir": str(eval_dir),

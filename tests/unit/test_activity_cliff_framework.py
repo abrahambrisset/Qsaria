@@ -40,12 +40,17 @@ def test_activity_cliff_framework_writes_generic_and_sali_columns(tmp_path):
     assert context["index_name"] == "sali"
     assert context["mode"] == "standard"
     assert context["summary_path"].endswith("activity_cliff_summary.json")
-    summary = json.loads((tmp_path / "run" / "activity_cliffs" / "activity_cliff_summary.json").read_text())
+    summary = json.loads(
+        (tmp_path / "run" / "activity_cliffs" / "activity_cliff_summary.json").read_text()
+    )
     assert summary["index_parameters"]["fingerprint"] == "morgan_count"
     assert summary["index_parameters"]["fingerprint_dimensions"] == 2048
     assert summary["index_parameters"]["fingerprint_bits"] is None
     assert summary["index_parameters"]["similarity_metric"] == "count_tanimoto"
-    assert summary["similarity_diagnostics"]["exact_similarity_policy"] == "reported_not_silently_corrected"
+    assert (
+        summary["similarity_diagnostics"]["exact_similarity_policy"]
+        == "reported_not_silently_corrected"
+    )
     assert "activity_cliff_score_raw" in annotated.columns
     assert "activity_cliff_score_norm" in annotated.columns
     assert "activity_cliff_sali_raw" in annotated.columns
@@ -115,7 +120,9 @@ def test_lightgbm_auto_features_exclude_activity_cliff_columns():
             "activity_cliff_score_norm": [0.9, 0.1],
         }
     )
-    task = PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"], target_columns=["Y"])
+    task = PredictionTaskSpec(
+        task_type="regression", smiles_columns=["smiles"], target_columns=["Y"]
+    )
 
     features, _ = backend._select_feature_columns(df, task, {})
 
@@ -131,10 +138,14 @@ def test_lightgbm_explicit_activity_cliff_feature_is_rejected():
             "activity_cliff_score_norm": [0.9, 0.1],
         }
     )
-    task = PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"], target_columns=["Y"])
+    task = PredictionTaskSpec(
+        task_type="regression", smiles_columns=["smiles"], target_columns=["Y"]
+    )
 
     with pytest.raises(InvalidPredictionInputError):
-        backend._select_feature_columns(df, task, {"feature_columns": ["activity_cliff_score_norm"]})
+        backend._select_feature_columns(
+            df, task, {"feature_columns": ["activity_cliff_score_norm"]}
+        )
 
 
 def test_tabicl_auto_features_exclude_activity_cliff_columns():

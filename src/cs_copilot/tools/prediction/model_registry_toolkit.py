@@ -43,7 +43,9 @@ def _safe_display_token(value: str) -> str:
     return " ".join(part.capitalize() for part in token.split())
 
 
-def _sanitize_activity_cliff_description(description: Optional[str], activity_payload: Dict[str, Any]) -> Optional[str]:
+def _sanitize_activity_cliff_description(
+    description: Optional[str], activity_payload: Dict[str, Any]
+) -> Optional[str]:
     if not description or not activity_payload.get("enabled"):
         return description
     loops_requested = activity_payload.get("feedback_loops_requested")
@@ -158,17 +160,27 @@ def _hydrate_inference_profile_from_summary(
         **(current_profile or {}),
         **(override_profile or {}),
     }
-    if not profile.get("feature_columns") and isinstance(summary_payload.get("feature_columns"), list):
+    if not profile.get("feature_columns") and isinstance(
+        summary_payload.get("feature_columns"), list
+    ):
         profile["feature_columns"] = list(summary_payload["feature_columns"])
     if not profile.get("categorical_feature_columns") and isinstance(
         summary_payload.get("categorical_feature_columns"), list
     ):
-        profile["categorical_feature_columns"] = list(summary_payload["categorical_feature_columns"])
+        profile["categorical_feature_columns"] = list(
+            summary_payload["categorical_feature_columns"]
+        )
     if not profile.get("representation_name") and summary_payload.get("representation_name"):
         profile["representation_name"] = summary_payload.get("representation_name")
     if summary_payload.get("summary_path") and not profile.get("feature_columns_source"):
         profile["feature_columns_source"] = summary_payload.get("summary_path")
-    for key in ("task_kind", "class_labels", "class_count", "label_mapping", "positive_class_label"):
+    for key in (
+        "task_kind",
+        "class_labels",
+        "class_count",
+        "label_mapping",
+        "positive_class_label",
+    ):
         if profile.get(key) is None and summary_payload.get(key) is not None:
             profile[key] = summary_payload.get(key)
     return profile
@@ -177,7 +189,13 @@ def _hydrate_inference_profile_from_summary(
 def _classification_metadata(record: PredictionModelRecord) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"task_type": record.task.task_type}
     sources = (record.inference_profile or {}, record.training_data_summary or {})
-    for key in ("task_kind", "class_labels", "class_count", "label_mapping", "positive_class_label"):
+    for key in (
+        "task_kind",
+        "class_labels",
+        "class_count",
+        "label_mapping",
+        "positive_class_label",
+    ):
         for source in sources:
             if source.get(key) is not None:
                 payload[key] = source.get(key)
@@ -222,8 +240,8 @@ def _hydrate_curation_metadata(
             or report.get("curation_backend_used")
             or report.get("curation_backend")
         )
-        metadata["curated_dataset_path"] = (
-            metadata.get("curated_dataset_path") or report.get("curated_dataset_path")
+        metadata["curated_dataset_path"] = metadata.get("curated_dataset_path") or report.get(
+            "curated_dataset_path"
         )
         metadata["source_dataset_path"] = report.get("source_dataset_path")
         metadata["rows_in"] = (
@@ -253,7 +271,9 @@ def _hydrate_curation_metadata(
     return metadata
 
 
-def _extract_endpoint_and_dataset(train_csv: Optional[str], fallback_model_id: str) -> tuple[str, str]:
+def _extract_endpoint_and_dataset(
+    train_csv: Optional[str], fallback_model_id: str
+) -> tuple[str, str]:
     source = Path(train_csv or fallback_model_id).stem.lower()
     for suffix in ("_curated", "_cleaned", "_dataset", "_training"):
         if source.endswith(suffix):
@@ -384,10 +404,7 @@ class ModelRegistryToolkit(Toolkit):
 
     def describe_backends(self) -> Dict[str, Any]:
         """Describe all configured prediction backends."""
-        return {
-            name: backend.describe_environment()
-            for name, backend in self.backends.items()
-        }
+        return {name: backend.describe_environment() for name, backend in self.backends.items()}
 
     def get_backend(self, backend_name: str):
         backend = self.backends.get(backend_name)
@@ -428,7 +445,9 @@ class ModelRegistryToolkit(Toolkit):
             available_backend_names=available_backends,
             include_unavailable_paths=include_unavailable_paths,
         )
-        return [_compact_model_payload_for_response(candidate.as_dict()) for candidate in candidates]
+        return [
+            _compact_model_payload_for_response(candidate.as_dict()) for candidate in candidates
+        ]
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
@@ -469,7 +488,9 @@ class ModelRegistryToolkit(Toolkit):
 
         return compact_recommendation
 
-    def register_catalog_model(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
+    def register_catalog_model(
+        self, model_id: str, agent: Optional[Agent] = None
+    ) -> Dict[str, Any]:
         """Register a model from the persistent catalog into the current session."""
         if agent is None:
             raise ValueError("Agent is required to register a catalog model")
@@ -686,12 +707,18 @@ class ModelRegistryToolkit(Toolkit):
             "training_summary_path": _first_existing_or_default(training_summary_candidates),
             "splits_path": run_dir / "splits.json",
             "test_predictions_path": _first_existing_or_default(test_prediction_candidates),
-            "chemprop_training_input_csv": run_dir / "chemprop_inputs" / "chemprop_training_input.csv",
+            "chemprop_training_input_csv": run_dir
+            / "chemprop_inputs"
+            / "chemprop_training_input.csv",
             "chemprop_splits_file": run_dir / "chemprop_inputs" / "chemprop_splits.json",
-            "chemprop_input_manifest_path": run_dir / "chemprop_inputs" / "chemprop_input_manifest.json",
+            "chemprop_input_manifest_path": run_dir
+            / "chemprop_inputs"
+            / "chemprop_input_manifest.json",
             "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
             "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
-            "applicability_domain_path": run_dir / "applicability_domain" / "applicability_domain.json",
+            "applicability_domain_path": run_dir
+            / "applicability_domain"
+            / "applicability_domain.json",
         }
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
@@ -777,7 +804,9 @@ class ModelRegistryToolkit(Toolkit):
         for plot_name, raw_path in (activity_payload.get("plot_artifacts") or {}).items():
             if raw_path:
                 activity_cliff_sources[f"plot_{plot_name}"] = Path(str(raw_path)).expanduser()
-        for plot_name, raw_path in (activity_payload.get("loop_comparison_plot_artifacts") or {}).items():
+        for plot_name, raw_path in (
+            activity_payload.get("loop_comparison_plot_artifacts") or {}
+        ).items():
             if raw_path:
                 activity_cliff_sources[f"loop_comparison_plot_{plot_name}"] = Path(
                     str(raw_path)
@@ -787,7 +816,11 @@ class ModelRegistryToolkit(Toolkit):
             if not variant_id:
                 continue
             for split_result in variant.get("split_results") or []:
-                split_label = split_result.get("strategy_label") or split_result.get("strategy_family") or "split"
+                split_label = (
+                    split_result.get("strategy_label")
+                    or split_result.get("strategy_family")
+                    or "split"
+                )
                 for artifact_key in (
                     "model_path",
                     "test_predictions_path",
@@ -928,7 +961,9 @@ class ModelRegistryToolkit(Toolkit):
             if copied_files.get("training_dataset_path") and train_csv:
                 path_rewrites[_resolved_path_key(train_csv)] = copied_files["training_dataset_path"]
 
-            for index, raw_path in enumerate(feature_preparation_payload.get("feature_csvs") or [], start=1):
+            for index, raw_path in enumerate(
+                feature_preparation_payload.get("feature_csvs") or [], start=1
+            ):
                 if not raw_path:
                     continue
                 source_path = Path(str(raw_path)).expanduser()
@@ -995,7 +1030,9 @@ class ModelRegistryToolkit(Toolkit):
             "not_recommended_for": list(record.not_recommended_for),
             "known_metrics": dict(record.known_metrics),
             "training_data_summary": dict(record.training_data_summary),
-            "external_evaluations": list(record.training_data_summary.get("external_evaluations") or []),
+            "external_evaluations": list(
+                record.training_data_summary.get("external_evaluations") or []
+            ),
             "inference_profile": dict(record.inference_profile),
             "selection_hints": dict(record.selection_hints),
             "tags": dict(record.tags),
@@ -1041,13 +1078,17 @@ class ModelRegistryToolkit(Toolkit):
                 "artifacts": copied_activity_cliff_artifacts,
             }
             if activity_payload.get("variant_training"):
-                metadata["activity_cliffs"]["variant_training"] = activity_payload.get("variant_training")
+                metadata["activity_cliffs"]["variant_training"] = activity_payload.get(
+                    "variant_training"
+                )
             if activity_payload.get("variant_comparison_table"):
                 metadata["activity_cliffs"]["variant_comparison_table"] = activity_payload.get(
                     "variant_comparison_table"
                 )
             if activity_payload.get("reporting_handoff"):
-                metadata["activity_cliffs"]["reporting_handoff"] = activity_payload.get("reporting_handoff")
+                metadata["activity_cliffs"]["reporting_handoff"] = activity_payload.get(
+                    "reporting_handoff"
+                )
             if activity_payload.get("loop_comparison_plot_artifacts"):
                 metadata["activity_cliffs"]["loop_comparison_plot_artifacts"] = {
                     key: copied_activity_cliff_artifacts.get(f"loop_comparison_plot_{key}")
@@ -1055,7 +1096,9 @@ class ModelRegistryToolkit(Toolkit):
                     if copied_activity_cliff_artifacts.get(f"loop_comparison_plot_{key}")
                 }
             if copied_activity_cliff_variant_models:
-                metadata["activity_cliffs"]["variant_model_artifacts"] = copied_activity_cliff_variant_models
+                metadata["activity_cliffs"][
+                    "variant_model_artifacts"
+                ] = copied_activity_cliff_variant_models
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -1097,7 +1140,9 @@ class ModelRegistryToolkit(Toolkit):
                 "domain_summary": record.domain_summary or "",
                 "known_metrics": dict(record.known_metrics),
                 "training_data_summary": dict(record.training_data_summary),
-                "external_evaluations": payload.get("external_evaluations") or record.training_data_summary.get("external_evaluations") or [],
+                "external_evaluations": payload.get("external_evaluations")
+                or record.training_data_summary.get("external_evaluations")
+                or [],
                 "trained_at": (record.training_data_summary or {}).get("trained_at"),
                 "trained_date": (record.training_data_summary or {}).get("trained_date"),
                 "trained_time": (record.training_data_summary or {}).get("trained_time"),
@@ -1205,10 +1250,9 @@ class ModelRegistryToolkit(Toolkit):
         if summary_path is None:
             summary_path = _find_training_summary_from_model_run(inferred_run_dir)
         if summary_path is None:
-            explicit_summary_path = (
-                (current.training_data_summary or {}).get("training_summary_path")
-                or (current.inference_profile or {}).get("feature_columns_source")
-            )
+            explicit_summary_path = (current.training_data_summary or {}).get(
+                "training_summary_path"
+            ) or (current.inference_profile or {}).get("feature_columns_source")
             if explicit_summary_path:
                 candidate_summary_path = Path(str(explicit_summary_path)).expanduser()
                 if candidate_summary_path.exists():
@@ -1222,9 +1266,9 @@ class ModelRegistryToolkit(Toolkit):
                     **(summary_payload.get("applicability_domain") or {}),
                     **resolved_applicability_domain,
                 }
-                governance_assessment = (
-                    (summary_payload.get("validation_assessment") or {}).get("governance") or {}
-                )
+                governance_assessment = (summary_payload.get("validation_assessment") or {}).get(
+                    "governance"
+                ) or {}
                 recommended_status = governance_assessment.get("recommended_status")
                 if summary_payload.get("metrics_status") == "not_evaluated":
                     recommended_status = None
@@ -1246,7 +1290,9 @@ class ModelRegistryToolkit(Toolkit):
             endpoint_name = safe_slug(str(benchmark_dataset_name)) or "endpoint"
             dataset_name = safe_slug(str(benchmark_target_name)) or "dataset"
         else:
-            endpoint_name, dataset_name = _extract_endpoint_and_dataset(train_csv_for_name, current.model_id)
+            endpoint_name, dataset_name = _extract_endpoint_and_dataset(
+                train_csv_for_name, current.model_id
+            )
         protocol_name = (
             (current.training_data_summary or {}).get("validation_protocol")
             or (training_data_summary or {}).get("validation_protocol")
@@ -1278,10 +1324,9 @@ class ModelRegistryToolkit(Toolkit):
         )
 
         summary_curation = summary_payload.get("curation") or {}
-        fallback_curation = (
-            latest_curation_artifacts(agent)
-            or discover_curation_artifacts_near_dataset(train_csv)
-        )
+        fallback_curation = latest_curation_artifacts(
+            agent
+        ) or discover_curation_artifacts_near_dataset(train_csv)
         merged_curation = {
             **(fallback_curation or {}),
             **(summary_curation or {}),
@@ -1296,7 +1341,9 @@ class ModelRegistryToolkit(Toolkit):
             )
 
         source_artifacts = {
-            "training_summary_path": str(summary_path) if summary_path and summary_path.exists() else None,
+            "training_summary_path": (
+                str(summary_path) if summary_path and summary_path.exists() else None
+            ),
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
@@ -1306,7 +1353,9 @@ class ModelRegistryToolkit(Toolkit):
             "split_results": summary_payload.get("split_results") or [],
             "reference_store_path": resolved_applicability_domain.get("reference_store_path"),
             "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path"),
-            "applicability_domain_path": resolved_applicability_domain.get("applicability_domain_path"),
+            "applicability_domain_path": resolved_applicability_domain.get(
+                "applicability_domain_path"
+            ),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": merged_curation,
@@ -1363,7 +1412,8 @@ class ModelRegistryToolkit(Toolkit):
             not_recommended_for=not_recommended_for or current.not_recommended_for,
             known_metrics=(
                 {}
-                if known_metrics is None and summary_payload.get("metrics_status") == "not_evaluated"
+                if known_metrics is None
+                and summary_payload.get("metrics_status") == "not_evaluated"
                 else known_metrics or current.known_metrics
             ),
             training_data_summary={
@@ -1391,9 +1441,11 @@ class ModelRegistryToolkit(Toolkit):
                     or (training_data_summary or {}).get("external_evaluations")
                     or []
                 ),
-                "seed_policy": summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy"),
+                "seed_policy": summary_payload.get("seed_policy")
+                or current.training_data_summary.get("seed_policy"),
                 "seed_policy_report": seed_policy_reporting_text(
-                    summary_payload.get("seed_policy") or current.training_data_summary.get("seed_policy")
+                    summary_payload.get("seed_policy")
+                    or current.training_data_summary.get("seed_policy")
                 ),
                 "feature_preparation": (
                     summary_payload.get("feature_preparation")
@@ -1414,17 +1466,19 @@ class ModelRegistryToolkit(Toolkit):
                     or current.training_data_summary.get("replicate_policy")
                     or {}
                 ),
-                "activity_cliffs": {
-                    "enabled": bool(activity_summary_payload.get("enabled")),
-                    "mode": activity_summary_payload.get("mode"),
-                    "index_name": activity_summary_payload.get("index_name"),
-                    "flagged_count": activity_summary_payload.get("flagged_count"),
-                    "priority_counts": activity_summary_payload.get("priority_counts"),
-                    "recommended_variant": activity_summary_payload.get("recommended_variant"),
-                    "reporting_handoff": activity_summary_payload.get("reporting_handoff"),
-                }
-                if activity_summary_payload
-                else {},
+                "activity_cliffs": (
+                    {
+                        "enabled": bool(activity_summary_payload.get("enabled")),
+                        "mode": activity_summary_payload.get("mode"),
+                        "index_name": activity_summary_payload.get("index_name"),
+                        "flagged_count": activity_summary_payload.get("flagged_count"),
+                        "priority_counts": activity_summary_payload.get("priority_counts"),
+                        "recommended_variant": activity_summary_payload.get("recommended_variant"),
+                        "reporting_handoff": activity_summary_payload.get("reporting_handoff"),
+                    }
+                    if activity_summary_payload
+                    else {}
+                ),
             },
             inference_profile=hydrated_inference_profile,
             selection_hints={

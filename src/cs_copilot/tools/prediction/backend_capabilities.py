@@ -92,7 +92,10 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         prediction_input_kinds=("smiles_csv",),
         requires_feature_preparation=False,
         supported_task_types=("regression", "classification"),
-        supported_representations=("catalog_consensus_regression", "catalog_consensus_classification"),
+        supported_representations=(
+            "catalog_consensus_regression",
+            "catalog_consensus_classification",
+        ),
         supports_applicability_domain=False,
         supports_uncertainty="component_disagreement_std",
         supports_component_orchestration=True,
@@ -117,10 +120,7 @@ def get_backend_capabilities(
 
 def describe_backend_capabilities() -> Dict[str, Dict[str, object]]:
     """Return all known backend capabilities as serializable dictionaries."""
-    return {
-        name: capabilities.as_dict()
-        for name, capabilities in BACKEND_CAPABILITIES.items()
-    }
+    return {name: capabilities.as_dict() for name, capabilities in BACKEND_CAPABILITIES.items()}
 
 
 def enrich_backend_environment(

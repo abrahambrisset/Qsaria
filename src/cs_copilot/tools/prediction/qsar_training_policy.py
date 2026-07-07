@@ -85,10 +85,16 @@ def _unique_replay_seeds(count: int, base_seed: int) -> List[int]:
 
 def _split_templates(protocol: str) -> List[Dict[str, Any]]:
     if protocol == "fast_local":
-        return [{"backend_split_type": "random", "primary": True, "split_sizes": FAST_LOCAL_SPLIT_SIZES}]
+        return [
+            {"backend_split_type": "random", "primary": True, "split_sizes": FAST_LOCAL_SPLIT_SIZES}
+        ]
     if protocol == "standard_qsar":
         return [
-            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "backend_split_type": "random",
+                "primary": True,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
             {
                 "label": "scaffold",
                 "backend_split_type": "scaffold_balanced",
@@ -98,9 +104,21 @@ def _split_templates(protocol: str) -> List[Dict[str, Any]]:
         ]
     if protocol == "robust_qsar":
         return [
-            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
-            {"backend_split_type": "random", "primary": False, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
-            {"backend_split_type": "random", "primary": False, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "backend_split_type": "random",
+                "primary": True,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
+            {
+                "backend_split_type": "random",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
+            {
+                "backend_split_type": "random",
+                "primary": False,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
             {
                 "label": "scaffold",
                 "backend_split_type": "scaffold_balanced",
@@ -110,7 +128,11 @@ def _split_templates(protocol: str) -> List[Dict[str, Any]]:
         ]
     if protocol == "challenging_qsar":
         return [
-            {"backend_split_type": "random", "primary": True, "split_sizes": DEFAULT_QSAR_SPLIT_SIZES},
+            {
+                "backend_split_type": "random",
+                "primary": True,
+                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+            },
             {
                 "label": "scaffold",
                 "backend_split_type": "scaffold_balanced",
@@ -146,7 +168,9 @@ def resolve_seed_policy(
     if seed_policy and seed_policy.get("split_runs"):
         replay = dict(seed_policy)
         replay.setdefault("mode", "user_provided_or_replay")
-        replay.setdefault("shared_across_candidates", replay.get("mode") == "generated_per_benchmark_campaign")
+        replay.setdefault(
+            "shared_across_candidates", replay.get("mode") == "generated_per_benchmark_campaign"
+        )
         replay.setdefault(
             "reproducibility_note",
             "Seeds were supplied from an existing policy and preserved for replay.",
@@ -205,9 +229,11 @@ def resolve_seed_policy(
         "reproducibility_note": (
             "Seeds were generated once for this benchmark campaign and shared across all candidates."
             if resolved_mode == "generated_per_benchmark_campaign"
-            else "Seeds were generated for this run and persisted for replay."
-            if resolved_mode == "generated_per_run"
-            else "Seeds were supplied by the user or replayed from persisted artifacts."
+            else (
+                "Seeds were generated for this run and persisted for replay."
+                if resolved_mode == "generated_per_run"
+                else "Seeds were supplied by the user or replayed from persisted artifacts."
+            )
         ),
     }
     if resolved_mode == "generated_per_benchmark_campaign":
@@ -383,9 +409,7 @@ def describe_compute_environment() -> Dict[str, Any]:
         "memory_source": (
             "cgroup_limit"
             if memory_limit_bytes
-            else "physical_host"
-            if physical_memory_bytes
-            else None
+            else "physical_host" if physical_memory_bytes else None
         ),
         "gpu_available": gpu_available,
         "gpu_count": gpu_count,
@@ -573,7 +597,7 @@ def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, A
     families: Dict[str, List[Dict[str, Any]]] = {}
     for item in split_results:
         family = item.get("strategy_family") or item.get("strategy")
-        metrics = ((item.get("metrics") or {}).get("test") or {})
+        metrics = (item.get("metrics") or {}).get("test") or {}
         if not family or not metrics:
             continue
         families.setdefault(family, []).append(item)
@@ -606,7 +630,7 @@ def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, A
             "test_n_values": [],
         }
         for item in items:
-            metrics = ((item.get("metrics") or {}).get("test") or {})
+            metrics = (item.get("metrics") or {}).get("test") or {}
             entry["runs"].append(
                 {"label": item.get("strategy_label"), "seed": item.get("seed"), "metrics": metrics}
             )
@@ -662,7 +686,9 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         return assessment
 
     classification_mode = random_family.get("balanced_accuracy_mean") is not None
-    random_primary = random_family.get("balanced_accuracy_mean" if classification_mode else "r2_mean")
+    random_primary = random_family.get(
+        "balanced_accuracy_mean" if classification_mode else "r2_mean"
+    )
     random_secondary = random_family.get("roc_auc_mean" if classification_mode else "rmse_mean")
     if random_primary is None:
         return assessment
@@ -672,16 +698,22 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
     for strategy_name, family_result in aggregated.items():
         if strategy_name == "random":
             continue
-        split_primary = family_result.get("balanced_accuracy_mean" if classification_mode else "r2_mean")
+        split_primary = family_result.get(
+            "balanced_accuracy_mean" if classification_mode else "r2_mean"
+        )
         split_secondary = family_result.get("roc_auc_mean" if classification_mode else "rmse_mean")
         if split_primary is None and split_secondary is None:
             continue
 
         deltas: Dict[str, Any] = {}
         if split_primary is not None:
-            deltas["balanced_accuracy" if classification_mode else "r2"] = split_primary - random_primary
+            deltas["balanced_accuracy" if classification_mode else "r2"] = (
+                split_primary - random_primary
+            )
         if split_secondary is not None and random_secondary is not None:
-            deltas["roc_auc" if classification_mode else "rmse"] = split_secondary - random_secondary
+            deltas["roc_auc" if classification_mode else "rmse"] = (
+                split_secondary - random_secondary
+            )
         assessment["delta_vs_random"][strategy_name] = deltas
 
         if split_primary is not None:
@@ -707,9 +739,13 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
             delta_r2 = deltas.get("r2")
             delta_rmse = deltas.get("rmse")
             if delta_r2 is not None and delta_r2 < QSAR_ROBUSTNESS_DELTA_R2_MIN:
-                warning_reasons.append(f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random")
+                warning_reasons.append(
+                    f"{strategy_name} split lowers R² by {abs(delta_r2):.3f} vs random"
+                )
             if delta_rmse is not None and delta_rmse > QSAR_ROBUSTNESS_DELTA_RMSE_MAX:
-                warning_reasons.append(f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random")
+                warning_reasons.append(
+                    f"{strategy_name} split increases RMSE by {delta_rmse:.3f} vs random"
+                )
 
     if warning_reasons:
         assessment["robustness_warning"] = (
@@ -719,7 +755,9 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         )
 
     governance = assessment["governance"]
-    hardest_result = aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+    hardest_result = (
+        aggregated.get(assessment["hardest_split"]) if assessment["hardest_split"] else None
+    )
     if classification_mode:
         hardest_metrics = {
             "balanced_accuracy": (hardest_result or {}).get("balanced_accuracy_mean"),
@@ -780,7 +818,9 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
     governance["gating_summary"] = summary
 
     random_stability_pass = True
-    random_primary_std = random_family.get("balanced_accuracy_std" if classification_mode else "r2_std")
+    random_primary_std = random_family.get(
+        "balanced_accuracy_std" if classification_mode else "r2_std"
+    )
     random_std_threshold = (
         QSAR_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX
         if classification_mode
@@ -794,7 +834,11 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         random_stability_pass = False
     governance["passes_random_stability_gate"] = random_stability_pass
     if random_family.get("num_runs", 0) > 1:
-        summary.append("Random Stability Gate: PASS" if random_stability_pass else "Random Stability Gate: FAIL")
+        summary.append(
+            "Random Stability Gate: PASS"
+            if random_stability_pass
+            else "Random Stability Gate: FAIL"
+        )
 
     protocol_name = None
     for item in split_results:
@@ -853,7 +897,9 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
     elif not hardest_pass or not robustness_pass:
         governance["recommended_status"] = "workflow_demo"
     elif protocol_name == "robust_qsar":
-        governance["recommended_status"] = "robust_validated" if random_stability_pass else "workflow_demo"
+        governance["recommended_status"] = (
+            "robust_validated" if random_stability_pass else "workflow_demo"
+        )
     elif protocol_name in {"standard_qsar", "challenging_qsar"}:
         governance["recommended_status"] = "validated"
     else:

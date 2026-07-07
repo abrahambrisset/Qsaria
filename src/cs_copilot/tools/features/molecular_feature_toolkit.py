@@ -6,6 +6,7 @@ Toolkit for explicit molecular feature generation from curated QSAR datasets.
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -21,6 +22,8 @@ from cs_copilot.tools.chemistry.standardize import (
     resolve_smiles_column_name,
     standardize_smiles_column,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_output_csv(output_csv: Optional[str], input_csv: str, suffix: str) -> str:
@@ -69,10 +72,7 @@ _BASIC_RDKIT_DESCRIPTOR_FUNCS = {
     "FractionCSP3": Descriptors.FractionCSP3,
 }
 
-_ALL_RDKIT_DESCRIPTOR_FUNCS = {
-    name: func
-    for name, func in Descriptors._descList
-}
+_ALL_RDKIT_DESCRIPTOR_FUNCS = dict(Descriptors._descList)
 
 
 def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
@@ -81,9 +81,7 @@ def _resolve_rdkit_descriptor_funcs(descriptor_set: str) -> Dict[str, Any]:
         return _BASIC_RDKIT_DESCRIPTOR_FUNCS
     if normalized == "all":
         return _ALL_RDKIT_DESCRIPTOR_FUNCS
-    raise ValueError(
-        "Unsupported descriptor_set. Supported values are 'basic' and 'all'."
-    )
+    raise ValueError("Unsupported descriptor_set. Supported values are 'basic' and 'all'.")
 
 
 def _coerce_n_jobs(n_jobs: Optional[int]) -> int:
@@ -91,6 +89,19 @@ def _coerce_n_jobs(n_jobs: Optional[int]) -> int:
         return max(1, int(n_jobs or 1))
     except (TypeError, ValueError):
         return 1
+
+
+def _map_rows(worker, worker_args: list[tuple], n_jobs: int) -> list:
+    if n_jobs == 1:
+        return [worker(args) for args in worker_args]
+    try:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            return list(executor.map(worker, worker_args))
+    except (OSError, PermissionError) as exc:
+        logger.warning(
+            "Process pool unavailable; falling back to serial feature generation: %s", exc
+        )
+        return [worker(args) for args in worker_args]
 
 
 def _morgan_row_worker(args: tuple[str, int, int, str]) -> List[int]:
@@ -163,9 +174,7 @@ def _normalize_input_columns_to_keep(
     }
     for column in input_columns_to_keep:
         replacement = (
-            "smiles"
-            if str(column) in smiles_aliases or str(column).lower() == "smiles"
-            else column
+            "smiles" if str(column) in smiles_aliases or str(column).lower() == "smiles" else column
         )
         if replacement not in normalized:
             normalized.append(replacement)
@@ -302,11 +311,7 @@ class MolecularFeatureToolkit(Toolkit):
             (smiles, radius, n_bits, normalized_fingerprint_kind)
             for smiles in working["smiles"].tolist()
         ]
-        if resolved_n_jobs == 1:
-            fingerprint_rows = [_morgan_row_worker(args) for args in worker_args]
-        else:
-            with ProcessPoolExecutor(max_workers=resolved_n_jobs) as executor:
-                fingerprint_rows = list(executor.map(_morgan_row_worker, worker_args))
+        fingerprint_rows = _map_rows(_morgan_row_worker, worker_args, resolved_n_jobs)
 
         feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
 
@@ -317,7 +322,9 @@ class MolecularFeatureToolkit(Toolkit):
             required_columns=["smiles"],
         )
 
-        output_df = pd.concat([base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1)
+        output_df = pd.concat(
+            [base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1
+        )
 
         resolved_output_csv = _resolve_output_csv(output_csv, input_csv, "_morgan_fp.csv")
         with S3.open(resolved_output_csv, "w") as fh:
@@ -388,11 +395,7 @@ class MolecularFeatureToolkit(Toolkit):
         descriptor_columns = [f"desc_{name}" for name in descriptor_names]
 
         worker_args = [(smiles, descriptor_set) for smiles in working["smiles"].tolist()]
-        if resolved_n_jobs == 1:
-            descriptor_rows = [_rdkit_descriptor_row_worker(args) for args in worker_args]
-        else:
-            with ProcessPoolExecutor(max_workers=resolved_n_jobs) as executor:
-                descriptor_rows = list(executor.map(_rdkit_descriptor_row_worker, worker_args))
+        descriptor_rows = _map_rows(_rdkit_descriptor_row_worker, worker_args, resolved_n_jobs)
         descriptor_df = pd.DataFrame(descriptor_rows, columns=descriptor_columns)
         base_df = _build_base_output_dataframe(
             working,
@@ -458,7 +461,9 @@ class MolecularFeatureToolkit(Toolkit):
         _validate_unique_keys(base_df, join_columns, df_name="base_csv")
 
         if base_columns_to_keep is not None:
-            missing_columns = [column for column in base_columns_to_keep if column not in base_df.columns]
+            missing_columns = [
+                column for column in base_columns_to_keep if column not in base_df.columns
+            ]
             if missing_columns:
                 raise ValueError(f"base_csv is missing requested base columns: {missing_columns}")
             assembled_df = base_df[base_columns_to_keep].copy()
@@ -484,14 +489,22 @@ class MolecularFeatureToolkit(Toolkit):
             _validate_join_columns(feature_df, join_columns, df_name=source_name)
             _validate_unique_keys(feature_df, join_columns, df_name=source_name)
 
-            non_join_columns = [column for column in feature_df.columns if column not in join_columns]
+            non_join_columns = [
+                column for column in feature_df.columns if column not in join_columns
+            ]
             if not non_join_columns:
-                raise ValueError(f"{source_name} does not contain any feature columns beyond join keys {join_columns}.")
+                raise ValueError(
+                    f"{source_name} does not contain any feature columns beyond join keys {join_columns}."
+                )
 
-            colliding_columns = [column for column in non_join_columns if column in assembled_df.columns]
+            colliding_columns = [
+                column for column in non_join_columns if column in assembled_df.columns
+            ]
             if colliding_columns:
                 if drop_duplicate_feature_columns:
-                    non_join_columns = [column for column in non_join_columns if column not in colliding_columns]
+                    non_join_columns = [
+                        column for column in non_join_columns if column not in colliding_columns
+                    ]
                 else:
                     raise ValueError(
                         f"{source_name} has feature columns that already exist in the assembled dataset: {colliding_columns}"

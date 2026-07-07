@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 import pandas as pd
 
@@ -37,25 +37,37 @@ def _file_fingerprint(path: Path) -> Dict[str, Any]:
     return payload
 
 
-def _validate_split_payload(split_payload: Sequence[Mapping[str, Sequence[int]]], row_count: int) -> Dict[str, int]:
+def _validate_split_payload(
+    split_payload: Sequence[Mapping[str, Sequence[int]]], row_count: int
+) -> Dict[str, int]:
     if not split_payload or not isinstance(split_payload[0], Mapping):
-        raise InvalidPredictionInputError("Chemprop split payload must contain one train/test or train/val/test mapping.")
+        raise InvalidPredictionInputError(
+            "Chemprop split payload must contain one train/test or train/val/test mapping."
+        )
     split_map = split_payload[0]
     counts: Dict[str, int] = {}
     seen: set[int] = set()
     if "test" not in split_map and "val" not in split_map and "validation" not in split_map:
         split_names = ("train",)
     else:
-        split_names = ("train", "val", "test") if ("val" in split_map or "validation" in split_map) else ("train", "test")
+        split_names = (
+            ("train", "val", "test")
+            if ("val" in split_map or "validation" in split_map)
+            else ("train", "test")
+        )
     for split_name in split_names:
         raw_indices = split_map.get(split_name)
         if split_name == "val" and raw_indices is None:
             raw_indices = split_map.get("validation")
         if raw_indices is None:
-            raise InvalidPredictionInputError(f"Chemprop split payload is missing `{split_name}` indices.")
+            raise InvalidPredictionInputError(
+                f"Chemprop split payload is missing `{split_name}` indices."
+            )
         indices = [int(index) for index in raw_indices]
         if not indices:
-            raise InvalidPredictionInputError(f"Chemprop split payload has an empty `{split_name}` split.")
+            raise InvalidPredictionInputError(
+                f"Chemprop split payload has an empty `{split_name}` split."
+            )
         invalid = [index for index in indices if index < 0 or index >= row_count]
         if invalid:
             raise InvalidPredictionInputError(
@@ -118,7 +130,9 @@ def materialize_chemprop_inputs(
             clean[column] = numeric
     elif is_classification_task(task.task_type):
         if is_multiclass_task(task.task_type):
-            raise InvalidPredictionInputError("Chemprop multiclass classification is not enabled in this QSARIA version.")
+            raise InvalidPredictionInputError(
+                "Chemprop multiclass classification is not enabled in this QSARIA version."
+            )
         for column in target_columns:
             labels = resolve_class_labels(clean[column])
             if len(labels) != 2:
@@ -176,9 +190,7 @@ def materialize_chemprop_inputs(
         "split_label": split_label,
         "seed": seed,
         "split_counts": split_counts,
-        "split_fractions": {
-            key: value / float(len(clean)) for key, value in split_counts.items()
-        },
+        "split_fractions": {key: value / float(len(clean)) for key, value in split_counts.items()},
         "index_alignment": (
             "splits_file indices refer to row positions in chemprop_training_input.csv; "
             "the adapter does not drop rows."

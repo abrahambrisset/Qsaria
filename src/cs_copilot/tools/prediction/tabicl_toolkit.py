@@ -81,7 +81,9 @@ def _clean_split_source_target_for_task(
     if target_column not in df.columns:
         return df
     if is_classification_task(task_type):
-        return df.loc[df[target_column].map(normalize_classification_label).notna()].reset_index(drop=True)
+        return df.loc[df[target_column].map(normalize_classification_label).notna()].reset_index(
+            drop=True
+        )
     cleaned = df.copy()
     cleaned[target_column] = pd.to_numeric(cleaned[target_column], errors="coerce")
     return cleaned.dropna(subset=[target_column]).reset_index(drop=True)
@@ -167,7 +169,9 @@ class TabICLToolkit(Toolkit):
         compute_env = self.describe_compute_environment()
         requested_n_jobs = (extra_args or {}).get("n_jobs")
 
-        def _limit(profile: str, merged: Dict[str, Any], allow_heavy_compute: bool) -> Dict[str, Any]:
+        def _limit(
+            profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
+        ) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
                     merged["batch_size"] = max(int(merged.get("batch_size", 64)), 64)
@@ -316,9 +320,13 @@ class TabICLToolkit(Toolkit):
             "suffix": resolved.suffix,
         }
 
-    def validate_tabicl_checkpoint_path(self, checkpoint_path: Optional[str] = None) -> Dict[str, Any]:
+    def validate_tabicl_checkpoint_path(
+        self, checkpoint_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Validate the persisted TabICL base checkpoint path."""
-        path = Path(checkpoint_path or (DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT))
+        path = Path(
+            checkpoint_path or (DEFAULT_TABICL_CHECKPOINT_DIR / DEFAULT_TABICL_REGRESSOR_CHECKPOINT)
+        )
         resolved = path.expanduser().resolve()
         if resolved.suffix != ".ckpt":
             raise ValueError(f"TabICL checkpoint must end with '.ckpt'. Received: {resolved}")
@@ -434,7 +442,9 @@ class TabICLToolkit(Toolkit):
         requested_extra_args.setdefault("split_sizes", split_sizes)
         requested_extra_args.setdefault("random_state", random_state)
         requested_extra_args.setdefault("split_type", split_type)
-        requested_extra_args.setdefault("validation_protocol", requested_extra_args.get("validation_protocol"))
+        requested_extra_args.setdefault(
+            "validation_protocol", requested_extra_args.get("validation_protocol")
+        )
 
         training_policy = self._apply_training_profile(requested_extra_args)
         protocol_policy = self._resolve_validation_protocol(
@@ -466,7 +476,9 @@ class TabICLToolkit(Toolkit):
                 df=split_source_df,
                 n_splits=int(cv_strategy.get("n_folds") or cv_strategy.get("n_splits") or 5),
                 n_repeats=int(cv_strategy.get("n_repeats") or 1),
-                random_state=int(cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0),
+                random_state=int(
+                    cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
+                ),
             )
 
         marker_path = active_marker_path or (root_output_path / ".training_in_progress")
@@ -493,7 +505,9 @@ class TabICLToolkit(Toolkit):
             for run_index, split_run in enumerate(protocol_policy["split_runs"], start=1):
                 label = split_run["label"]
                 run_output_dir = (
-                    root_output_path / f"{safe_slug(label)}_split" if multi_run_protocol else root_output_path
+                    root_output_path / f"{safe_slug(label)}_split"
+                    if multi_run_protocol
+                    else root_output_path
                 )
                 run_output_dir.mkdir(parents=True, exist_ok=True)
                 started_at = project_now()
@@ -515,7 +529,11 @@ class TabICLToolkit(Toolkit):
                             feature_columns=feature_columns,
                         )
                 run_args = {
-                    **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key != "seed_policy"
+                    },
                     "feature_columns": feature_columns,
                     "split_sizes": split_sizes_for_run,
                     "split_type": split_run["backend_split_type"],
@@ -530,7 +548,9 @@ class TabICLToolkit(Toolkit):
                 if split_run["backend_split_type"] == "final_refit":
                     run_args["final_refit"] = True
                 run_args.setdefault("heartbeat_seconds", 120.0)
-                run_args.setdefault("disk_offload_dir", str((run_output_dir / "disk_offload").resolve()))
+                run_args.setdefault(
+                    "disk_offload_dir", str((run_output_dir / "disk_offload").resolve())
+                )
 
                 active_run_record["current_split_label"] = label
                 active_run_record["current_split_index"] = run_index
@@ -578,8 +598,12 @@ class TabICLToolkit(Toolkit):
                 single_result["split_payload"] = split_payload or single_result.get("split_payload")
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["output_dir"] = str(run_output_dir)
-                single_result["started_at"] = single_result.get("started_at") or started_at.isoformat()
-                single_result["completed_at"] = single_result.get("completed_at") or completed_at.isoformat()
+                single_result["started_at"] = (
+                    single_result.get("started_at") or started_at.isoformat()
+                )
+                single_result["completed_at"] = (
+                    single_result.get("completed_at") or completed_at.isoformat()
+                )
                 single_result["duration_seconds"] = single_result.get("duration_seconds") or round(
                     (completed_at - started_at).total_seconds(), 3
                 )
@@ -590,7 +614,9 @@ class TabICLToolkit(Toolkit):
         finally:
             active_run_record["status"] = "completed" if primary_run is not None else "failed"
             active_run_record["completed_at"] = project_now().isoformat()
-            active_run_record["worker_status"] = "completed" if primary_run is not None else "failed"
+            active_run_record["worker_status"] = (
+                "completed" if primary_run is not None else "failed"
+            )
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
             write_active_training_marker(marker_path, active_run_record)
@@ -612,7 +638,11 @@ class TabICLToolkit(Toolkit):
             final_started_at = project_now()
             final_split_payload = build_full_train_split_payload(df=split_source_df)
             final_args = {
-                **{key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"},
+                **{
+                    key: value
+                    for key, value in training_policy["extra_args"].items()
+                    if key != "seed_policy"
+                },
                 "feature_columns": feature_columns,
                 "split_type": "final_refit",
                 "split_payload": final_split_payload,
@@ -635,8 +665,12 @@ class TabICLToolkit(Toolkit):
             final_refit_run["split_payload"] = final_split_payload
             final_refit_run["validation_protocol"] = protocol_policy["protocol"]
             final_refit_run["output_dir"] = str(final_output_dir)
-            final_refit_run["started_at"] = final_refit_run.get("started_at") or final_started_at.isoformat()
-            final_refit_run["completed_at"] = final_refit_run.get("completed_at") or final_completed_at.isoformat()
+            final_refit_run["started_at"] = (
+                final_refit_run.get("started_at") or final_started_at.isoformat()
+            )
+            final_refit_run["completed_at"] = (
+                final_refit_run.get("completed_at") or final_completed_at.isoformat()
+            )
             final_refit_run["duration_seconds"] = final_refit_run.get("duration_seconds") or round(
                 (final_completed_at - final_started_at).total_seconds(),
                 3,
@@ -670,13 +704,19 @@ class TabICLToolkit(Toolkit):
         total_completed_at = project_now()
         result = dict(final_primary_run)
         result["output_dir"] = resolved_output_dir
-        result["model_path"] = root_artifacts.get("best_model_path") or final_primary_run.get("model_path")
-        result["summary_path"] = str(root_output_path / "cs_copilot_training_summary.json")
-        result["config_path"] = root_artifacts.get("config_path") or final_primary_run.get("config_path")
-        result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get("splits_path")
-        result["test_predictions_path"] = root_artifacts.get("test_predictions_path") or final_primary_run.get(
-            "test_predictions_path"
+        result["model_path"] = root_artifacts.get("best_model_path") or final_primary_run.get(
+            "model_path"
         )
+        result["summary_path"] = str(root_output_path / "cs_copilot_training_summary.json")
+        result["config_path"] = root_artifacts.get("config_path") or final_primary_run.get(
+            "config_path"
+        )
+        result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get(
+            "splits_path"
+        )
+        result["test_predictions_path"] = root_artifacts.get(
+            "test_predictions_path"
+        ) or final_primary_run.get("test_predictions_path")
         result["validation_protocol"] = protocol_policy["protocol"]
         if protocol_policy.get("validation_strategy_type") == "full_train":
             result["metrics"] = {}
@@ -691,7 +731,9 @@ class TabICLToolkit(Toolkit):
         result["final_refit"] = protocol_policy.get("final_refit")
         result["seed_policy"] = protocol_policy["seed_policy"]
         result["seed_policy_report"] = seed_policy_reporting_text(protocol_policy["seed_policy"])
-        result["reproducibility"] = seed_policy_reproducibility_metadata(protocol_policy["seed_policy"])
+        result["reproducibility"] = seed_policy_reproducibility_metadata(
+            protocol_policy["seed_policy"]
+        )
         result["split_results"] = split_results
         result["cross_validation"] = cross_validation_artifacts
         result["cv_artifacts"] = cross_validation_artifacts
@@ -706,7 +748,9 @@ class TabICLToolkit(Toolkit):
         result["training_profile"] = training_policy["training_profile"]
         result["profile_reason"] = training_policy["profile_reason"]
         result["effective_train_args"] = {
-            key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+            key: value
+            for key, value in training_policy["extra_args"].items()
+            if key != "seed_policy"
         }
         result["training_resources"] = self._summarize_training_resources(
             compute_env=training_policy["compute_environment"],
@@ -724,7 +768,9 @@ class TabICLToolkit(Toolkit):
         result["trained_time"] = trained_at.strftime("%H:%M:%S")
         result["train_csv"] = train_csv
         result["target_columns"] = list(target_columns)
-        result["feature_columns"] = list(feature_columns or (primary_run.get("feature_columns") or []))
+        result["feature_columns"] = list(
+            feature_columns or (primary_run.get("feature_columns") or [])
+        )
         result["canonical_summary_path"] = result["summary_path"]
 
         summary_path = Path(result["summary_path"])
@@ -809,7 +855,9 @@ class TabICLToolkit(Toolkit):
                     try:
                         process.wait(timeout=5.0)
                     except subprocess.TimeoutExpired:
-                        logger.warning("TabICL worker did not terminate cleanly; killing pid=%s.", process.pid)
+                        logger.warning(
+                            "TabICL worker did not terminate cleanly; killing pid=%s.", process.pid
+                        )
                         process.kill()
                         process.wait(timeout=5.0)
                     break
@@ -829,7 +877,9 @@ class TabICLToolkit(Toolkit):
                 raise RuntimeError(f"{message}\n{traceback_text}")
             raise RuntimeError(message)
 
-        log_excerpt = worker_log_path.read_text(encoding="utf-8") if worker_log_path.exists() else ""
+        log_excerpt = (
+            worker_log_path.read_text(encoding="utf-8") if worker_log_path.exists() else ""
+        )
         if return_code == -9:
             exit_summary = "return_code=-9 (SIGKILL; often caused by memory pressure/OOM)"
         elif return_code is None:
@@ -867,10 +917,13 @@ class TabICLToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Train a TabICLv2 model with shared QSAR validation protocols."""
-        normalized_target_columns = self._normalize_json_list_argument(
-            target_columns,
-            argument_name="target_columns",
-        ) or []
+        normalized_target_columns = (
+            self._normalize_json_list_argument(
+                target_columns,
+                argument_name="target_columns",
+            )
+            or []
+        )
         normalized_feature_columns = self._normalize_json_list_argument(
             feature_columns,
             argument_name="feature_columns",
@@ -886,7 +939,9 @@ class TabICLToolkit(Toolkit):
 
         requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
         requested_validation_strategy = (
-            validation_strategy if validation_strategy is not None else requested_extra_args.pop("validation_strategy", None)
+            validation_strategy
+            if validation_strategy is not None
+            else requested_extra_args.pop("validation_strategy", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -964,7 +1019,9 @@ class TabICLToolkit(Toolkit):
             "random_state": protocol_policy["seed_policy"]["model_seed"],
             "extra_args": {
                 **{
-                    key: value for key, value in training_policy["extra_args"].items() if key != "seed_policy"
+                    key: value
+                    for key, value in training_policy["extra_args"].items()
+                    if key != "seed_policy"
                 },
                 "validation_protocol": protocol_policy["protocol"],
                 "seed_policy": protocol_policy["seed_policy"],

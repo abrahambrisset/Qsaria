@@ -209,7 +209,9 @@ def test_shared_bundle_artifacts_writes_relative_file_names(tmp_path):
 def test_training_orchestration_normalizes_agent_list_arguments():
     assert normalize_json_list_argument("pEC50", argument_name="target_columns") == ["pEC50"]
     assert normalize_json_list_argument('["smiles"]', argument_name="smiles_columns") == ["smiles"]
-    assert normalize_json_list_argument("0.8,0.1,0.1", argument_name="split_sizes", coerce_numbers=True) == [
+    assert normalize_json_list_argument(
+        "0.8,0.1,0.1", argument_name="split_sizes", coerce_numbers=True
+    ) == [
         0.8,
         0.1,
         0.1,
@@ -256,7 +258,9 @@ def test_chemprop_adapter_encodes_binary_classification_labels(tmp_path):
     result = materialize_chemprop_inputs(
         source_csv=str(source),
         output_dir=tmp_path / "chemprop_inputs",
-        task=PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["active"]),
+        task=PredictionTaskSpec(
+            task_type="classification", smiles_columns=["smiles"], target_columns=["active"]
+        ),
         split_payload=[{"train": [0, 1], "test": [2, 3]}],
         split_label="random",
         seed=123,
@@ -267,20 +271,24 @@ def test_chemprop_adapter_encodes_binary_classification_labels(tmp_path):
     assert clean.columns.tolist() == ["smiles", "active"]
     assert sorted(clean["active"].unique().tolist()) == [0, 1]
     assert manifest["classification_targets"]["active"]["class_count"] == 2
-    assert json.loads(Path(result["chemprop_splits_file"]).read_text()) == [{"train": [0, 1], "test": [2, 3]}]
+    assert json.loads(Path(result["chemprop_splits_file"]).read_text()) == [
+        {"train": [0, 1], "test": [2, 3]}
+    ]
 
 
 def test_chemprop_adapter_rejects_multiclass_classification(tmp_path):
     source = tmp_path / "training.csv"
-    pd.DataFrame(
-        {"smiles": ["CCO", "CCC", "CCN"], "label": ["low", "medium", "high"]}
-    ).to_csv(source, index=False)
+    pd.DataFrame({"smiles": ["CCO", "CCC", "CCN"], "label": ["low", "medium", "high"]}).to_csv(
+        source, index=False
+    )
 
     with pytest.raises(InvalidPredictionInputError, match="exactly two classes|multiclass"):
         materialize_chemprop_inputs(
             source_csv=str(source),
             output_dir=tmp_path / "chemprop_inputs",
-            task=PredictionTaskSpec(task_type="classification", smiles_columns=["smiles"], target_columns=["label"]),
+            task=PredictionTaskSpec(
+                task_type="classification", smiles_columns=["smiles"], target_columns=["label"]
+            ),
             split_payload=[{"train": [0, 1], "test": [2]}],
             split_label="random",
             seed=123,
@@ -381,7 +389,11 @@ def _fake_lightgbm_module():
 
     def early_stopping(*, stopping_rounds, verbose):
         calls["early_stopping"] += 1
-        return {"callback": "early_stopping", "stopping_rounds": stopping_rounds, "verbose": verbose}
+        return {
+            "callback": "early_stopping",
+            "stopping_rounds": stopping_rounds,
+            "verbose": verbose,
+        }
 
     def log_evaluation(*, period):
         return {"callback": "log_evaluation", "period": period}
@@ -602,9 +614,7 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
     ).to_csv(train_csv, index=False)
     output_dir = tmp_path / "chemprop_run"
     output_dir.mkdir()
-    (output_dir / "splits.json").write_text(
-        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
-    )
+    (output_dir / "splits.json").write_text(json.dumps([{"train": [0], "val": [], "test": [1, 2]}]))
     for replicate_index, values in enumerate(([5.5, 4.5], [6.5, 3.5])):
         replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
         replicate_dir.mkdir(parents=True)
@@ -647,9 +657,7 @@ def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
     ).to_csv(train_csv, index=False)
     output_dir = tmp_path / "chemprop_run"
     output_dir.mkdir()
-    (output_dir / "splits.json").write_text(
-        json.dumps([{"train": [0], "val": [], "test": [1, 2]}])
-    )
+    (output_dir / "splits.json").write_text(json.dumps([{"train": [0], "val": [], "test": [1, 2]}]))
     replicate_payloads = [
         (0, ["CCC", "CCN"], [5.5, 4.5]),
         (1, ["CCN", "CCC"], [6.5, 3.5]),
@@ -766,7 +774,11 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
             for feature_csv in feature_csvs:
                 feature_df = pd.read_csv(feature_csv)
                 feature_df = feature_df[
-                    [column for column in feature_df.columns if column in join_on or column not in assembled.columns]
+                    [
+                        column
+                        for column in feature_df.columns
+                        if column in join_on or column not in assembled.columns
+                    ]
                 ]
                 assembled = assembled.merge(
                     feature_df,
@@ -1243,11 +1255,7 @@ def test_model_registry_persistence_exposes_classification_metadata(monkeypatch,
 def test_training_plots_build_classification_artifacts(tmp_path):
     predictions_path = tmp_path / "predictions.csv"
     predictions_path.write_text(
-        "Y_true,prediction,positive_probability\n"
-        "0,0,0.1\n"
-        "1,1,0.9\n"
-        "1,0,0.4\n"
-        "0,0,0.2\n"
+        "Y_true,prediction,positive_probability\n" "0,0,0.1\n" "1,1,0.9\n" "1,0,0.4\n" "0,0,0.2\n"
     )
     splits_path = tmp_path / "splits.json"
     splits_path.write_text(json.dumps([{"train": [0, 1], "test": [0, 1, 2, 3]}]))
@@ -1261,7 +1269,10 @@ def test_training_plots_build_classification_artifacts(tmp_path):
         train_csv=str(tmp_path / "missing.csv"),
         split_results=[primary_run],
         primary_run=primary_run,
-        root_artifacts={"splits_path": str(splits_path), "test_predictions_path": str(predictions_path)},
+        root_artifacts={
+            "splits_path": str(splits_path),
+            "test_predictions_path": str(predictions_path),
+        },
         root_output_dir=tmp_path,
         target_column="Y",
         task_type="classification",

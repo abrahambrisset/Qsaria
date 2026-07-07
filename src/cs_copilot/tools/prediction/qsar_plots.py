@@ -19,9 +19,13 @@ import pandas as pd
 from sklearn.calibration import CalibrationDisplay
 from sklearn.metrics import ConfusionMatrixDisplay, PrecisionRecallDisplay, RocCurveDisplay
 
-
 PLOT_DPI = 300
-CLASSIFICATION_TASK_TYPES = {"classification", "binary_classification", "multiclass", "multiclass_classification"}
+CLASSIFICATION_TASK_TYPES = {
+    "classification",
+    "binary_classification",
+    "multiclass",
+    "multiclass_classification",
+}
 
 
 def _is_classification_task(task_type: str) -> bool:
@@ -29,7 +33,18 @@ def _is_classification_task(task_type: str) -> bool:
 
 
 def _positive_label(labels: List[Any]) -> Any:
-    positive_tokens = {"1", "true", "t", "yes", "y", "active", "positive", "pos", "mutagenic", "toxic"}
+    positive_tokens = {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+        "active",
+        "positive",
+        "pos",
+        "mutagenic",
+        "toxic",
+    }
     for label in labels:
         if str(label).strip().lower() in positive_tokens:
             return label
@@ -81,11 +96,17 @@ def _load_split_truth_and_predictions(
     return frame
 
 
-def _pick_column(frame: pd.DataFrame, candidates: List[str], *, exclude: Optional[str] = None) -> Optional[str]:
-    return next((column for column in candidates if column in frame.columns and column != exclude), None)
+def _pick_column(
+    frame: pd.DataFrame, candidates: List[str], *, exclude: Optional[str] = None
+) -> Optional[str]:
+    return next(
+        (column for column in candidates if column in frame.columns and column != exclude), None
+    )
 
 
-def _load_classification_predictions(predictions_path: Path, target_column: str) -> Optional[pd.DataFrame]:
+def _load_classification_predictions(
+    predictions_path: Path, target_column: str
+) -> Optional[pd.DataFrame]:
     if not predictions_path.exists():
         return None
     predictions = pd.read_csv(predictions_path)
@@ -97,13 +118,17 @@ def _load_classification_predictions(predictions_path: Path, target_column: str)
     )
     if not true_col or not pred_col:
         return None
-    frame = pd.DataFrame({"y_true": predictions[true_col], "y_pred": predictions[pred_col]}).dropna()
+    frame = pd.DataFrame(
+        {"y_true": predictions[true_col], "y_pred": predictions[pred_col]}
+    ).dropna()
     score_col = _pick_column(
         predictions,
         ["positive_probability", f"{target_column}_positive_probability", "probability_1", "score"],
     )
     if score_col:
-        frame["positive_score"] = pd.to_numeric(predictions.loc[frame.index, score_col], errors="coerce")
+        frame["positive_score"] = pd.to_numeric(
+            predictions.loc[frame.index, score_col], errors="coerce"
+        )
     return frame.reset_index(drop=True) if not frame.empty else None
 
 
@@ -112,8 +137,20 @@ def _plot_target_distribution(values: pd.Series, output_path: Path) -> None:
     ax.hist(values, bins=30, color="#224f75", edgecolor="white", alpha=0.9)
     mean_value = float(values.mean())
     median_value = float(values.median())
-    ax.axvline(mean_value, color="#258d9a", linestyle="--", linewidth=1.5, label=f"Moyenne = {mean_value:.2f}")
-    ax.axvline(median_value, color="#d98b36", linestyle="-.", linewidth=1.5, label=f"Mediane = {median_value:.2f}")
+    ax.axvline(
+        mean_value,
+        color="#258d9a",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Moyenne = {mean_value:.2f}",
+    )
+    ax.axvline(
+        median_value,
+        color="#d98b36",
+        linestyle="-.",
+        linewidth=1.5,
+        label=f"Mediane = {median_value:.2f}",
+    )
     ax.set_title("Distribution de la cible apres curation")
     ax.set_xlabel("Valeur cible Y (unitless_log_scale)")
     ax.set_ylabel("Nombre de composes")
@@ -127,7 +164,12 @@ def _plot_target_distribution(values: pd.Series, output_path: Path) -> None:
         ha="right",
         va="top",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "facecolor": "white",
+            "alpha": 0.85,
+            "edgecolor": "#cccccc",
+        },
     )
     ax.text(
         0.98,
@@ -237,8 +279,14 @@ def _plot_parity(
         linewidth=1.2,
         label="Droite ideale y = x",
     )
-    within_1x = float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
-    within_2x = float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0) if band_value > 0 else 0.0
+    within_1x = (
+        float((frame["residual"].abs() <= band_value).mean() * 100.0) if band_value > 0 else 0.0
+    )
+    within_2x = (
+        float((frame["residual"].abs() <= (2.0 * band_value)).mean() * 100.0)
+        if band_value > 0
+        else 0.0
+    )
     ax.set_title(f"Observed vs Predicted ({label}, bandes {band_label})")
     ax.set_xlabel("Valeur observee Y")
     ax.set_ylabel("Valeur predite Y")
@@ -250,12 +298,23 @@ def _plot_parity(
         ax.text(
             0.02,
             0.98,
-            "\n".join(metrics_text + [f"{within_1x:.1f}% dans 1x {band_label}", f"{within_2x:.1f}% dans 2x {band_label}"]),
+            "\n".join(
+                metrics_text
+                + [
+                    f"{within_1x:.1f}% dans 1x {band_label}",
+                    f"{within_2x:.1f}% dans 2x {band_label}",
+                ]
+            ),
             transform=ax.transAxes,
             va="top",
             ha="left",
             fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "facecolor": "white",
+                "alpha": 0.85,
+                "edgecolor": "#cccccc",
+            },
         )
     ax.grid(alpha=0.2, linestyle="--")
     ax.legend(loc="lower right", fontsize=8, frameon=True)
@@ -294,7 +353,12 @@ def _plot_residuals(frame: pd.DataFrame, label: str, output_path: Path) -> None:
         ha="right",
         va="top",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="#cccccc"),
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "facecolor": "white",
+            "alpha": 0.85,
+            "edgecolor": "#cccccc",
+        },
     )
     ax.text(
         0.98,
@@ -358,7 +422,7 @@ def _plot_seed_performance(split_results: List[Dict[str, Any]], output_path: Pat
         ("rmse", "RMSE", "#258d9a"),
         ("mae", "MAE", "#d98b36"),
     ]
-    for ax, (column, label, color) in zip(axes, metric_specs):
+    for ax, (column, label, color) in zip(axes, metric_specs, strict=False):
         ax.bar(df["seed"], df[column], color=color, alpha=0.85)
         ax.set_title(label)
         ax.set_xlabel("Seed")
@@ -433,7 +497,9 @@ def _build_classification_plots(
             continue
         score = frame["positive_score"]
         if frame["y_true"].nunique(dropna=True) == 2:
-            labels = sorted(frame["y_true"].dropna().unique().tolist(), key=lambda value: str(value))
+            labels = sorted(
+                frame["y_true"].dropna().unique().tolist(), key=lambda value: str(value)
+            )
             positive_label = _positive_label(labels)
             y_binary = (frame["y_true"].astype(str) == str(positive_label)).astype(int)
 
@@ -508,9 +574,11 @@ def build_qsar_training_plots(
 
     for item in split_results:
         strategy_label = _normalize_strategy_label(item)
-        if strategy_label not in {"random", "scaffold", "cluster_kmeans"} and not strategy_label.startswith(
-            "random_seed_"
-        ):
+        if strategy_label not in {
+            "random",
+            "scaffold",
+            "cluster_kmeans",
+        } and not strategy_label.startswith("random_seed_"):
             continue
         predictions_path = Path(item.get("test_predictions_path") or "")
         splits_path = Path(item.get("splits_path") or "")

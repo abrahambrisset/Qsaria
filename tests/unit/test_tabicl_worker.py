@@ -8,7 +8,10 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.backend import PredictionExecutionError
-from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit, _clean_split_source_target_for_task
+from cs_copilot.tools.prediction.tabicl_toolkit import (
+    TabICLToolkit,
+    _clean_split_source_target_for_task,
+)
 
 
 def _fake_agent() -> SimpleNamespace:
@@ -52,7 +55,9 @@ def test_run_training_worker_reads_result_json(tmp_path, monkeypatch):
 
     class FakeProcess:
         def __init__(self, *args, **kwargs):
-            marker_path.write_text(json.dumps({"progress_message": "TabICL training progress: run 1/2 - random"}))
+            marker_path.write_text(
+                json.dumps({"progress_message": "TabICL training progress: run 1/2 - random"})
+            )
             result_path.write_text(json.dumps(expected))
 
         def poll(self):
@@ -190,8 +195,18 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
                 "mode": "user_provided_or_replay",
                 "model_seed": 42,
                 "split_runs": [
-                    {"label": "random_seed_42", "seed": 42, "backend_split_type": "random", "primary": True},
-                    {"label": "scaffold", "seed": 43, "backend_split_type": "scaffold_balanced", "primary": False},
+                    {
+                        "label": "random_seed_42",
+                        "seed": 42,
+                        "backend_split_type": "random",
+                        "primary": True,
+                    },
+                    {
+                        "label": "scaffold",
+                        "seed": 43,
+                        "backend_split_type": "scaffold_balanced",
+                        "primary": False,
+                    },
                 ],
             },
             "split_runs": [

@@ -44,18 +44,27 @@ def _sample_tabular_df() -> pd.DataFrame:
 
 
 def test_protocol_defaults_keep_compute_profile_separate_from_validation_scope():
-    assert resolve_validation_protocol(
-        requested_protocol=None,
-        training_profile="local_light",
-    )["protocol"] == "fast_local"
-    assert resolve_validation_protocol(
-        requested_protocol=None,
-        training_profile="local_standard",
-    )["protocol"] == "standard_qsar"
-    assert resolve_validation_protocol(
-        requested_protocol=None,
-        training_profile="heavy_validation",
-    )["protocol"] == "standard_qsar"
+    assert (
+        resolve_validation_protocol(
+            requested_protocol=None,
+            training_profile="local_light",
+        )["protocol"]
+        == "fast_local"
+    )
+    assert (
+        resolve_validation_protocol(
+            requested_protocol=None,
+            training_profile="local_standard",
+        )["protocol"]
+        == "standard_qsar"
+    )
+    assert (
+        resolve_validation_protocol(
+            requested_protocol=None,
+            training_profile="heavy_validation",
+        )["protocol"]
+        == "standard_qsar"
+    )
 
 
 def test_seed_policy_helpers_tolerate_loose_agent_values():
@@ -155,22 +164,31 @@ def test_training_profile_resolution_keeps_shared_names():
 def test_backend_n_jobs_follow_visible_compute_without_exceeding_it():
     compute_env = {"cpu_count": 8}
 
-    assert resolve_backend_n_jobs(
-        compute_env,
-        backend_name="lightgbm",
-        profile="local_standard",
-    ) == 8
-    assert resolve_backend_n_jobs(
-        compute_env,
-        backend_name="tabicl",
-        profile="local_standard",
-    ) == 4
-    assert resolve_backend_n_jobs(
-        compute_env,
-        backend_name="lightgbm",
-        profile="heavy_validation",
-        requested_n_jobs=99,
-    ) == 8
+    assert (
+        resolve_backend_n_jobs(
+            compute_env,
+            backend_name="lightgbm",
+            profile="local_standard",
+        )
+        == 8
+    )
+    assert (
+        resolve_backend_n_jobs(
+            compute_env,
+            backend_name="tabicl",
+            profile="local_standard",
+        )
+        == 4
+    )
+    assert (
+        resolve_backend_n_jobs(
+            compute_env,
+            backend_name="lightgbm",
+            profile="heavy_validation",
+            requested_n_jobs=99,
+        )
+        == 8
+    )
 
 
 def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
@@ -317,9 +335,7 @@ def test_create_pandas_dataframe_rejects_json_for_read_csv(tmp_path):
 def test_create_pandas_dataframe_loads_json_artifact_with_read_json(tmp_path):
     toolkit = PointerPandasTools()
     json_path = tmp_path / "benchmark_summary.json"
-    json_path.write_text(
-        '{"benchmark_protocol": "robust_qsar", "metrics": {"scaffold_r2": 0.6}}'
-    )
+    json_path.write_text('{"benchmark_protocol": "robust_qsar", "metrics": {"scaffold_r2": 0.6}}')
 
     result = toolkit.create_pandas_dataframe(
         dataframe_name="benchmark_summary",

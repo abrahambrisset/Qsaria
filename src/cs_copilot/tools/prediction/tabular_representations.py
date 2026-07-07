@@ -108,7 +108,9 @@ def get_tabular_representation(name: str) -> TabularRepresentationSpec:
         ) from exc
 
 
-def default_tabular_representation_for_protocol(protocol: str, *, training_profile: Optional[str] = None) -> str:
+def default_tabular_representation_for_protocol(
+    protocol: str, *, training_profile: Optional[str] = None
+) -> str:
     """Return the single representation used when a protocol is not comparative."""
     normalized = str(protocol or "").strip().lower()
     if normalized == "fast_local":
@@ -119,7 +121,9 @@ def default_tabular_representation_for_protocol(protocol: str, *, training_profi
     return "morgan_only"
 
 
-def automatic_tabular_representations(*, include_legacy: bool = False) -> List[TabularRepresentationSpec]:
+def automatic_tabular_representations(
+    *, include_legacy: bool = False
+) -> List[TabularRepresentationSpec]:
     """Return representation specs used by modern comparative tabular campaigns."""
     names: Iterable[str]
     if include_legacy:
