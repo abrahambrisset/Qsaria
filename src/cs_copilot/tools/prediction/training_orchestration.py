@@ -20,7 +20,16 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 import pandas as pd
 from scipy.stats import kendalltau, spearmanr
 
-from .ad_builder import build_applicability_domain_from_training_data
+from .ad_builder import build_applicability_domain_from_training_data as build_legacy_similarity_ad
+from .applicability_domain import (
+    BOUNDING_BOX_METHOD,
+    QSAR_ROW_ID_COLUMN,
+    append_ad_scores_to_csv,
+    build_bounding_box_plots,
+    fit_bounding_box_domain,
+    metrics_by_ad_status,
+    score_bounding_box_domain,
+)
 from .backend import PredictionTaskSpec
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile
@@ -256,12 +265,15 @@ def materialize_primary_protocol_artifacts(
     file_map = {
         primary_run.get("model_path")
         or primary_run.get("best_model_path"): root_model_dir / model_filename,
+        primary_run.get("validation_predictions_path"): root_model_dir
+        / "validation_predictions.csv",
         primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
         primary_run.get("config_path"): root_output_dir / "config.toml",
         primary_run.get("splits_path"): root_output_dir / "splits.json",
     }
     copied: Dict[str, Optional[str]] = {
         "best_model_path": None,
+        "validation_predictions_path": None,
         "test_predictions_path": None,
         "config_path": None,
         "splits_path": None,
@@ -278,6 +290,8 @@ def materialize_primary_protocol_artifacts(
             shutil.copy2(source_path, target_path)
         if target_path == root_model_dir / model_filename:
             copied["best_model_path"] = str(target_path)
+        elif target_path.name == "validation_predictions.csv":
+            copied["validation_predictions_path"] = str(target_path)
         elif target_path.name == "test_predictions.csv":
             copied["test_predictions_path"] = str(target_path)
         elif target_path.name == "config.toml":
@@ -451,8 +465,13 @@ def build_applicability_domain_for_training(
     primary_output_dir: Path,
     task: PredictionTaskSpec,
     model_id_hint: Optional[str] = None,
+    feature_columns: Optional[Sequence[str]] = None,
+    feature_frame: Optional[pd.DataFrame] = None,
+    feature_space: Optional[str] = None,
+    feature_metadata: Optional[Mapping[str, Any]] = None,
+    prediction_artifact_paths: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build the standard hybrid Morgan applicability domain from the train split."""
+    """Build the modern bounding-box AD from the train split and keep legacy AD."""
     splits_path = Path(str(primary_run.get("splits_path") or primary_output_dir / "splits.json"))
     if not splits_path.exists():
         return {}
@@ -462,16 +481,146 @@ def build_applicability_domain_for_training(
         return {}
 
     dataset = strip_unnamed_columns(pd.read_csv(Path(train_csv).expanduser()))
-    train_indices = split_payload[0].get("train") or []
-    smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
-    ad_output_dir = primary_output_dir / "applicability_domain"
-    return build_applicability_domain_from_training_data(
-        dataset=dataset,
-        train_indices=train_indices,
-        smiles_column=smiles_column,
-        output_dir=str(ad_output_dir),
-        model_id=model_id_hint or primary_output_dir.name,
+    modern_feature_frame = (
+        strip_unnamed_columns(feature_frame.copy()) if feature_frame is not None else dataset
     )
+    train_indices = split_payload[0].get("train") or []
+    if not train_indices:
+        return {}
+    smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+    target_column = task.target_columns[0] if task.target_columns else None
+    ad_output_dir = primary_output_dir / "applicability_domain"
+    ad_output_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_feature_columns = [
+        str(column)
+        for column in (
+            feature_columns
+            or primary_run.get("feature_columns")
+            or primary_run.get("features")
+            or []
+        )
+        if str(column) in modern_feature_frame.columns
+    ]
+    if not resolved_feature_columns:
+        excluded = {
+            smiles_column,
+            "smiles",
+            QSAR_ROW_ID_COLUMN,
+            *list(task.target_columns or []),
+        }
+        resolved_feature_columns = [
+            column
+            for column in modern_feature_frame.columns
+            if column not in excluded and pd.api.types.is_numeric_dtype(modern_feature_frame[column])
+        ]
+
+    resolved_feature_space = (
+        feature_space
+        or primary_run.get("representation_name")
+        or primary_run.get("feature_space")
+        or "tabular_features"
+    )
+
+    if str(resolved_feature_space) == "chemprop_embedding" and not feature_columns:
+        resolved_feature_columns = []
+
+    train_frame = modern_feature_frame.iloc[list(train_indices)].copy()
+    ad_summary = fit_bounding_box_domain(
+        feature_frame=train_frame,
+        feature_columns=resolved_feature_columns,
+        output_dir=ad_output_dir,
+        model_id=model_id_hint or primary_output_dir.name,
+        feature_space=str(resolved_feature_space),
+        representation_name=str(resolved_feature_space),
+        feature_metadata=feature_metadata,
+    )
+
+    if ad_summary.get("available"):
+        split_score_summaries: Dict[str, Any] = {}
+        score_paths: Dict[str, str] = {}
+        split_item = split_payload[0]
+        split_aliases = {
+            "train": ["train"],
+            "validation": ["validation", "val", "valid"],
+            "test": ["test"],
+        }
+        for label, keys in split_aliases.items():
+            indices: List[int] = []
+            for key in keys:
+                if split_item.get(key):
+                    indices = list(split_item.get(key) or [])
+                    break
+            if not indices:
+                continue
+            scored = score_bounding_box_domain(
+                feature_frame=modern_feature_frame.iloc[indices].copy(),
+                applicability_domain=ad_summary,
+                output_dir=ad_output_dir / BOUNDING_BOX_METHOD,
+                score_label=label,
+            )
+            split_score_summaries[label] = scored.get("summary") or {}
+            if scored.get("scores_path"):
+                score_paths[f"scores_{label}_path"] = str(scored["scores_path"])
+            if scored.get("scores") is not None:
+                predictions_path = primary_run.get(f"{label}_predictions_path")
+                if label == "test":
+                    predictions_path = predictions_path or primary_run.get("test_predictions_path")
+                ad_metrics = attach_ad_scores_and_metrics_to_predictions(
+                    predictions_path=str(predictions_path) if predictions_path else None,
+                    scores=scored["scores"],
+                    task=task,
+                    target_column=target_column,
+                    class_labels=primary_run.get("class_labels"),
+                )
+                if ad_metrics:
+                    split_score_summaries[label].update(ad_metrics)
+                elif label in {"validation", "test"}:
+                    split_score_summaries[label]["metrics_unavailable_reason"] = (
+                        f"No {label}_predictions_path artifact was available."
+                    )
+                canonical_path = (prediction_artifact_paths or {}).get(label)
+                if canonical_path and str(canonical_path) != str(predictions_path or ""):
+                    try:
+                        append_ad_scores_to_csv(str(canonical_path), scored["scores"])
+                        split_score_summaries[label][
+                            "ad_enriched_canonical_predictions_path"
+                        ] = str(canonical_path)
+                    except Exception as exc:
+                        split_score_summaries[label][
+                            "ad_canonical_sync_warning"
+                        ] = str(exc)
+            if label in {"validation", "test"} and scored.get("scores") is not None:
+                plot_dir = ad_output_dir / "plots" / label
+                plot_artifacts = build_bounding_box_plots(scored["scores"], plot_dir)
+                if plot_artifacts:
+                    split_score_summaries[label]["plots"] = plot_artifacts
+        ad_summary["split_score_summaries"] = split_score_summaries
+        ad_summary.update(score_paths)
+
+    legacy_summary: Dict[str, Any] = {}
+    if smiles_column in dataset.columns or "smiles" in dataset.columns:
+        try:
+            legacy_summary = build_legacy_similarity_ad(
+                dataset=dataset,
+                train_indices=train_indices,
+                smiles_column=smiles_column if smiles_column in dataset.columns else "smiles",
+                output_dir=str(ad_output_dir / "legacy_similarity_ad"),
+                model_id=model_id_hint or primary_output_dir.name,
+            )
+            if legacy_summary:
+                legacy_summary["legacy"] = True
+                legacy_summary["method"] = "legacy_similarity_ad"
+        except Exception as exc:
+            legacy_summary = {
+                "available": False,
+                "legacy": True,
+                "method": "legacy_similarity_ad",
+                "error": str(exc),
+            }
+    if legacy_summary:
+        ad_summary["legacy_similarity_ad"] = legacy_summary
+    return ad_summary
 
 
 def build_training_plots_if_possible(
@@ -537,6 +686,80 @@ def _prediction_columns(
         None,
     )
     return true_col, pred_col
+
+
+def _positive_score_column(frame: pd.DataFrame) -> Optional[str]:
+    for column in ("positive_probability", "probability"):
+        if column in frame.columns:
+            return column
+    return next(
+        (
+            column
+            for column in frame.columns
+            if str(column).endswith("_positive_probability")
+            or str(column).endswith("_probability")
+        ),
+        None,
+    )
+
+
+def attach_ad_scores_and_metrics_to_predictions(
+    *,
+    predictions_path: Optional[str],
+    scores: pd.DataFrame,
+    task: PredictionTaskSpec,
+    target_column: Optional[str],
+    class_labels: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """Append AD scores to predictions and compute all/in/out metrics."""
+    if not predictions_path or not target_column:
+        return {}
+    path = Path(str(predictions_path)).expanduser()
+    if not path.exists():
+        return {}
+    try:
+        append_ad_scores_to_csv(path, scores)
+        frame = pd.read_csv(path)
+        true_col, pred_col = _prediction_columns(frame, target_column)
+        if not true_col or not pred_col:
+            return {}
+        metric_frame = frame.copy()
+        metric_frame["__ad_true"] = metric_frame[true_col]
+        metric_frame["__ad_pred"] = metric_frame[pred_col]
+        score_col = _positive_score_column(metric_frame) if is_classification_task(task.task_type) else None
+
+        if is_classification_task(task.task_type):
+            def metric_func(
+                y_true: pd.Series,
+                y_pred: pd.Series,
+                *,
+                positive_scores: Optional[pd.Series] = None,
+                target_column: Optional[str] = None,
+            ) -> Dict[str, Any]:
+                return compute_classification_metrics(
+                    y_true,
+                    y_pred,
+                    class_labels=class_labels,
+                    positive_scores=positive_scores,
+                    target_column=target_column,
+                )
+
+        else:
+            metric_func = compute_regression_metrics
+
+        metrics = metrics_by_ad_status(
+            frame=metric_frame,
+            metric_func=metric_func,
+            target_column="__ad_true",
+            prediction_column="__ad_pred",
+            score_column=score_col,
+        )
+        for section in ("metrics_all", "metrics_in_domain", "metrics_out_of_domain"):
+            if isinstance(metrics.get(section), dict) and metrics[section].get("target_column"):
+                metrics[section]["target_column"] = target_column
+        return metrics
+    except Exception as exc:
+        return {"metrics_unavailable_reason": str(exc)}
 
 
 def build_cross_validation_artifacts(
@@ -674,6 +897,7 @@ def collect_training_bundle_files(
         "best_model_path",
         "config_path",
         "splits_path",
+        "validation_predictions_path",
         "test_predictions_path",
     ):
         if result.get(key):
@@ -683,14 +907,34 @@ def collect_training_bundle_files(
             "summary_path",
             "model_path",
             "best_model_path",
+            "validation_predictions_path",
             "test_predictions_path",
             "splits_path",
         ):
             if split_result.get(key):
                 files.append(Path(str(split_result[key])).expanduser())
-    for key in ("reference_store_path", "reference_manifest_path", "applicability_domain_path"):
+    for key in (
+        "manifest_path",
+        "bounds_path",
+        "scores_train_path",
+        "scores_validation_path",
+        "scores_test_path",
+        "reference_store_path",
+        "reference_manifest_path",
+        "applicability_domain_path",
+    ):
         if ad_summary.get(key):
             files.append(Path(str(ad_summary[key])).expanduser())
+    for nested in ((ad_summary.get("methods") or {}).values()):
+        if isinstance(nested, Mapping):
+            for key in ("manifest_path", "bounds_path"):
+                if nested.get(key):
+                    files.append(Path(str(nested[key])).expanduser())
+    legacy_ad = ad_summary.get("legacy_similarity_ad") or {}
+    if isinstance(legacy_ad, Mapping):
+        for key in ("reference_store_path", "reference_manifest_path", "applicability_domain_path"):
+            if legacy_ad.get(key):
+                files.append(Path(str(legacy_ad[key])).expanduser())
     for artifact_path in plot_artifacts.values():
         files.append(Path(str(artifact_path)).expanduser())
     for artifact_path in ((curation_artifacts or {}).get("artifacts") or {}).values():
@@ -709,7 +953,13 @@ def collect_training_bundle_files(
             files.append(Path(str(variant["filtered_training_csv"])).expanduser())
         training_result = variant.get("training_result") or {}
         for split_result in training_result.get("split_results") or []:
-            for key in ("model_path", "best_model_path", "test_predictions_path", "splits_path"):
+            for key in (
+                "model_path",
+                "best_model_path",
+                "validation_predictions_path",
+                "test_predictions_path",
+                "splits_path",
+            ):
                 if split_result.get(key):
                     files.append(Path(str(split_result[key])).expanduser())
     for artifact_path in (cliffs.get("plot_artifacts") or {}).values():

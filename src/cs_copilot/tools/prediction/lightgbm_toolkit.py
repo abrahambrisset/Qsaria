@@ -197,6 +197,7 @@ class LightGBMToolkit(Toolkit):
         model_dir = output_dir / "model_0"
         return {
             "best_model_path": model_dir / "best.pkl",
+            "validation_predictions_path": model_dir / "validation_predictions.csv",
             "test_predictions_path": model_dir / "test_predictions.csv",
             "config_path": output_dir / "config.toml",
             "splits_path": output_dir / "splits.json",
@@ -221,12 +222,18 @@ class LightGBMToolkit(Toolkit):
         primary_run: Dict[str, Any],
         primary_output_dir: Path,
         task: PredictionTaskSpec,
+        feature_columns: Optional[List[str]] = None,
+        feature_space: Optional[str] = None,
+        prediction_artifact_paths: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return build_applicability_domain_for_training(
             train_csv=train_csv,
             primary_run=primary_run,
             primary_output_dir=primary_output_dir,
             task=task,
+            feature_columns=feature_columns,
+            feature_space=feature_space,
+            prediction_artifact_paths=prediction_artifact_paths,
         )
 
     def _summarize_training_resources(
@@ -678,6 +685,7 @@ class LightGBMToolkit(Toolkit):
         output_dir: str,
         target_columns: List[str] | str,
         feature_columns: Optional[List[str] | str] = None,
+        representation_name: Optional[str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
         validation_protocol: Optional[str] = None,
         validation_strategy: Optional[Dict[str, Any]] = None,
@@ -1131,6 +1139,16 @@ class LightGBMToolkit(Toolkit):
             primary_run=final_primary_run,
             primary_output_dir=root_output_path,
             task=task,
+            feature_columns=normalized_feature_columns
+            or final_primary_run.get("feature_columns")
+            or [],
+            feature_space=representation_name
+            or final_primary_run.get("representation_name")
+            or final_primary_run.get("feature_space"),
+            prediction_artifact_paths={
+                "validation": root_artifacts.get("validation_predictions_path"),
+                "test": root_artifacts.get("test_predictions_path"),
+            },
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
@@ -1159,6 +1177,9 @@ class LightGBMToolkit(Toolkit):
         result["splits_path"] = root_artifacts.get("splits_path") or final_primary_run.get(
             "splits_path"
         )
+        result["validation_predictions_path"] = root_artifacts.get(
+            "validation_predictions_path"
+        ) or final_primary_run.get("validation_predictions_path")
         result["test_predictions_path"] = root_artifacts.get(
             "test_predictions_path"
         ) or final_primary_run.get("test_predictions_path")

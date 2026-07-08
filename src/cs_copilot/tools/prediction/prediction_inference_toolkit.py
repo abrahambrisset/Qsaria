@@ -17,6 +17,11 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
+from .applicability_domain import (
+    BOUNDING_BOX_METHOD,
+    append_ad_scores_to_csv,
+    score_record_applicability_domain,
+)
 from .external_evaluation import evaluate_model_on_external_dataset
 from .model_registry_toolkit import ModelRegistryToolkit
 from .session_state import get_prediction_state
@@ -132,6 +137,25 @@ class PredictionInferenceToolkit(Toolkit):
             preds_path=str(output_path),
             return_uncertainty=return_uncertainty,
         )
+        record_ad = record.applicability_domain or {}
+        has_modern_ad = bool(
+            record_ad.get("primary_method") == BOUNDING_BOX_METHOD
+            or record_ad.get("method") == BOUNDING_BOX_METHOD
+            or BOUNDING_BOX_METHOD in (record_ad.get("methods") or {})
+            or record_ad.get("manifest_path")
+        )
+        if has_modern_ad:
+            common_ad_result = score_record_applicability_domain(
+                record=record,
+                input_csv=str(local_input),
+                output_dir=output_path.parent / f"{Path(output_path).stem}_applicability_domain",
+                score_label="inference",
+                backend=backend,
+            )
+            if common_ad_result.get("scores") is not None:
+                ad_columns = append_ad_scores_to_csv(output_path, common_ad_result["scores"])
+                result["applicability_domain"] = common_ad_result.get("summary") or {}
+                result["applicability_domain_columns"] = ad_columns
 
         predictions_only_df = pd.read_csv(output_path)
         prediction_columns = [

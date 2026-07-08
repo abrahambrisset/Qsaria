@@ -49,6 +49,7 @@ from .training_orchestration import normalize_task_type
 logger = logging.getLogger(__name__)
 
 EPOCH_PROGRESS_RE = re.compile(r"\bepoch\b[^0-9]*(\d+)(?:\s*/\s*(\d+))?", re.IGNORECASE)
+DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX = 1
 
 
 class ChempropBackend(PredictionBackend):
@@ -244,7 +245,24 @@ class ChempropBackend(PredictionBackend):
         self,
         model_record: PredictionModelRecord,
     ) -> Optional[Dict[str, Any]]:
-        applicability_domain = model_record.applicability_domain or {}
+        applicability_domain = dict(model_record.applicability_domain or {})
+        legacy_domain = applicability_domain.get("legacy_similarity_ad")
+        if legacy_domain:
+            applicability_domain = {
+                **dict(legacy_domain or {}),
+                **{
+                    key: value
+                    for key, value in applicability_domain.items()
+                    if key
+                    in {
+                        "applicability_domain_path",
+                        "index_path",
+                        "reference_store_path",
+                        "reference_manifest_path",
+                    }
+                    and value
+                },
+            }
         index_path = self._resolve_artifact_path(
             model_record,
             applicability_domain.get("index_path")
@@ -785,6 +803,70 @@ class ChempropBackend(PredictionBackend):
             "stderr": completed.stderr.strip(),
             "applicability_domain": ad_summary,
             "applicability_domain_columns": list(ad_columns.keys()),
+        }
+
+    def fingerprint_from_csv(
+        self,
+        *,
+        input_csv: str,
+        model_path: str,
+        output_csv: str,
+        smiles_columns: Optional[list[str]] = None,
+        ffn_block_index: int = DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX,
+    ) -> Dict[str, Any]:
+        """Extract official Chemprop learned representations for AD scoring."""
+        input_path = Path(input_csv).expanduser()
+        if not input_path.exists():
+            raise InvalidPredictionInputError(f"Input CSV does not exist: {input_csv}")
+
+        resolved_model_path = self.validate_model_path(model_path)
+        output_path = Path(output_csv).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        args = [
+            "chemprop",
+            "fingerprint",
+            "--test-path",
+            str(input_path),
+            "--model-paths",
+            str(resolved_model_path),
+            "--ffn-block-index",
+            str(int(ffn_block_index)),
+            "--output",
+            str(output_path),
+            "--num-workers",
+            "0",
+            "--accelerator",
+            "cpu",
+        ]
+        if smiles_columns:
+            args.extend(["--smiles-columns", *[str(column) for column in smiles_columns]])
+
+        completed = self._run_cli(args, progress_label="chemprop_fingerprint")
+        cli_output_path = output_path.with_stem(f"{output_path.stem}_0")
+        source_path = cli_output_path if cli_output_path.exists() else output_path
+        if not source_path.exists():
+            raise PredictionExecutionError(
+                "Chemprop fingerprint completed but no fingerprint CSV was produced. "
+                f"Expected {cli_output_path} or {output_path}."
+            )
+
+        frame = pd.read_csv(source_path)
+        rename = {
+            column: f"chemprop_{column}" for column in frame.columns if str(column).startswith("fp_")
+        }
+        frame = frame.rename(columns=rename)
+        feature_columns = [str(column) for column in frame.columns]
+        frame.to_csv(output_path, index=False)
+        return {
+            "fingerprints_path": str(output_path),
+            "raw_fingerprints_path": str(source_path),
+            "feature_columns": feature_columns,
+            "row_count": int(len(frame)),
+            "feature_count": int(len(feature_columns)),
+            "ffn_block_index": int(ffn_block_index),
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
         }
 
     def train_model(

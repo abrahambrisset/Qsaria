@@ -24,9 +24,9 @@ from cs_copilot.tools.activity_cliffs import (
     split_activity_cliff_args,
 )
 
-from .backend import PredictionTaskSpec
+from .backend import PredictionModelRecord, PredictionTaskSpec
 from .chemprop_adapter import materialize_chemprop_inputs
-from .chemprop_backend import ChempropBackend
+from .chemprop_backend import DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX, ChempropBackend
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
@@ -158,8 +158,15 @@ class ChempropToolkit(Toolkit):
                 output_path / "replicate_0" / "model_0" / "test_predictions.csv",
             ]
         )
+        validation_predictions_path = _find_first_existing_path(
+            [
+                output_path / "model_0" / "validation_predictions.csv",
+                output_path / "replicate_0" / "model_0" / "validation_predictions.csv",
+            ]
+        )
         return {
             "best_model_path": best_model_path,
+            "validation_predictions_path": validation_predictions_path,
             "test_predictions_path": test_predictions_path,
             "config_path": output_path / "config.toml",
             "splits_path": output_path / "splits.json",
@@ -437,6 +444,201 @@ class ChempropToolkit(Toolkit):
             "target_prediction_column": f"{target_column}_prediction",
         }
 
+    def _write_validation_predictions(
+        self,
+        *,
+        train_csv: str,
+        output_dir: Path,
+        task: PredictionTaskSpec,
+        splits_file: Optional[str],
+        model_path: Optional[str],
+    ) -> Dict[str, Any]:
+        target_columns = list(task.target_columns or [])
+        target_column = target_columns[0] if target_columns else None
+        if not target_column or not model_path:
+            return {}
+
+        output_path = output_dir.expanduser().resolve()
+        splits_path = (
+            Path(str(splits_file)).expanduser() if splits_file else output_path / "splits.json"
+        )
+        model_artifact = Path(str(model_path)).expanduser()
+        if not splits_path.exists() or not model_artifact.exists():
+            return {}
+
+        split_payload = json.loads(splits_path.read_text())
+        split_map = split_payload[0] if split_payload else {}
+        validation_indices = split_map.get("val") or split_map.get("validation") or []
+        if not validation_indices:
+            return {}
+
+        dataset = _strip_unnamed_columns(
+            pd.read_csv(Path(_agent_local_path(train_csv)).expanduser())
+        )
+        actual = dataset.iloc[[int(index) for index in validation_indices]].reset_index(drop=True)
+        missing_targets = [column for column in target_columns if column not in actual.columns]
+        if missing_targets:
+            return {}
+
+        smiles_column = task.smiles_columns[0] if task.smiles_columns else "smiles"
+        model_dir = output_path / "model_0"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        validation_input_path = model_dir / "validation_input.csv"
+        raw_predictions_path = model_dir / "validation_predictions_raw.csv"
+        validation_predictions_path = model_dir / "validation_predictions.csv"
+        actual.drop(columns=target_columns, errors="ignore").to_csv(
+            validation_input_path, index=False
+        )
+
+        record = PredictionModelRecord(
+            model_id=f"{output_path.name}_validation",
+            backend_name=self.backend.backend_name,
+            model_path=str(model_artifact),
+            task=task,
+        )
+        self.backend.predict_from_csv(
+            input_csv=str(validation_input_path),
+            model_record=record,
+            preds_path=str(raw_predictions_path),
+            return_uncertainty=False,
+        )
+        predictions = _strip_unnamed_columns(pd.read_csv(raw_predictions_path))
+        if len(predictions) != len(actual):
+            return {}
+
+        def prediction_column(target: str) -> Optional[str]:
+            candidates = [target, f"{target}_prediction"]
+            if len(target_columns) == 1:
+                candidates.append("prediction")
+            return next((column for column in candidates if column in predictions.columns), None)
+
+        is_classification = is_classification_task(task.task_type)
+        manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
+        classification_targets: Dict[str, Any] = {}
+        if is_classification and manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                classification_targets = manifest.get("classification_targets") or {}
+            except Exception:
+                classification_targets = {}
+
+        smiles_values = (
+            actual[smiles_column].reset_index(drop=True)
+            if smiles_column in actual.columns
+            else pd.Series([None] * len(actual))
+        )
+        primary_prediction_column = prediction_column(target_column)
+        if not primary_prediction_column:
+            return {}
+
+        if is_classification:
+            class_labels = list(
+                (classification_targets.get(target_column) or {}).get("class_labels") or [0, 1]
+            )
+            positive_probability = pd.to_numeric(
+                predictions[primary_prediction_column], errors="coerce"
+            ).clip(lower=0.0, upper=1.0)
+            predicted_codes = (positive_probability >= 0.5).astype(int)
+            true_codes = pd.to_numeric(actual[target_column], errors="coerce")
+            y_true = decode_classification_labels(
+                true_codes.fillna(-1).astype(int).tolist(), class_labels
+            )
+            y_pred = decode_classification_labels(predicted_codes.tolist(), class_labels)
+            normalized = pd.DataFrame(
+                {
+                    "source_row_index": validation_indices,
+                    "smiles": smiles_values,
+                    f"{target_column}_true": y_true,
+                    f"{target_column}_prediction": y_pred,
+                    "prediction": y_pred,
+                    target_column: y_pred,
+                    "positive_probability": positive_probability,
+                    "prediction_class_code": predicted_codes,
+                    "true_class_code": true_codes,
+                    "replicate_count": 1,
+                    "detected_replicate_count": 1,
+                }
+            )
+            metric_values = compute_classification_metrics(
+                pd.Series(y_true),
+                pd.Series(y_pred),
+                class_labels=class_labels,
+                positive_scores=positive_probability,
+                target_column=target_column,
+            )
+        else:
+            y_true = pd.to_numeric(actual[target_column], errors="coerce")
+            y_pred = pd.to_numeric(predictions[primary_prediction_column], errors="coerce")
+            normalized = pd.DataFrame(
+                {
+                    "source_row_index": validation_indices,
+                    "smiles": smiles_values,
+                    f"{target_column}_true": y_true,
+                    f"{target_column}_prediction": y_pred,
+                    "prediction": y_pred,
+                    target_column: y_pred,
+                    "residual": y_true - y_pred,
+                    "absolute_error": (y_true - y_pred).abs(),
+                    "replicate_count": 1,
+                    "detected_replicate_count": 1,
+                }
+            )
+            metric_values = compute_regression_metrics(
+                y_true,
+                y_pred,
+                target_column=target_column,
+            )
+
+        target_metrics: Dict[str, Any] = {target_column: metric_values}
+        for extra_target in target_columns[1:]:
+            extra_prediction_column = prediction_column(extra_target)
+            if not extra_prediction_column:
+                continue
+            if is_classification:
+                extra_labels = list(
+                    (classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1]
+                )
+                extra_probability = pd.to_numeric(
+                    predictions[extra_prediction_column], errors="coerce"
+                ).clip(lower=0.0, upper=1.0)
+                extra_codes = (extra_probability >= 0.5).astype(int)
+                extra_true_codes = pd.to_numeric(actual[extra_target], errors="coerce")
+                extra_true = decode_classification_labels(
+                    extra_true_codes.fillna(-1).astype(int).tolist(), extra_labels
+                )
+                extra_pred = decode_classification_labels(extra_codes.tolist(), extra_labels)
+                normalized[f"{extra_target}_true"] = extra_true
+                normalized[f"{extra_target}_prediction"] = extra_pred
+                normalized[f"{extra_target}_positive_probability"] = extra_probability
+                target_metrics[extra_target] = compute_classification_metrics(
+                    pd.Series(extra_true),
+                    pd.Series(extra_pred),
+                    class_labels=extra_labels,
+                    positive_scores=extra_probability,
+                    target_column=extra_target,
+                )
+            else:
+                extra_true = pd.to_numeric(actual[extra_target], errors="coerce")
+                extra_pred = pd.to_numeric(predictions[extra_prediction_column], errors="coerce")
+                normalized[f"{extra_target}_true"] = extra_true
+                normalized[f"{extra_target}_prediction"] = extra_pred
+                normalized[f"{extra_target}_residual"] = extra_true - extra_pred
+                normalized[f"{extra_target}_absolute_error"] = (extra_true - extra_pred).abs()
+                target_metrics[extra_target] = compute_regression_metrics(
+                    extra_true,
+                    extra_pred,
+                    target_column=extra_target,
+                )
+
+        normalized.to_csv(validation_predictions_path, index=False)
+        return {
+            "validation_predictions_path": str(validation_predictions_path),
+            "raw_validation_predictions_path": str(raw_predictions_path),
+            "validation_prediction_input_csv": str(validation_input_path),
+            "validation_metrics": metric_values,
+            "validation_target_metrics": target_metrics,
+        }
+
     def _detect_physical_memory_bytes(self) -> Optional[int]:
         try:
             page_size = os.sysconf("SC_PAGE_SIZE")
@@ -673,6 +875,31 @@ class ChempropToolkit(Toolkit):
             result.setdefault("splits_path", str(artifacts["splits_path"]))
         if artifacts.get("test_predictions_path"):
             result.setdefault("test_predictions_path", str(artifacts["test_predictions_path"]))
+        validation_predictions = self._write_validation_predictions(
+            train_csv=chemprop_input["chemprop_training_input_csv"],
+            output_dir=run_output_dir,
+            task=task,
+            splits_file=chemprop_input["chemprop_splits_file"],
+            model_path=result.get("best_model_path") or result.get("model_path"),
+        )
+        if validation_predictions:
+            result["validation_predictions_path"] = validation_predictions[
+                "validation_predictions_path"
+            ]
+            result["raw_validation_predictions_path"] = validation_predictions.get(
+                "raw_validation_predictions_path"
+            )
+            result["validation_prediction_input_csv"] = validation_predictions.get(
+                "validation_prediction_input_csv"
+            )
+            if validation_predictions.get("validation_metrics"):
+                result.setdefault("metrics", {})["validation"] = validation_predictions[
+                    "validation_metrics"
+                ]
+            if validation_predictions.get("validation_target_metrics"):
+                result["validation_target_metrics"] = validation_predictions[
+                    "validation_target_metrics"
+                ]
         result["chemprop_input"] = chemprop_input
         result["chemprop_training_input_csv"] = chemprop_input["chemprop_training_input_csv"]
         result["chemprop_splits_file"] = chemprop_input["chemprop_splits_file"]
@@ -840,6 +1067,7 @@ class ChempropToolkit(Toolkit):
 
         copied: Dict[str, Optional[str]] = {
             "best_model_path": None,
+            "validation_predictions_path": None,
             "test_predictions_path": None,
             "config_path": None,
             "splits_path": None,
@@ -848,6 +1076,8 @@ class ChempropToolkit(Toolkit):
         resolved_artifacts = self._resolve_chemprop_run_artifacts(primary_output_dir)
         file_map = {
             resolved_artifacts["best_model_path"]: root_model_dir / "best.pt",
+            resolved_artifacts["validation_predictions_path"]: root_model_dir
+            / "validation_predictions.csv",
             resolved_artifacts["test_predictions_path"]: root_model_dir / "test_predictions.csv",
             resolved_artifacts["config_path"]: root_output_dir / "config.toml",
             resolved_artifacts["splits_path"]: root_output_dir / "splits.json",
@@ -859,6 +1089,8 @@ class ChempropToolkit(Toolkit):
                     shutil.copy2(source_path, target_path)
                 if target_path.name == "best.pt":
                     copied["best_model_path"] = str(target_path)
+                elif target_path.name == "validation_predictions.csv":
+                    copied["validation_predictions_path"] = str(target_path)
                 elif target_path.name == "test_predictions.csv":
                     copied["test_predictions_path"] = str(target_path)
                 elif target_path.name == "config.toml":
@@ -876,13 +1108,62 @@ class ChempropToolkit(Toolkit):
         primary_output_dir: Path,
         model_id_hint: str,
         task: PredictionTaskSpec,
+        prediction_artifact_paths: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        artifacts = self._resolve_chemprop_run_artifacts(primary_output_dir)
+        model_path = (
+            primary_run.get("best_model_path")
+            or primary_run.get("model_path")
+            or (str(artifacts["best_model_path"]) if artifacts.get("best_model_path") else None)
+        )
+        chemprop_train_csv = str(primary_run.get("chemprop_training_input_csv") or train_csv)
+        if model_path:
+            try:
+                fingerprints = self.backend.fingerprint_from_csv(
+                    input_csv=chemprop_train_csv,
+                    model_path=str(model_path),
+                    output_csv=str(
+                        primary_output_dir
+                        / "applicability_domain"
+                        / "chemprop_embeddings_train.csv"
+                    ),
+                    smiles_columns=task.smiles_columns or ["smiles"],
+                    ffn_block_index=DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX,
+                )
+                feature_frame = pd.read_csv(fingerprints["fingerprints_path"])
+                return build_applicability_domain_for_training(
+                    train_csv=chemprop_train_csv,
+                    primary_run=primary_run,
+                    primary_output_dir=primary_output_dir,
+                    task=task,
+                    model_id_hint=model_id_hint,
+                    feature_columns=fingerprints["feature_columns"],
+                    feature_frame=feature_frame,
+                    feature_space="chemprop_embedding",
+                    feature_metadata={
+                        "chemprop_fingerprint": {
+                            "ffn_block_index": fingerprints["ffn_block_index"],
+                            "feature_count": fingerprints["feature_count"],
+                        }
+                    },
+                    prediction_artifact_paths=prediction_artifact_paths,
+                )
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "method": "bounding_box",
+                    "feature_space": "chemprop_embedding",
+                    "reason": f"Chemprop embedding extraction failed: {exc}",
+                }
         return build_applicability_domain_for_training(
             train_csv=train_csv,
             primary_run=primary_run,
             primary_output_dir=primary_output_dir,
             task=task,
             model_id_hint=model_id_hint,
+            feature_columns=[],
+            feature_space="chemprop_embedding",
+            prediction_artifact_paths=prediction_artifact_paths,
         )
 
     def describe_backend(
@@ -1345,6 +1626,10 @@ class ChempropToolkit(Toolkit):
                 primary_output_dir=final_primary_output_dir,
                 model_id_hint=Path(resolved_output_dir).name,
                 task=task,
+                prediction_artifact_paths={
+                    "validation": root_artifacts.get("validation_predictions_path"),
+                    "test": root_artifacts.get("test_predictions_path"),
+                },
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
@@ -1366,6 +1651,7 @@ class ChempropToolkit(Toolkit):
             if protocol_policy.get("validation_strategy_type") == "full_train":
                 result["metrics"] = {}
                 result["target_metrics"] = {}
+                result["validation_predictions_path"] = None
                 result["test_predictions_path"] = None
                 result["test_predictions_file_ref"] = None
                 result["metrics_status"] = "not_evaluated"
@@ -1472,6 +1758,12 @@ class ChempropToolkit(Toolkit):
                 result["model_path"] = str(best_model_path)
                 result["download_file_ref"] = str(best_model_path)
             result["summary_file_ref"] = str(training_summary_path)
+            if root_artifacts.get("validation_predictions_path"):
+                result["validation_predictions_path"] = root_artifacts[
+                    "validation_predictions_path"
+                ]
+            elif primary_run.get("validation_predictions_path"):
+                result["validation_predictions_path"] = primary_run["validation_predictions_path"]
             if root_artifacts.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = root_artifacts["test_predictions_path"]
                 result["test_predictions_path"] = root_artifacts["test_predictions_path"]

@@ -21,6 +21,7 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
+from .applicability_domain import BOUNDING_BOX_METHOD, score_record_applicability_domain
 from .backend import PredictionModelRecord
 from .qsar_training_policy import project_now, safe_slug
 from .training_orchestration import (
@@ -303,8 +304,38 @@ def _write_report(
     dataset_path: str,
     task_type: str,
     metrics: Mapping[str, Any],
+    ad_metrics_by_target: Mapping[str, Any],
+    ad_summary: Mapping[str, Any],
     artifacts: Mapping[str, Any],
 ) -> None:
+    def metric_summary(values: Mapping[str, Any]) -> str:
+        if not values:
+            return "not enough labelled rows"
+        keys = (
+            "r2",
+            "rmse",
+            "mae",
+            "mse",
+            "accuracy",
+            "balanced_accuracy",
+            "f1",
+            "f1_macro",
+            "roc_auc",
+        )
+        parts = []
+        for key in keys:
+            value = values.get(key)
+            if value is None:
+                continue
+            parts.append(
+                f"{key}={float(value):.4g}"
+                if isinstance(value, (int, float))
+                else f"{key}={value}"
+            )
+        if values.get("n") is not None:
+            parts.append(f"n={values['n']}")
+        return ", ".join(parts) if parts else json.dumps(_json_safe(values), sort_keys=True)
+
     lines = [
         f"# External evaluation: {evaluation_id}",
         "",
@@ -314,14 +345,59 @@ def _write_report(
         f"- Metrics file: `{artifacts.get('metrics')}`",
         f"- Predictions file: `{artifacts.get('predictions')}`",
         "",
-        "## Metrics",
-        "",
-        "```json",
-        json.dumps(_json_safe(metrics), indent=2),
-        "```",
-        "",
     ]
+    if ad_summary:
+        lines.extend(
+            [
+                "## Applicability domain",
+                "",
+                f"- Method: `{ad_summary.get('method') or ad_summary.get('primary_method') or BOUNDING_BOX_METHOD}`",
+                f"- In-domain coverage: `{ad_summary.get('coverage_in_domain')}`",
+                f"- Out-of-domain rows: `{ad_summary.get('out_of_domain_count') or ad_summary.get('n_out_of_domain')}`",
+                "",
+            ]
+        )
+    if ad_metrics_by_target:
+        lines.extend(["## Metrics by AD status", ""])
+        for target, payload in ad_metrics_by_target.items():
+            if not isinstance(payload, Mapping):
+                continue
+            lines.extend(
+                [
+                    f"### `{target}`",
+                    "",
+                    "| Scope | Metrics |",
+                    "| --- | --- |",
+                    f"| All rows | {metric_summary(payload.get('metrics_all') or {})} |",
+                    f"| In-domain | {metric_summary(payload.get('metrics_in_domain') or {})} |",
+                    f"| Out-of-domain | {metric_summary(payload.get('metrics_out_of_domain') or {})} |",
+                    "",
+                    f"- In-domain coverage: `{payload.get('coverage_in_domain')}`",
+                    f"- Out-of-domain rows: `{payload.get('n_out_of_domain')}`",
+                    "",
+                ]
+            )
+    lines.extend(
+        [
+            "## Raw metrics",
+            "",
+            "```json",
+            json.dumps(_json_safe(metrics), indent=2),
+            "```",
+            "",
+        ]
+    )
     path.write_text("\n".join(lines))
+
+
+def _has_modern_bounding_box_ad(record: PredictionModelRecord) -> bool:
+    ad = record.applicability_domain or {}
+    return bool(
+        ad.get("primary_method") == BOUNDING_BOX_METHOD
+        or ad.get("method") == BOUNDING_BOX_METHOD
+        or BOUNDING_BOX_METHOD in (ad.get("methods") or {})
+        or ad.get("manifest_path")
+    )
 
 
 def evaluate_model_on_external_dataset(
@@ -380,6 +456,30 @@ def evaluate_model_on_external_dataset(
     predictions_only = _normalize_prediction_columns(
         pd.read_csv(predictions_path), resolved_targets
     )
+    ad_result: Dict[str, Any] = {}
+    if _has_modern_bounding_box_ad(record):
+        ad_result = score_record_applicability_domain(
+            record=record,
+            input_csv=str(evaluation_input),
+            output_dir=eval_dir / "applicability_domain",
+            score_label="external_dataset",
+            backend=backend,
+        )
+        if ad_result.get("scores") is not None:
+            for column in (
+                "ad_status",
+                "ad_method",
+                "ad_violation_count",
+                "ad_violating_features",
+                "ad_max_excess",
+                "ad_feature_space",
+            ):
+                if column in predictions_only.columns:
+                    predictions_only = predictions_only.drop(columns=[column])
+            predictions_only = pd.concat(
+                [predictions_only.reset_index(drop=True), ad_result["scores"].reset_index(drop=True)],
+                axis=1,
+            )
     predictions_only.to_csv(predictions_path, index=False)
     prediction_columns = [
         column for column in predictions_only.columns if column not in source_df.columns
@@ -396,6 +496,7 @@ def evaluate_model_on_external_dataset(
     single_target = len(resolved_targets) == 1
     task_type = record.task.task_type
     target_metrics: Dict[str, Dict[str, Any]] = {}
+    ad_metrics_by_target: Dict[str, Dict[str, Any]] = {}
     plot_artifacts: Dict[str, Any] = {}
     metrics_by_target_rows: List[Dict[str, Any]] = []
     for target in resolved_targets:
@@ -431,6 +532,59 @@ def evaluate_model_on_external_dataset(
                 enriched[target], enriched[pred_col], target_plot_dir
             )
         target_metrics[target] = metric_values
+        if "ad_status" in enriched.columns:
+            in_domain = enriched.loc[enriched["ad_status"] == "in_domain"]
+            out_domain = enriched.loc[enriched["ad_status"] == "out_of_domain"]
+            if is_classification_task(task_type):
+                ad_metrics_by_target[target] = {
+                    "metrics_all": metric_values,
+                    "metrics_in_domain": compute_classification_metrics(
+                        in_domain[target],
+                        in_domain[pred_col],
+                        positive_scores=in_domain[score_col] if score_col else None,
+                        target_column=target,
+                    )
+                    if not in_domain.empty
+                    else {},
+                    "metrics_out_of_domain": compute_classification_metrics(
+                        out_domain[target],
+                        out_domain[pred_col],
+                        positive_scores=out_domain[score_col] if score_col else None,
+                        target_column=target,
+                    )
+                    if not out_domain.empty
+                    else {},
+                }
+            else:
+                ad_metrics_by_target[target] = {
+                    "metrics_all": metric_values,
+                    "metrics_in_domain": compute_regression_metrics(
+                        in_domain[target],
+                        in_domain[pred_col],
+                        target_column=target,
+                    )
+                    if not in_domain.empty
+                    else {},
+                    "metrics_out_of_domain": compute_regression_metrics(
+                        out_domain[target],
+                        out_domain[pred_col],
+                        target_column=target,
+                    )
+                    if not out_domain.empty
+                    else {},
+                }
+            ad_metrics_by_target[target].update(
+                {
+                    "coverage_in_domain": float(len(in_domain) / len(enriched))
+                    if len(enriched)
+                    else None,
+                    "n_out_of_domain": int(len(out_domain)),
+                    "ad_status_counts": {
+                        str(key): int(value)
+                        for key, value in enriched["ad_status"].value_counts().items()
+                    },
+                }
+            )
         metrics_by_target_rows.append({"target": target, **metric_values})
 
     if not target_metrics:
@@ -472,10 +626,20 @@ def evaluate_model_on_external_dataset(
         "target_columns": resolved_targets,
         "metrics": metrics,
         "target_metrics": target_metrics,
+        "ad_metrics_by_target": ad_metrics_by_target,
+        "applicability_domain": ad_result.get("summary") or {},
         "artifacts": artifacts,
         "created_at": created_at.isoformat(),
     }
-    _write_json(eval_dir / "metrics.json", {"metrics": metrics, "target_metrics": target_metrics})
+    _write_json(
+        eval_dir / "metrics.json",
+        {
+            "metrics": metrics,
+            "target_metrics": target_metrics,
+            "ad_metrics_by_target": ad_metrics_by_target,
+            "applicability_domain": ad_result.get("summary") or {},
+        },
+    )
     _write_json(eval_dir / "evaluation_summary.json", summary)
     _write_report(
         eval_dir / "evaluation_report.md",
@@ -484,6 +648,8 @@ def evaluate_model_on_external_dataset(
         dataset_path=test_csv,
         task_type=task_type,
         metrics=metrics,
+        ad_metrics_by_target=ad_metrics_by_target,
+        ad_summary=ad_result.get("summary") or {},
         artifacts=artifacts,
     )
 

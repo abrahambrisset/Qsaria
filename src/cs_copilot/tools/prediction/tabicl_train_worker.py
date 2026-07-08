@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             split_sizes=job.get("split_sizes"),
             random_state=int(job.get("random_state", 42)),
             extra_args=dict(job.get("extra_args") or {}),
+            representation_name=job.get("representation_name"),
             prediction_state=None,
             active_marker_path=Path(job["output_dir"]).expanduser().resolve()
             / ".training_in_progress",

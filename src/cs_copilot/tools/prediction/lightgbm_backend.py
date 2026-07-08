@@ -843,44 +843,69 @@ class LightGBMBackend(PredictionBackend):
             else:
                 raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
+        y_val_pred = None
+        y_val_proba = None
         y_pred = None
         y_proba = None
-        if X_test is not None and y_test is not None:
-            try:
-                if task_is_classification:
+        try:
+            if task_is_classification:
+                if X_val is not None and y_val is not None:
+                    y_val_pred = pd.Series(regressor.predict(X_val), index=X_val.index)
+                    y_val_proba = (
+                        regressor.predict_proba(X_val)
+                        if hasattr(regressor, "predict_proba")
+                        else None
+                    )
+                if X_test is not None and y_test is not None:
                     y_pred = pd.Series(regressor.predict(X_test), index=X_test.index)
                     y_proba = (
                         regressor.predict_proba(X_test)
                         if hasattr(regressor, "predict_proba")
                         else None
                     )
-                else:
+            else:
+                if X_val is not None and y_val is not None:
+                    y_val_pred = pd.Series(
+                        regressor.predict(X_val), index=X_val.index, dtype=float
+                    )
+                if X_test is not None and y_test is not None:
                     y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
-            except Exception as exc:
-                raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
+        except Exception as exc:
+            raise PredictionExecutionError(f"LightGBM training failed: {exc}") from exc
 
-        if y_pred is not None and y_test is not None and task_is_classification:
-            proba_frame = pd.DataFrame(y_proba) if y_proba is not None else None
-            positive_scores = (
-                pd.Series(proba_frame.iloc[:, 1]).reset_index(drop=True)
-                if proba_frame is not None and len(class_labels) == 2 and proba_frame.shape[1] >= 2
-                else None
-            )
-            metrics = {
-                "test": compute_classification_metrics(
-                    decode_classification_labels(y_test.reset_index(drop=True), class_labels),
-                    decode_classification_labels(y_pred.reset_index(drop=True), class_labels),
+        metrics: Dict[str, Any] = {}
+
+        def _split_metrics(
+            y_true: Optional[pd.Series],
+            y_hat: Optional[pd.Series],
+            probabilities: Any = None,
+        ) -> Dict[str, Any]:
+            if y_true is None or y_hat is None:
+                return {}
+            if task_is_classification:
+                proba_frame = pd.DataFrame(probabilities) if probabilities is not None else None
+                positive_scores = (
+                    pd.Series(proba_frame.iloc[:, 1]).reset_index(drop=True)
+                    if proba_frame is not None
+                    and len(class_labels) == 2
+                    and proba_frame.shape[1] >= 2
+                    else None
+                )
+                return compute_classification_metrics(
+                    decode_classification_labels(y_true.reset_index(drop=True), class_labels),
+                    decode_classification_labels(y_hat.reset_index(drop=True), class_labels),
                     class_labels=class_labels,
                     positive_scores=positive_scores,
                     target_column=target_column,
                 )
-            }
-        else:
-            metrics = (
-                {"test": compute_regression_metrics(y_test, y_pred, target_column=target_column)}
-                if y_pred is not None
-                else {}
-            )
+            return compute_regression_metrics(y_true, y_hat, target_column=target_column)
+
+        validation_metrics = _split_metrics(y_val, y_val_pred, y_val_proba)
+        if validation_metrics:
+            metrics["validation"] = validation_metrics
+        test_metrics = _split_metrics(y_test, y_pred, y_proba)
+        if test_metrics:
+            metrics["test"] = test_metrics
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
@@ -916,18 +941,27 @@ class LightGBMBackend(PredictionBackend):
         with model_path.open("wb") as fh:
             pickle.dump(model_payload, fh)
 
+        validation_predictions_path = model_dir / "validation_predictions.csv"
         test_predictions_path = model_dir / "test_predictions.csv"
-        if y_pred is not None and y_test is not None:
+
+        def _write_predictions(
+            path: Path,
+            *,
+            split_pred: pd.Series,
+            split_proba: Any,
+            split_y: pd.Series,
+            split_source: pd.DataFrame,
+        ) -> None:
             if task_is_classification:
                 predictions_df = self._classification_output_frame(
-                    predictions=y_pred.reset_index(drop=True),
-                    probabilities=y_proba,
+                    predictions=split_pred.reset_index(drop=True),
+                    probabilities=split_proba,
                     class_labels=class_labels,
                     target_column=target_column,
-                    source=working.iloc[test_idx].reset_index(drop=True),
+                    source=split_source.reset_index(drop=True),
                 )
                 predictions_df[f"{target_column}_true"] = decode_classification_labels(
-                    y_test.reset_index(drop=True),
+                    split_y.reset_index(drop=True),
                     class_labels,
                 )
                 predictions_df["y_true"] = predictions_df[f"{target_column}_true"]
@@ -935,14 +969,34 @@ class LightGBMBackend(PredictionBackend):
             else:
                 predictions_df = pd.DataFrame(
                     {
-                        target_column: y_pred.reset_index(drop=True),
-                        "prediction": y_pred.reset_index(drop=True),
-                        "y_true": y_test.reset_index(drop=True),
-                        "y_pred": y_pred.reset_index(drop=True),
+                        target_column: split_pred.reset_index(drop=True),
+                        "prediction": split_pred.reset_index(drop=True),
+                        "y_true": split_y.reset_index(drop=True),
+                        "y_pred": split_pred.reset_index(drop=True),
                     }
                 )
-            with S3.open(str(test_predictions_path), "w") as fh:
+            with S3.open(str(path), "w") as fh:
                 predictions_df.to_csv(fh, index=False)
+
+        if y_val_pred is not None and y_val is not None:
+            _write_predictions(
+                validation_predictions_path,
+                split_pred=y_val_pred,
+                split_proba=y_val_proba,
+                split_y=y_val,
+                split_source=working.iloc[val_idx],
+            )
+        else:
+            validation_predictions_path = None
+
+        if y_pred is not None and y_test is not None:
+            _write_predictions(
+                test_predictions_path,
+                split_pred=y_pred,
+                split_proba=y_proba,
+                split_y=y_test,
+                split_source=working.iloc[test_idx],
+            )
         else:
             test_predictions_path = None
 
@@ -968,6 +1022,9 @@ class LightGBMBackend(PredictionBackend):
         return {
             "model_path": str(model_path),
             "best_model_path": str(model_path),
+            "validation_predictions_path": (
+                str(validation_predictions_path) if validation_predictions_path else None
+            ),
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "splits_path": str(splits_path),
             "config_path": str(config_path),

@@ -706,6 +706,7 @@ class ModelRegistryToolkit(Toolkit):
             "config_path": run_dir / "config.toml",
             "training_summary_path": _first_existing_or_default(training_summary_candidates),
             "splits_path": run_dir / "splits.json",
+            "validation_predictions_path": run_dir / "model_0" / "validation_predictions.csv",
             "test_predictions_path": _first_existing_or_default(test_prediction_candidates),
             "chemprop_training_input_csv": run_dir
             / "chemprop_inputs"
@@ -719,6 +720,23 @@ class ModelRegistryToolkit(Toolkit):
             "applicability_domain_path": run_dir
             / "applicability_domain"
             / "applicability_domain.json",
+            "ad_manifest_path": run_dir / "applicability_domain" / "manifest.json",
+            "ad_bounds_path": run_dir
+            / "applicability_domain"
+            / "bounding_box"
+            / "bounds.npz",
+            "ad_scores_train_path": run_dir
+            / "applicability_domain"
+            / "bounding_box"
+            / "scores_train.csv",
+            "ad_scores_validation_path": run_dir
+            / "applicability_domain"
+            / "bounding_box"
+            / "scores_validation.csv",
+            "ad_scores_test_path": run_dir
+            / "applicability_domain"
+            / "bounding_box"
+            / "scores_test.csv",
         }
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
@@ -733,6 +751,7 @@ class ModelRegistryToolkit(Toolkit):
             "config_path",
             "training_summary_path",
             "splits_path",
+            "validation_predictions_path",
             "test_predictions_path",
             "chemprop_training_input_csv",
             "chemprop_splits_file",
@@ -740,6 +759,11 @@ class ModelRegistryToolkit(Toolkit):
             "reference_store_path",
             "reference_manifest_path",
             "applicability_domain_path",
+            "ad_manifest_path",
+            "ad_bounds_path",
+            "ad_scores_train_path",
+            "ad_scores_validation_path",
+            "ad_scores_test_path",
         ):
             raw_path = source_artifacts.get(key)
             if raw_path:
@@ -845,10 +869,22 @@ class ModelRegistryToolkit(Toolkit):
                     target_path = artifacts_dir / "cs_copilot_training_summary.json"
                 elif key == "splits_path":
                     target_path = artifacts_dir / "splits.json"
+                elif key == "validation_predictions_path":
+                    target_path = artifacts_dir / "validation_predictions.csv"
                 elif key == "test_predictions_path":
                     target_path = artifacts_dir / "test_predictions.csv"
                 elif key.startswith("chemprop_"):
                     target_path = artifacts_dir / "chemprop_inputs" / source_path.name
+                elif key == "ad_manifest_path":
+                    target_path = artifacts_dir / "applicability_domain" / "manifest.json"
+                elif key == "ad_bounds_path":
+                    target_path = (
+                        artifacts_dir / "applicability_domain" / "bounding_box" / "bounds.npz"
+                    )
+                elif key.startswith("ad_scores_"):
+                    target_path = (
+                        artifacts_dir / "applicability_domain" / "bounding_box" / source_path.name
+                    )
                 else:
                     target_path = artifacts_dir / source_path.name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1002,6 +1038,33 @@ class ModelRegistryToolkit(Toolkit):
                     "steps": rewritten_steps,
                 }
 
+        if copied_files.get("ad_manifest_path"):
+            manifest_path = model_root / copied_files["ad_manifest_path"]
+            try:
+                manifest_payload = (
+                    json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+                )
+            except Exception:
+                manifest_payload = {}
+            if manifest_payload:
+                manifest_payload["manifest_path"] = copied_files.get("ad_manifest_path")
+                if copied_files.get("ad_bounds_path"):
+                    manifest_payload["bounds_path"] = copied_files["ad_bounds_path"]
+                    methods = dict(manifest_payload.get("methods") or {})
+                    bounding_box = dict(methods.get("bounding_box") or {})
+                    bounding_box["bounds_path"] = copied_files["ad_bounds_path"]
+                    bounding_box["manifest_path"] = copied_files.get("ad_manifest_path")
+                    methods["bounding_box"] = bounding_box
+                    manifest_payload["methods"] = methods
+                for source_key, manifest_key in (
+                    ("ad_scores_train_path", "scores_train_path"),
+                    ("ad_scores_validation_path", "scores_validation_path"),
+                    ("ad_scores_test_path", "scores_test_path"),
+                ):
+                    if copied_files.get(source_key):
+                        manifest_payload[manifest_key] = copied_files[source_key]
+                manifest_path.write_text(json.dumps(manifest_payload, indent=2) + "\n")
+
         metadata_description = _sanitize_activity_cliff_description(
             record.description or "",
             source_artifacts.get("activity_cliffs") or {},
@@ -1039,14 +1102,64 @@ class ModelRegistryToolkit(Toolkit):
             "artifacts": copied_files,
         }
         metadata.update(_classification_metadata(record))
+        metrics_status = record.training_data_summary.get("metrics_status")
+        if metrics_status:
+            metadata["metrics_status"] = metrics_status
+            metadata["evaluation_required"] = bool(
+                record.training_data_summary.get("evaluation_required")
+            )
         if record.training_data_summary.get("seed_policy"):
             metadata["reproducibility"] = seed_policy_reproducibility_metadata(
                 record.training_data_summary.get("seed_policy")
             )
-        if copied_files.get("applicability_domain_path"):
+        modern_ad_available = bool(
+            copied_files.get("ad_manifest_path") or copied_files.get("ad_bounds_path")
+        )
+        if modern_ad_available:
+            metadata_ad = dict(record.applicability_domain or {})
+            metadata_ad.update(
+                {
+                    "available": True,
+                    "primary_method": "bounding_box",
+                    "method": "bounding_box",
+                    "manifest_path": copied_files.get("ad_manifest_path")
+                    or metadata_ad.get("manifest_path"),
+                    "bounds_path": copied_files.get("ad_bounds_path")
+                    or metadata_ad.get("bounds_path"),
+                }
+            )
+            methods = dict(metadata_ad.get("methods") or {})
+            bounding_box = dict(methods.get("bounding_box") or {})
+            if copied_files.get("ad_bounds_path"):
+                bounding_box["bounds_path"] = copied_files["ad_bounds_path"]
+            if copied_files.get("ad_manifest_path"):
+                bounding_box["manifest_path"] = copied_files["ad_manifest_path"]
+            methods["bounding_box"] = bounding_box
+            metadata_ad["methods"] = methods
+            for source_key, metadata_key in (
+                ("ad_scores_train_path", "scores_train_path"),
+                ("ad_scores_validation_path", "scores_validation_path"),
+                ("ad_scores_test_path", "scores_test_path"),
+            ):
+                if copied_files.get(source_key):
+                    metadata_ad[metadata_key] = copied_files[source_key]
+            if copied_files.get("applicability_domain_path"):
+                metadata_ad["legacy_similarity_ad"] = {
+                    "available": True,
+                    "legacy": True,
+                    "method": "legacy_similarity_ad",
+                    "reference_store_path": copied_files.get("reference_store_path"),
+                    "reference_manifest_path": copied_files.get("reference_manifest_path"),
+                    "index_path": copied_files.get("applicability_domain_path"),
+                }
+            else:
+                metadata_ad.pop("legacy_similarity_ad", None)
+            metadata["applicability_domain"] = metadata_ad
+        elif copied_files.get("applicability_domain_path"):
             metadata["applicability_domain"] = {
                 "available": True,
-                "method": "hybrid_morgan_domain",
+                "legacy": True,
+                "method": "legacy_similarity_ad",
                 "reference_store_path": copied_files.get("reference_store_path"),
                 "reference_manifest_path": copied_files.get("reference_manifest_path"),
                 "index_path": copied_files.get("applicability_domain_path"),
@@ -1167,11 +1280,51 @@ class ModelRegistryToolkit(Toolkit):
             }
         )
         payload.update(_classification_metadata(record))
+        metrics_status = (record.training_data_summary or {}).get("metrics_status")
+        if metrics_status:
+            payload["metrics_status"] = metrics_status
+            payload["evaluation_required"] = bool(
+                (record.training_data_summary or {}).get("evaluation_required")
+            )
         artifacts = payload.get("artifacts") or {}
-        if artifacts.get("applicability_domain_path"):
+        if artifacts.get("ad_manifest_path") or artifacts.get("ad_bounds_path"):
+            metadata_ad = dict(record.applicability_domain or {})
+            metadata_ad.update(
+                {
+                    "available": True,
+                    "primary_method": "bounding_box",
+                    "method": "bounding_box",
+                    "manifest_path": artifacts.get("ad_manifest_path")
+                    or metadata_ad.get("manifest_path"),
+                    "bounds_path": artifacts.get("ad_bounds_path")
+                    or metadata_ad.get("bounds_path"),
+                }
+            )
+            methods = dict(metadata_ad.get("methods") or {})
+            bounding_box = dict(methods.get("bounding_box") or {})
+            if artifacts.get("ad_bounds_path"):
+                bounding_box["bounds_path"] = artifacts.get("ad_bounds_path")
+            if artifacts.get("ad_manifest_path"):
+                bounding_box["manifest_path"] = artifacts.get("ad_manifest_path")
+            methods["bounding_box"] = bounding_box
+            metadata_ad["methods"] = methods
+            if artifacts.get("applicability_domain_path"):
+                metadata_ad["legacy_similarity_ad"] = {
+                    "available": True,
+                    "legacy": True,
+                    "method": "legacy_similarity_ad",
+                    "reference_store_path": artifacts.get("reference_store_path"),
+                    "reference_manifest_path": artifacts.get("reference_manifest_path"),
+                    "index_path": artifacts.get("applicability_domain_path"),
+                }
+            else:
+                metadata_ad.pop("legacy_similarity_ad", None)
+            payload["applicability_domain"] = metadata_ad
+        elif artifacts.get("applicability_domain_path"):
             payload["applicability_domain"] = {
                 "available": True,
-                "method": "hybrid_morgan_domain",
+                "legacy": True,
+                "method": "legacy_similarity_ad",
                 "reference_store_path": artifacts.get("reference_store_path"),
                 "reference_manifest_path": artifacts.get("reference_manifest_path"),
                 "index_path": artifacts.get("applicability_domain_path"),
@@ -1340,22 +1493,39 @@ class ModelRegistryToolkit(Toolkit):
                 "curated_dataset_path"
             )
 
+        legacy_applicability_domain = resolved_applicability_domain.get("legacy_similarity_ad") or {}
         source_artifacts = {
             "training_summary_path": (
                 str(summary_path) if summary_path and summary_path.exists() else None
             ),
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
+            "validation_predictions_path": summary_payload.get("validation_predictions_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
             "chemprop_training_input_csv": summary_payload.get("chemprop_training_input_csv"),
             "chemprop_splits_file": summary_payload.get("chemprop_splits_file"),
             "chemprop_input_manifest_path": summary_payload.get("chemprop_input_manifest_path"),
             "split_results": summary_payload.get("split_results") or [],
-            "reference_store_path": resolved_applicability_domain.get("reference_store_path"),
-            "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path"),
+            "reference_store_path": resolved_applicability_domain.get("reference_store_path")
+            or legacy_applicability_domain.get("reference_store_path"),
+            "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path")
+            or legacy_applicability_domain.get("reference_manifest_path"),
             "applicability_domain_path": resolved_applicability_domain.get(
                 "applicability_domain_path"
+            )
+            or legacy_applicability_domain.get("applicability_domain_path"),
+            "ad_manifest_path": resolved_applicability_domain.get("manifest_path"),
+            "ad_bounds_path": resolved_applicability_domain.get("bounds_path")
+            or (
+                (resolved_applicability_domain.get("methods") or {})
+                .get("bounding_box", {})
+                .get("bounds_path")
             ),
+            "ad_scores_train_path": resolved_applicability_domain.get("scores_train_path"),
+            "ad_scores_validation_path": resolved_applicability_domain.get(
+                "scores_validation_path"
+            ),
+            "ad_scores_test_path": resolved_applicability_domain.get("scores_test_path"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": merged_curation,
@@ -1366,7 +1536,11 @@ class ModelRegistryToolkit(Toolkit):
             override_profile=inference_profile,
             summary_payload=summary_payload,
         )
-        materialization_record = replace(current, inference_profile=hydrated_inference_profile)
+        materialization_record = replace(
+            current,
+            inference_profile=hydrated_inference_profile,
+            applicability_domain=resolved_applicability_domain,
+        )
 
         materialized = self._materialize_internal_model(
             record=materialization_record,

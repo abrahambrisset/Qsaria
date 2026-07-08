@@ -9,6 +9,10 @@ import pytest
 
 import cs_copilot.tools.prediction.catalog as catalog_module
 import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
+from cs_copilot.tools.prediction.applicability_domain import (
+    fit_bounding_box_domain,
+    score_record_applicability_domain,
+)
 from cs_copilot.tools.prediction.backend import (
     InvalidPredictionInputError,
     PredictionModelRecord,
@@ -701,6 +705,52 @@ def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
     assert "prediction_replicate_1" not in normalized.columns
 
 
+def test_chemprop_toolkit_writes_validation_predictions_from_checkpoint(tmp_path):
+    class FakeChempropBackend:
+        backend_name = "chemprop"
+
+        def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False):
+            frame = pd.read_csv(input_csv)
+            pd.DataFrame({"smiles": frame["smiles"], "pEC50": [5.5, 4.5]}).to_csv(
+                preds_path,
+                index=False,
+            )
+            return {"preds_path": preds_path}
+
+    toolkit = ChempropToolkit(backend=FakeChempropBackend(), register_tools=False)
+    train_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+            "pEC50": [5.0, 6.0, 4.0, 7.0],
+        }
+    ).to_csv(train_csv, index=False)
+    output_dir = tmp_path / "chemprop_run"
+    (output_dir / "model_0").mkdir(parents=True)
+    model_path = output_dir / "model_0" / "best.pt"
+    model_path.write_text("model")
+    splits_file = output_dir / "splits.json"
+    splits_file.write_text(json.dumps([{"train": [0], "val": [1, 2], "test": [3]}]))
+
+    result = toolkit._write_validation_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+        splits_file=str(splits_file),
+        model_path=str(model_path),
+    )
+
+    normalized = pd.read_csv(result["validation_predictions_path"])
+    assert result["validation_metrics"]["n"] == 2
+    assert normalized["source_row_index"].tolist() == [1, 2]
+    assert normalized["pEC50_true"].tolist() == [6.0, 4.0]
+    assert normalized["prediction"].tolist() == [5.5, 4.5]
+
+
 def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_path):
     toolkit = QSARTrainingToolkit()
     train_csv = tmp_path / "train.csv"
@@ -976,6 +1026,86 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     assert "workflow_demo" in result["status_reason"]
 
 
+def test_model_registry_persistence_copies_modern_applicability_domain(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("smiles,pEC50,desc_a\nCCO,5.0,1.0\nCCC,6.0,2.0\n")
+    ad_summary = fit_bounding_box_domain(
+        feature_frame=pd.DataFrame({"desc_a": [1.0, 2.0]}),
+        feature_columns=["desc_a"],
+        output_dir=run_dir / "applicability_domain",
+        model_id="session_model",
+        feature_space="rdkit_all",
+        representation_name="rdkit_all",
+    )
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-07-07T12:00:00+02:00",
+                "validation_protocol": "standard_qsar",
+                "representation_name": "rdkit_all",
+                "feature_columns": ["desc_a"],
+                "applicability_domain": ad_summary,
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="experimental",
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(model_id="session_model", agent=agent)
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    persisted_ad = persisted_metadata["applicability_domain"]
+    assert persisted_ad["primary_method"] == "bounding_box"
+    assert persisted_ad["manifest_path"] == "artifacts/applicability_domain/manifest.json"
+    assert persisted_ad["bounds_path"] == "artifacts/applicability_domain/bounding_box/bounds.npz"
+    manifest_path = Path(result["metadata_path"]).parent / persisted_ad["manifest_path"]
+    bounds_path = Path(result["metadata_path"]).parent / persisted_ad["bounds_path"]
+    assert manifest_path.exists()
+    assert bounds_path.exists()
+    persisted_manifest = json.loads(manifest_path.read_text())
+    assert persisted_manifest["bounds_path"] == persisted_ad["bounds_path"]
+    assert (
+        persisted_manifest["methods"]["bounding_box"]["bounds_path"]
+        == persisted_ad["bounds_path"]
+    )
+
+
 def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
@@ -1049,6 +1179,8 @@ def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatc
     assert result["record"]["known_metrics"] == {}
     assert persisted_metadata["known_metrics"] == {}
     assert persisted_metadata["external_evaluations"] == []
+    assert persisted_metadata["metrics_status"] == "not_evaluated"
+    assert persisted_metadata["evaluation_required"] is True
     assert persisted_metadata["training_data_summary"]["metrics_status"] == "not_evaluated"
     assert persisted_metadata["training_data_summary"]["evaluation_required"] is True
     assert persisted_metadata["training_data_summary"]["external_evaluations"] == []
@@ -1334,6 +1466,79 @@ def test_chemprop_backend_validate_model_path_accepts_ckpt(tmp_path):
     resolved = backend.validate_model_path(str(model_path))
 
     assert resolved == Path(model_path)
+
+
+def test_chemprop_backend_fingerprint_from_csv_normalizes_cli_output(monkeypatch, tmp_path):
+    backend = ChempropBackend()
+    input_csv = tmp_path / "input.csv"
+    model_path = tmp_path / "model.pt"
+    output_csv = tmp_path / "fingerprints.csv"
+    input_csv.write_text("smiles\nCCO\n")
+    model_path.write_text("model")
+
+    def fake_run_cli(args, **kwargs):
+        pd.DataFrame({"fp_0": [0.1], "fp_1": [0.2]}).to_csv(
+            output_csv.with_stem(f"{output_csv.stem}_0"),
+            index=False,
+        )
+        return SimpleNamespace(stdout="ok", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+
+    result = backend.fingerprint_from_csv(
+        input_csv=str(input_csv),
+        model_path=str(model_path),
+        output_csv=str(output_csv),
+        smiles_columns=["smiles"],
+        ffn_block_index=1,
+    )
+
+    frame = pd.read_csv(result["fingerprints_path"])
+    assert result["feature_columns"] == ["chemprop_fp_0", "chemprop_fp_1"]
+    assert list(frame.columns) == ["chemprop_fp_0", "chemprop_fp_1"]
+
+
+def test_chemprop_embedding_ad_scores_via_backend_fingerprints(tmp_path):
+    ad = fit_bounding_box_domain(
+        feature_frame=pd.DataFrame({"chemprop_fp_0": [0.0, 1.0], "chemprop_fp_1": [2.0, 3.0]}),
+        feature_columns=["chemprop_fp_0", "chemprop_fp_1"],
+        output_dir=tmp_path / "ad",
+        model_id="chemprop_model",
+        feature_space="chemprop_embedding",
+        representation_name="chemprop_embedding",
+        feature_metadata={"chemprop_fingerprint": {"ffn_block_index": 1}},
+    )
+    input_csv = tmp_path / "input.csv"
+    model_path = tmp_path / "model.pt"
+    input_csv.write_text("smiles\nCCO\nCCC\n")
+    model_path.write_text("model")
+
+    class FakeChempropBackend:
+        def fingerprint_from_csv(self, **kwargs):
+            output_path = Path(kwargs["output_csv"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(
+                {"chemprop_fp_0": [0.5, 2.0], "chemprop_fp_1": [2.5, 2.5]}
+            ).to_csv(output_path, index=False)
+            return {"fingerprints_path": str(output_path)}
+
+    record = PredictionModelRecord(
+        model_id="chemprop_model",
+        backend_name="chemprop",
+        model_path=str(model_path),
+        task=PredictionTaskSpec(task_type="regression", smiles_columns=["smiles"]),
+        applicability_domain=ad,
+    )
+
+    result = score_record_applicability_domain(
+        record=record,
+        input_csv=str(input_csv),
+        output_dir=tmp_path / "scores",
+        score_label="external",
+        backend=FakeChempropBackend(),
+    )
+
+    assert list(result["scores"]["ad_status"]) == ["in_domain", "out_of_domain"]
 
 
 def _tabicl_dataset(tmp_path, values, *, target_column="label") -> Path:

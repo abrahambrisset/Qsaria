@@ -567,6 +567,12 @@ class TabICLBackend(PredictionBackend):
 
         X_train = train_df[feature_columns].copy()
         y_train = train_df[target_column].astype(int if task_is_classification else float).copy()
+        X_val = val_df[feature_columns].copy() if not val_df.empty else None
+        y_val = (
+            val_df[target_column].astype(int if task_is_classification else float).copy()
+            if not val_df.empty
+            else None
+        )
         X_test = test_df[feature_columns].copy() if not test_df.empty else None
         y_test = (
             test_df[target_column].astype(int if task_is_classification else float).copy()
@@ -689,6 +695,18 @@ class TabICLBackend(PredictionBackend):
             heartbeat_thread.start()
         try:
             estimator.fit(X_train, y_train)
+            y_val_pred = (
+                pd.Series(estimator.predict(X_val), index=X_val.index)
+                if X_val is not None
+                else None
+            )
+            y_val_proba = (
+                estimator.predict_proba(X_val)
+                if task_is_classification
+                and X_val is not None
+                and hasattr(estimator, "predict_proba")
+                else None
+            )
             y_pred = (
                 pd.Series(estimator.predict(X_test), index=X_test.index)
                 if X_test is not None
@@ -714,6 +732,7 @@ class TabICLBackend(PredictionBackend):
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         model_artifact_path = output_path / "tabicl_model.pkl"
+        validation_predictions_path = output_path / "validation_predictions.csv"
         test_predictions_path = output_path / "test_predictions.csv"
         summary_path = output_path / "tabicl_training_summary.json"
         canonical_summary_path = output_path / "cs_copilot_training_summary.json"
@@ -734,18 +753,25 @@ class TabICLBackend(PredictionBackend):
             with model_artifact_path.open("wb") as fh:
                 pickle.dump(estimator, fh)
 
-        if y_pred is not None and y_test is not None:
+        def _write_predictions(
+            path: Path,
+            *,
+            split_df: pd.DataFrame,
+            split_y: pd.Series,
+            split_pred: pd.Series,
+            split_proba: Any,
+        ) -> Dict[str, Any]:
             id_columns = {
-                column: test_df[column].reset_index(drop=True)
+                column: split_df[column].reset_index(drop=True)
                 for column in ("Drug_ID", "smiles")
-                if column in test_df.columns
+                if column in split_df.columns
             }
             if task_is_classification:
                 y_true_labels = decode_classification_labels(
-                    y_test.reset_index(drop=True), class_labels
+                    split_y.reset_index(drop=True), class_labels
                 )
                 y_pred_labels = decode_classification_labels(
-                    y_pred.reset_index(drop=True), class_labels
+                    split_pred.reset_index(drop=True), class_labels
                 )
                 predictions_df = pd.DataFrame(
                     {
@@ -755,12 +781,12 @@ class TabICLBackend(PredictionBackend):
                         "prediction": y_pred_labels,
                         "y_true": y_true_labels,
                         "y_pred": y_pred_labels,
-                        "prediction_class_code": y_pred.reset_index(drop=True).astype(int),
+                        "prediction_class_code": split_pred.reset_index(drop=True).astype(int),
                     }
                 )
                 positive_scores = None
-                if y_proba is not None:
-                    proba = pd.DataFrame(y_proba)
+                if split_proba is not None:
+                    proba = pd.DataFrame(split_proba)
                     for index, class_label in enumerate(class_labels[: proba.shape[1]]):
                         predictions_df[f"probability_{json_safe_label(class_label)}"] = (
                             pd.to_numeric(
@@ -782,10 +808,10 @@ class TabICLBackend(PredictionBackend):
                 predictions_df = pd.DataFrame(
                     {
                         **id_columns,
-                        f"{target_column}_true": y_test.reset_index(drop=True),
-                        target_column: y_pred.reset_index(drop=True),
-                        "y_true": y_test.reset_index(drop=True),
-                        "y_pred": y_pred.reset_index(drop=True),
+                        f"{target_column}_true": split_y.reset_index(drop=True),
+                        target_column: split_pred.reset_index(drop=True),
+                        "y_true": split_y.reset_index(drop=True),
+                        "y_pred": split_pred.reset_index(drop=True),
                     }
                 )
                 metrics = compute_regression_metrics(
@@ -793,14 +819,36 @@ class TabICLBackend(PredictionBackend):
                     predictions_df["y_pred"].astype(float),
                     target_column=target_column,
                 )
-            with S3.open(str(test_predictions_path), "w") as fh:
+            with S3.open(str(path), "w") as fh:
                 predictions_df.to_csv(fh, index=False)
-        else:
-            predictions_df = None
-            test_predictions_path = None
-            metrics = {}
+            return metrics
 
-        metrics_payload = {"test": metrics} if metrics else {}
+        metrics_payload: Dict[str, Any] = {}
+        if y_val_pred is not None and y_val is not None:
+            validation_metrics = _write_predictions(
+                validation_predictions_path,
+                split_df=val_df,
+                split_y=y_val,
+                split_pred=y_val_pred,
+                split_proba=y_val_proba,
+            )
+            if validation_metrics:
+                metrics_payload["validation"] = validation_metrics
+        else:
+            validation_predictions_path = None
+
+        if y_pred is not None and y_test is not None:
+            test_metrics = _write_predictions(
+                test_predictions_path,
+                split_df=test_df,
+                split_y=y_test,
+                split_pred=y_pred,
+                split_proba=y_proba,
+            )
+            if test_metrics:
+                metrics_payload["test"] = test_metrics
+        else:
+            test_predictions_path = None
         summary = {
             "backend_name": self.backend_name,
             "train_csv": train_csv,
@@ -835,6 +883,9 @@ class TabICLBackend(PredictionBackend):
                 json_safe_label(class_labels[1]) if task_is_classification else None
             ),
             "model_artifact_path": str(model_artifact_path),
+            "validation_predictions_path": (
+                str(validation_predictions_path) if validation_predictions_path else None
+            ),
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "config_path": str(config_path),
             "splits_path": str(splits_path),
@@ -891,6 +942,9 @@ class TabICLBackend(PredictionBackend):
             "train_rows": train_rows,
             "val_rows": val_rows,
             "test_rows": test_rows,
+            "validation_predictions_path": (
+                str(validation_predictions_path) if validation_predictions_path else None
+            ),
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
             "summary_path": str(summary_path),
             "canonical_summary_path": str(canonical_summary_path),
@@ -909,7 +963,7 @@ class TabICLBackend(PredictionBackend):
         # after a run. Clear the heaviest objects explicitly before returning.
         del estimator
         del dataset, working, train_df, val_df, test_df
-        del X_train, X_test, y_train, y_test, y_pred, predictions_df
+        del X_train, X_val, X_test, y_train, y_val, y_test, y_val_pred, y_pred
         _release_process_memory()
 
         return result
