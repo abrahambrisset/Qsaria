@@ -2,11 +2,15 @@
 # coding: utf-8
 """Tests for report-generation instruction requirements."""
 
-from cs_copilot.agents.prompts import REPORT_GENERATOR_INSTRUCTIONS
+from cs_copilot.agents.prompts import QSAR_REPORT_INSTRUCTIONS, REPORT_GENERATOR_INSTRUCTIONS
 
 
 def _report_instructions_text() -> str:
     return "\n".join(REPORT_GENERATOR_INSTRUCTIONS)
+
+
+def _qsar_report_instructions_text() -> str:
+    return "\n".join(QSAR_REPORT_INSTRUCTIONS)
 
 
 def test_report_instructions_require_named_captioned_inline_figures():
@@ -90,3 +94,30 @@ def test_report_instructions_define_required_report_structures():
 
     assert "SynPlanner Routes and Attempts" in instructions
     assert "Route Analysis" in instructions
+
+
+def test_qsar_report_instructions_require_canonical_reporting_handoffs():
+    instructions = _qsar_report_instructions_text()
+
+    assert "Metriques d'evaluation" in instructions
+    assert "you MUST use a decision report" in instructions
+    assert "NEVER use the legacy `Partie 1`, `Partie 2`, `Partie 3`, or `Partie 4`" in instructions
+    assert "allowed only for curation-only reports" in instructions
+    assert "reporting_handoff" in instructions
+    assert "copy these canonical markdown blocks verbatim" in instructions
+    assert "do not split the canonical metrics table into separate validation/test tables" in instructions
+    assert "do not drop `validation interne` in/out rows" in instructions
+    assert "one canonical table with columns `Source`, `AD subset`, `n`" in instructions
+    assert "Do not create replacement subsections named `Metriques detaillees - Validation interne`" in instructions
+    assert "you as the report agent must immediately write a short analytical paragraph" in instructions
+    assert "starting with the literal label `Commentaire :`" in instructions
+    assert "Do not expect the handoff to provide this analysis" in instructions
+    assert "Every additional table you create yourself" in instructions
+    assert "interpret validation/test consistency, the in_domain vs out_of_domain gap" in instructions
+    assert "based only on the copied table values and upstream handoffs" in instructions
+    assert "evaluation_metrics_markdown" in instructions
+    assert "applicability_domain_markdown" in instructions
+    assert "governance_markdown" in instructions
+    assert "artifacts_inventory" in instructions
+    assert "non calculable" in instructions
+    assert "out_of_domain" in instructions

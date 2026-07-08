@@ -23,6 +23,7 @@ from cs_copilot.tools.chemistry.standardize import (
 
 from .applicability_domain import BOUNDING_BOX_METHOD, score_record_applicability_domain
 from .backend import PredictionModelRecord
+from .qsar_reporting import build_external_evaluation_reporting_handoff
 from .qsar_training_policy import project_now, safe_slug
 from .training_orchestration import (
     compute_classification_metrics,
@@ -640,6 +641,7 @@ def evaluate_model_on_external_dataset(
             "applicability_domain": ad_result.get("summary") or {},
         },
     )
+    summary["reporting_handoff"] = build_external_evaluation_reporting_handoff(summary)
     _write_json(eval_dir / "evaluation_summary.json", summary)
     _write_report(
         eval_dir / "evaluation_report.md",

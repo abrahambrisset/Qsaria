@@ -17,6 +17,7 @@ from agno.tools.toolkit import Toolkit
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import get_backend_capabilities
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
+from .qsar_reporting import build_registry_reporting_handoff
 from .qsar_training_policy import (
     coerce_project_timezone,
     project_now,
@@ -1678,18 +1679,27 @@ class ModelRegistryToolkit(Toolkit):
         prediction_state["registered"].pop(model_id, None)
         prediction_state["registered"][canonical_model_id] = persisted_record.as_dict()
 
-        return {
+        response_payload = {
             "catalog_path": str(self.catalog.source_path),
             "model_id": persisted_record.model_id,
             "status": persisted_record.status,
             "persisted": True,
             "materialized": bool(materialized.get("materialized")),
             "model_root": materialized.get("model_root"),
+            "model_path": persisted_record.model_path,
             "metadata_path": persisted_record.metadata_path,
             "governance_assessment": governance_assessment,
             "status_reason": status_reason,
             "record": _compact_persisted_record_for_response(persisted_record),
         }
+        response_payload["reporting_handoff"] = build_registry_reporting_handoff(
+            requested_status=requested_status,
+            final_status=persisted_record.status,
+            status_reason=status_reason,
+            metrics_status=persisted_record.training_data_summary.get("metrics_status"),
+            payload=response_payload,
+        )
+        return response_payload
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
         """List models registered in the current session."""

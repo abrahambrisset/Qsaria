@@ -23,6 +23,7 @@ from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeature
 
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
+from .qsar_reporting import build_training_reporting_handoff
 from .qsar_training_policy import describe_compute_environment
 from .session_state import (
     bundle_artifacts,
@@ -372,6 +373,7 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "chemprop_training_input_csv",
         "chemprop_splits_file",
         "chemprop_input_manifest_path",
+        "reporting_handoff",
     )
     compact = {key: result.get(key) for key in keep_keys if result.get(key) is not None}
     compact.update(
@@ -1221,6 +1223,7 @@ class QSARTrainingToolkit(Toolkit):
             ),
             "validation_assessment": best_result.get("validation_assessment") or {},
         }
+        campaign_result["reporting_handoff"] = build_training_reporting_handoff(campaign_result)
         summary_path = campaign_root / "qsar_training_campaign_summary.json"
         write_training_summary(summary_path, campaign_result)
         campaign_result["summary_path"] = str(summary_path)
@@ -1446,6 +1449,7 @@ class QSARTrainingToolkit(Toolkit):
                     "temporary model_id. Report every persisted canonical catalog model_id."
                 ),
             }
+        result["reporting_handoff"] = build_training_reporting_handoff(result)
         self._refresh_enriched_training_artifacts(
             result=result,
             output_dir=output_dir,
