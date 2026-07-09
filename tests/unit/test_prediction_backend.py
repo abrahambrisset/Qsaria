@@ -11,6 +11,7 @@ import cs_copilot.tools.prediction.catalog as catalog_module
 import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
 from cs_copilot.tools.prediction.applicability_domain import (
     fit_bounding_box_domain,
+    fit_modern_applicability_domain,
     score_record_applicability_domain,
 )
 from cs_copilot.tools.prediction.backend import (
@@ -1192,6 +1193,86 @@ def test_model_registry_persistence_does_not_add_bounding_box_to_iforest_only_ad
     assert set(persisted_ad["methods"]) == {"isolation_forest"}
     assert set(persisted_manifest["methods"]) == {"isolation_forest"}
     assert "bounds_path" not in persisted_ad or persisted_ad["bounds_path"] is None
+
+
+def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    model_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_path.write_text("model")
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("smiles,pEC50,fp_0000,fp_0001\nCCO,5.0,1,1\nCCC,6.0,1,0\n")
+    features = pd.DataFrame({"fp_0000": [1, 1, 0], "fp_0001": [1, 0, 1]})
+    ad_summary = fit_modern_applicability_domain(
+        feature_frame=features.iloc[[0, 1]].copy(),
+        feature_columns=["fp_0000", "fp_0001"],
+        output_dir=run_dir / "applicability_domain",
+        model_id="session_model",
+        feature_space="morgan_only",
+        methods=["similarity_matrix"],
+        all_feature_frame=features,
+        train_indices=[0, 1],
+        similarity_top_k_neighbors=1,
+    )
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-07-07T12:00:00+02:00",
+                "validation_protocol": "standard_qsar",
+                "representation_name": "morgan_only",
+                "feature_columns": ["fp_0000", "fp_0001"],
+                "applicability_domain": ad_summary,
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="experimental",
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(model_id="session_model", agent=agent)
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    persisted_ad = persisted_metadata["applicability_domain"]
+    similarity = persisted_ad["methods"]["similarity_matrix"]
+    assert persisted_ad["primary_method"] == "similarity_matrix"
+    assert similarity["manifest_path"] == (
+        "artifacts/applicability_domain/similarity_matrix/manifest.json"
+    )
+    subspace = similarity["subspaces"]["morgan_binary"]
+    model_root = Path(result["metadata_path"]).parent
+    assert (model_root / subspace["matrix_all_path"]).exists()
+    assert (model_root / subspace["reference_features_path"]).exists()
 
 
 def test_export_prediction_summary_skips_latest_external_evaluation_without_history():

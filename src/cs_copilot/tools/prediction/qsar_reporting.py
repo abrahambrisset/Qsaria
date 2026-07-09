@@ -288,6 +288,7 @@ def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> st
     artifact_lines = [
         ("manifest", ad.get("manifest_path")),
         ("bounds", ad.get("bounds_path")),
+        ("similarity_matrix", ad.get("similarity_matrix_manifest_path")),
         ("scores_train", ad.get("scores_train_path")),
         ("scores_validation", ad.get("scores_validation_path")),
         ("scores_test", ad.get("scores_test_path")),

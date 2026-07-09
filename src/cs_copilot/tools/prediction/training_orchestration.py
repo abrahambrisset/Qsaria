@@ -470,6 +470,8 @@ def build_applicability_domain_for_training(
     feature_metadata: Optional[Mapping[str, Any]] = None,
     prediction_artifact_paths: Optional[Mapping[str, Any]] = None,
     applicability_domain_methods: Optional[Sequence[str] | str] = None,
+    similarity_top_k_neighbors: int | str | None = None,
+    similarity_threshold_percentile: float | str | None = None,
 ) -> Dict[str, Any]:
     """Build the modern AD from the train split and keep legacy AD."""
     splits_path = Path(str(primary_run.get("splits_path") or primary_output_dir / "splits.json"))
@@ -526,6 +528,17 @@ def build_applicability_domain_for_training(
         resolved_feature_columns = []
 
     train_frame = modern_feature_frame.iloc[list(train_indices)].copy()
+    split_item = split_payload[0]
+    split_indices = {
+        "train": list(split_item.get("train") or []),
+        "validation": list(
+            split_item.get("validation")
+            or split_item.get("val")
+            or split_item.get("valid")
+            or []
+        ),
+        "test": list(split_item.get("test") or []),
+    }
     ad_random_state = (
         primary_run.get("random_state")
         or primary_run.get("data_seed")
@@ -542,12 +555,16 @@ def build_applicability_domain_for_training(
         feature_metadata=feature_metadata,
         methods=applicability_domain_methods,
         random_state=int(ad_random_state),
+        all_feature_frame=modern_feature_frame,
+        train_indices=train_indices,
+        split_indices=split_indices,
+        similarity_top_k_neighbors=similarity_top_k_neighbors,
+        similarity_threshold_percentile=similarity_threshold_percentile,
     )
 
     if ad_summary.get("available"):
         split_score_summaries: Dict[str, Any] = {}
         score_paths: Dict[str, str] = {}
-        split_item = split_payload[0]
         split_aliases = {
             "train": ["train"],
             "validation": ["validation", "val", "valid"],
@@ -566,6 +583,7 @@ def build_applicability_domain_for_training(
                 applicability_domain=ad_summary,
                 output_dir=ad_output_dir,
                 score_label=label,
+                row_indices=indices,
             )
             split_score_summaries[label] = scored.get("summary") or {}
             if scored.get("scores_path"):

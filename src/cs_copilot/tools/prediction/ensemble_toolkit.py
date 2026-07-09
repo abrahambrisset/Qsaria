@@ -20,6 +20,11 @@ from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
 from .lightgbm_backend import LightGBMBackend
+from .qsar_response_compaction import (
+    compact_applicability_domain_for_response,
+    compact_inference_profile_for_response,
+    compact_training_data_summary_for_response,
+)
 from .qsar_training_policy import project_now, safe_slug
 from .tabicl_backend import TabICLBackend
 from .training_orchestration import (
@@ -440,10 +445,14 @@ class EnsembleToolkit(Toolkit):
                 }
             ),
             "known_metrics": record.known_metrics,
-            "training_data_summary": record.training_data_summary,
-            "inference_profile": record.inference_profile,
+            "training_data_summary": compact_training_data_summary_for_response(
+                record.training_data_summary
+            ),
+            "inference_profile": compact_inference_profile_for_response(record.inference_profile),
             "selection_hints": record.selection_hints,
-            "applicability_domain": record.applicability_domain,
+            "applicability_domain": compact_applicability_domain_for_response(
+                record.applicability_domain
+            ),
             "selection_evidence": {
                 "evidence_tier": evidence.get("evidence_tier"),
                 "selection_reason": evidence.get("selection_reason"),

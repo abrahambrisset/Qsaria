@@ -1,3 +1,4 @@
+import pytest
 import pandas as pd
 
 from cs_copilot.tools.prediction.applicability_domain import (
@@ -6,12 +7,15 @@ from cs_copilot.tools.prediction.applicability_domain import (
     AD_OUT_OF_DOMAIN,
     AD_SCHEMA_MISMATCH,
     ISOLATION_FOREST_METHOD,
+    SIMILARITY_MATRIX_METHOD,
     _combine_modern_scores,
     fit_bounding_box_domain,
     fit_isolation_forest_domain,
+    fit_similarity_matrix_domain,
     fit_modern_applicability_domain,
     score_bounding_box_domain,
     score_isolation_forest_domain,
+    score_similarity_matrix_domain,
 )
 from cs_copilot.tools.prediction.backend import PredictionTaskSpec
 from cs_copilot.tools.prediction.training_orchestration import (
@@ -157,6 +161,89 @@ def test_isolation_forest_invalid_and_schema_mismatch_are_explicit(tmp_path):
 
     assert invalid["scores"].loc[0, "ad_isolation_forest_status"] == AD_INVALID_FEATURES
     assert mismatch["scores"].loc[0, "ad_status"] == AD_SCHEMA_MISMATCH
+
+
+def test_similarity_matrix_morgan_uses_one_full_matrix_but_scores_against_train(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "fp_0000": [1, 1, 1, 0, 0],
+            "fp_0001": [1, 0, 0, 1, 1],
+        }
+    )
+    manifest = fit_similarity_matrix_domain(
+        feature_frame=frame,
+        feature_columns=["fp_0000", "fp_0001"],
+        output_dir=tmp_path / "ad",
+        model_id="model",
+        feature_space="morgan_only",
+        train_indices=[0, 1, 2],
+        split_indices={"train": [0, 1, 2], "validation": [3], "test": [4]},
+        top_k_neighbors=1,
+    )
+
+    subspace = manifest["subspaces"]["morgan_binary"]
+    assert (tmp_path / "ad" / "similarity_matrix" / "morgan_binary" / "matrix_all.npy").exists()
+    assert subspace["metric"] == "tanimoto"
+    assert subspace["threshold_percentile"] == 5.0
+
+    modern_manifest = {
+        "available": True,
+        "primary_method": SIMILARITY_MATRIX_METHOD,
+        "method": SIMILARITY_MATRIX_METHOD,
+        "feature_space": "morgan_only",
+        "methods": {SIMILARITY_MATRIX_METHOD: manifest},
+    }
+    scored = score_similarity_matrix_domain(
+        feature_frame=frame.iloc[[3]].copy(),
+        applicability_domain=modern_manifest,
+        row_indices=[3],
+    )
+
+    assert scored["scores"].loc[0, "ad_similarity_status"] == AD_OUT_OF_DOMAIN
+    assert scored["scores"].loc[0, "ad_similarity_nearest_train_index"] == 0
+
+    mismatch = score_similarity_matrix_domain(
+        feature_frame=pd.DataFrame({"fp_0000": [1]}),
+        applicability_domain=modern_manifest,
+    )
+    assert mismatch["scores"].loc[0, "ad_similarity_status"] == AD_SCHEMA_MISMATCH
+
+
+def test_similarity_matrix_rdkit_standardizes_and_ignores_zero_variance(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "desc_big": [0.0, 100.0, 200.0],
+            "desc_constant": [1.0, 1.0, 1.0],
+        }
+    )
+    manifest = fit_similarity_matrix_domain(
+        feature_frame=frame,
+        feature_columns=["desc_big", "desc_constant"],
+        output_dir=tmp_path / "ad",
+        model_id="model",
+        feature_space="rdkit_all",
+        train_indices=[0, 1],
+        top_k_neighbors=1,
+    )
+
+    subspace = manifest["subspaces"]["rdkit_descriptors"]
+    assert subspace["metric"] == "euclidean"
+    assert subspace["feature_names"] == ["desc_big"]
+    assert subspace["standardization"]["mean"] == [50.0]
+    assert subspace["standardization"]["std"] == [50.0]
+
+
+def test_similarity_matrix_rejects_unsupported_top_k(tmp_path):
+    with pytest.raises(ValueError, match="1, 3, or 5"):
+        fit_similarity_matrix_domain(
+            feature_frame=pd.DataFrame({"fp_0000": [1, 0]}),
+            feature_columns=["fp_0000"],
+            output_dir=tmp_path / "ad",
+            model_id="model",
+            feature_space="morgan_only",
+            train_indices=[0, 1],
+            top_k_neighbors=2,
+        )
 
 
 def test_modern_ad_aggregation_is_strict():

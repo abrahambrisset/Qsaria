@@ -92,6 +92,26 @@ def _benchmark_target_token(target_columns: List[str]) -> str:
     return safe_slug(str(target_columns[0])) or "target"
 
 
+def _matches_latest_training_run(
+    agent: Agent,
+    *,
+    train_csv: str,
+    task_type: str,
+    target_columns: List[str],
+) -> bool:
+    state = getattr(agent, "session_state", {}).get("prediction_models", {})
+    runs = state.get("training_runs") or []
+    if not runs or not isinstance(runs[-1], dict):
+        return False
+    latest = runs[-1]
+    return (
+        str(latest.get("train_csv") or "") == str(train_csv)
+        and str(latest.get("task_type") or "") == str(task_type)
+        and [str(item) for item in latest.get("target_columns") or []]
+        == [str(item) for item in target_columns]
+    )
+
+
 class BenchmarkToolkit(Toolkit):
     """Toolkit orchestrating multi-backend QSAR benchmark campaigns."""
 
@@ -872,9 +892,34 @@ class BenchmarkToolkit(Toolkit):
                 ),
             }
 
-        target_columns = _coerce_list(target_columns) or []
         requested_backends = _coerce_list(backends)
         requested_tabicl_variants = _coerce_list(tabicl_candidate_variants)
+        target_columns = _coerce_list(target_columns) or []
+
+        if (
+            _matches_latest_training_run(
+                agent,
+                train_csv=train_csv,
+                task_type=task_type,
+                target_columns=target_columns,
+            )
+            and not requested_backends
+            and not requested_tabicl_variants
+        ):
+            return {
+                "benchmark_started": False,
+                "blocked": True,
+                "reason": (
+                    "A single-model QSAR training run for this dataset and target has just "
+                    "completed. Do not start `benchmark_qsar_models` as a follow-up step "
+                    "unless the user explicitly asked for a benchmark with a comparative scope."
+                ),
+                "next_step": (
+                    "Continue with the completed model report. If the user asks for a benchmark, "
+                    "call this tool in that new benchmark request with explicit `backends` or "
+                    "`tabicl_candidate_variants`."
+                ),
+            }
 
         benchmark_protocol = self._resolve_benchmark_protocol(benchmark_mode)
         compute_payload = self._resolve_compute_profile()

@@ -226,6 +226,8 @@ class LightGBMToolkit(Toolkit):
         feature_space: Optional[str] = None,
         prediction_artifact_paths: Optional[Dict[str, Any]] = None,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
     ) -> Dict[str, Any]:
         return build_applicability_domain_for_training(
             train_csv=train_csv,
@@ -236,6 +238,8 @@ class LightGBMToolkit(Toolkit):
             feature_space=feature_space,
             prediction_artifact_paths=prediction_artifact_paths,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
         )
 
     def _summarize_training_resources(
@@ -701,6 +705,8 @@ class LightGBMToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -739,6 +745,16 @@ class LightGBMToolkit(Toolkit):
             applicability_domain_methods
             if applicability_domain_methods is not None
             else requested_extra_args.pop("applicability_domain_methods", None)
+        )
+        requested_similarity_top_k = (
+            similarity_top_k_neighbors
+            if similarity_top_k_neighbors is not None
+            else requested_extra_args.pop("similarity_top_k_neighbors", None)
+        )
+        requested_similarity_percentile = (
+            similarity_threshold_percentile
+            if similarity_threshold_percentile is not None
+            else requested_extra_args.pop("similarity_threshold_percentile", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1158,6 +1174,8 @@ class LightGBMToolkit(Toolkit):
                 "test": root_artifacts.get("test_predictions_path"),
             },
             applicability_domain_methods=requested_ad_methods,
+            similarity_top_k_neighbors=requested_similarity_top_k,
+            similarity_threshold_percentile=requested_similarity_percentile,
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None

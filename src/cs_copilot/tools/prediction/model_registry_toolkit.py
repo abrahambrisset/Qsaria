@@ -17,6 +17,12 @@ from agno.tools.toolkit import Toolkit
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import get_backend_capabilities
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
+from .qsar_response_compaction import (
+    compact_applicability_domain_for_response,
+    compact_inference_profile_for_response as _shared_compact_inference_profile,
+    compact_model_payload_for_response as _shared_compact_model_payload,
+    compact_training_data_summary_for_response,
+)
 from .qsar_reporting import build_registry_reporting_handoff
 from .qsar_training_policy import (
     coerce_project_timezone,
@@ -32,9 +38,6 @@ from .session_state import (
 )
 
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
-FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
-
-
 def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
 
@@ -69,31 +72,11 @@ def _load_json_if_available(path: Path) -> Dict[str, Any]:
 
 
 def _compact_inference_profile_for_response(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    payload = dict(profile or {})
-    feature_columns = payload.pop("feature_columns", None)
-    if isinstance(feature_columns, list):
-        omitted_count = max(0, len(feature_columns) - FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT)
-        payload.update(
-            {
-                "feature_columns_count": len(feature_columns),
-                "feature_columns_sample": feature_columns[:FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT],
-                "feature_columns_omitted_count": omitted_count,
-            }
-        )
-        if omitted_count:
-            payload["feature_columns_note"] = (
-                "Full feature_columns are present in the catalog record but omitted "
-                "from this tool response to keep agent context bounded."
-            )
-    return payload
+    return _shared_compact_inference_profile(profile)
 
 
 def _compact_model_payload_for_response(payload: Dict[str, Any]) -> Dict[str, Any]:
-    compacted = dict(payload)
-    compacted["inference_profile"] = _compact_inference_profile_for_response(
-        compacted.get("inference_profile")
-    )
-    return compacted
+    return _shared_compact_model_payload(payload)
 
 
 def _compact_recommendation_for_response(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,34 +103,13 @@ def _compact_persisted_record_for_response(record: PredictionModelRecord) -> Dic
         "display_name": record.display_name,
         "version": record.version,
         "known_metrics": record.known_metrics,
-        "training_data_summary": {
-            key: record.training_data_summary.get(key)
-            for key in (
-                "trained_at",
-                "trained_date",
-                "trained_time",
-                "endpoint_name",
-                "dataset_name",
-                "validation_protocol",
-                "seed_policy_report",
-                "feature_preparation_durations",
-            )
-            if record.training_data_summary.get(key) is not None
-        },
+        "training_data_summary": compact_training_data_summary_for_response(
+            record.training_data_summary
+        ),
         "inference_profile": _compact_inference_profile_for_response(record.inference_profile),
-        "applicability_domain": {
-            key: record.applicability_domain.get(key)
-            for key in (
-                "method",
-                "train_size",
-                "reference_size",
-                "prototype_count",
-                "in_domain_threshold",
-                "edge_of_domain_threshold",
-                "applicability_domain_path",
-            )
-            if record.applicability_domain.get(key) is not None
-        },
+        "applicability_domain": compact_applicability_domain_for_response(
+            record.applicability_domain
+        ),
     }
 
 
@@ -730,6 +692,9 @@ class ModelRegistryToolkit(Toolkit):
             / "applicability_domain"
             / "isolation_forest"
             / "model.joblib",
+            "ad_similarity_matrix_dir": run_dir
+            / "applicability_domain"
+            / "similarity_matrix",
             "ad_scores_train_path": run_dir / "applicability_domain" / "scores_train.csv",
             "ad_scores_validation_path": run_dir
             / "applicability_domain"
@@ -887,12 +852,19 @@ class ModelRegistryToolkit(Toolkit):
                         / "isolation_forest"
                         / "model.joblib"
                     )
+                elif key == "ad_similarity_matrix_dir":
+                    target_path = artifacts_dir / "applicability_domain" / "similarity_matrix"
                 elif key.startswith("ad_scores_"):
                     target_path = artifacts_dir / "applicability_domain" / source_path.name
                 else:
                     target_path = artifacts_dir / source_path.name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target_path)
+                if source_path.is_dir():
+                    if target_path.exists():
+                        shutil.rmtree(target_path)
+                    shutil.copytree(source_path, target_path)
+                else:
+                    shutil.copy2(source_path, target_path)
                 copied_files[key] = _relative_posix(target_path, model_root)
 
         copied_plot_artifacts: Dict[str, str] = {}
@@ -1071,6 +1043,28 @@ class ModelRegistryToolkit(Toolkit):
                     ]
                     methods["isolation_forest"] = isolation_forest
                     manifest_payload["methods"] = methods
+                if copied_files.get("ad_similarity_matrix_dir"):
+                    similarity_dir = copied_files["ad_similarity_matrix_dir"]
+                    manifest_payload["similarity_matrix_manifest_path"] = (
+                        f"{similarity_dir}/manifest.json"
+                    )
+                    manifest_payload["activity_cliffs_reusable"] = True
+                    methods = dict(manifest_payload.get("methods") or {})
+                    similarity = dict(methods.get("similarity_matrix") or {})
+                    similarity["manifest_path"] = f"{similarity_dir}/manifest.json"
+                    subspaces = dict(similarity.get("subspaces") or {})
+                    for subspace, payload in list(subspaces.items()):
+                        subspace_payload = dict(payload or {})
+                        subspace_payload["matrix_all_path"] = (
+                            f"{similarity_dir}/{subspace}/matrix_all.npy"
+                        )
+                        subspace_payload["reference_features_path"] = (
+                            f"{similarity_dir}/{subspace}/reference_features.npz"
+                        )
+                        subspaces[subspace] = subspace_payload
+                    similarity["subspaces"] = subspaces
+                    methods["similarity_matrix"] = similarity
+                    manifest_payload["methods"] = methods
                 for source_key, manifest_key in (
                     ("ad_scores_train_path", "scores_train_path"),
                     ("ad_scores_validation_path", "scores_validation_path"),
@@ -1131,6 +1125,7 @@ class ModelRegistryToolkit(Toolkit):
             copied_files.get("ad_manifest_path")
             or copied_files.get("ad_bounds_path")
             or copied_files.get("ad_isolation_forest_model_path")
+            or copied_files.get("ad_similarity_matrix_dir")
         )
         if modern_ad_available:
             metadata_ad = dict(record.applicability_domain or {})
@@ -1147,6 +1142,11 @@ class ModelRegistryToolkit(Toolkit):
                         "ad_isolation_forest_model_path"
                     )
                     or metadata_ad.get("isolation_forest_model_path"),
+                    "similarity_matrix_manifest_path": (
+                        f"{copied_files.get('ad_similarity_matrix_dir')}/manifest.json"
+                        if copied_files.get("ad_similarity_matrix_dir")
+                        else metadata_ad.get("similarity_matrix_manifest_path")
+                    ),
                 }
             )
             methods = dict(metadata_ad.get("methods") or {})
@@ -1162,6 +1162,23 @@ class ModelRegistryToolkit(Toolkit):
                 isolation_forest["model_path"] = copied_files["ad_isolation_forest_model_path"]
             if isolation_forest:
                 methods["isolation_forest"] = isolation_forest
+            similarity = dict(methods.get("similarity_matrix") or {})
+            if copied_files.get("ad_similarity_matrix_dir"):
+                similarity_dir = copied_files["ad_similarity_matrix_dir"]
+                similarity["manifest_path"] = f"{similarity_dir}/manifest.json"
+                subspaces = dict(similarity.get("subspaces") or {})
+                for subspace, payload in list(subspaces.items()):
+                    subspace_payload = dict(payload or {})
+                    subspace_payload["matrix_all_path"] = (
+                        f"{similarity_dir}/{subspace}/matrix_all.npy"
+                    )
+                    subspace_payload["reference_features_path"] = (
+                        f"{similarity_dir}/{subspace}/reference_features.npz"
+                    )
+                    subspaces[subspace] = subspace_payload
+                similarity["subspaces"] = subspaces
+            if similarity:
+                methods["similarity_matrix"] = similarity
             metadata_ad["methods"] = methods
             for source_key, metadata_key in (
                 ("ad_scores_train_path", "scores_train_path"),
@@ -1318,6 +1335,7 @@ class ModelRegistryToolkit(Toolkit):
             artifacts.get("ad_manifest_path")
             or artifacts.get("ad_bounds_path")
             or artifacts.get("ad_isolation_forest_model_path")
+            or artifacts.get("ad_similarity_matrix_dir")
         ):
             metadata_ad = dict(record.applicability_domain or {})
             metadata_ad.update(
@@ -1333,6 +1351,11 @@ class ModelRegistryToolkit(Toolkit):
                         "ad_isolation_forest_model_path"
                     )
                     or metadata_ad.get("isolation_forest_model_path"),
+                    "similarity_matrix_manifest_path": (
+                        f"{artifacts.get('ad_similarity_matrix_dir')}/manifest.json"
+                        if artifacts.get("ad_similarity_matrix_dir")
+                        else metadata_ad.get("similarity_matrix_manifest_path")
+                    ),
                 }
             )
             methods = dict(metadata_ad.get("methods") or {})
@@ -1350,6 +1373,23 @@ class ModelRegistryToolkit(Toolkit):
                 )
             if isolation_forest:
                 methods["isolation_forest"] = isolation_forest
+            similarity = dict(methods.get("similarity_matrix") or {})
+            if artifacts.get("ad_similarity_matrix_dir"):
+                similarity_dir = artifacts["ad_similarity_matrix_dir"]
+                similarity["manifest_path"] = f"{similarity_dir}/manifest.json"
+                subspaces = dict(similarity.get("subspaces") or {})
+                for subspace, payload in list(subspaces.items()):
+                    subspace_payload = dict(payload or {})
+                    subspace_payload["matrix_all_path"] = (
+                        f"{similarity_dir}/{subspace}/matrix_all.npy"
+                    )
+                    subspace_payload["reference_features_path"] = (
+                        f"{similarity_dir}/{subspace}/reference_features.npz"
+                    )
+                    subspaces[subspace] = subspace_payload
+                similarity["subspaces"] = subspaces
+            if similarity:
+                methods["similarity_matrix"] = similarity
             metadata_ad["methods"] = methods
             if artifacts.get("applicability_domain_path"):
                 metadata_ad["legacy_similarity_ad"] = {

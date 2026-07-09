@@ -28,6 +28,7 @@ from .applicability_domain import (
     score_record_applicability_domain,
 )
 from .backend import PredictionModelRecord
+from .qsar_response_compaction import compact_applicability_domain_for_response
 from .qsar_reporting import build_external_evaluation_reporting_handoff
 from .qsar_training_policy import project_now, safe_slug
 from .training_orchestration import (
@@ -655,7 +656,7 @@ def evaluate_model_on_external_dataset(
     metadata.setdefault("known_metrics", dict(record.known_metrics or {}))
     metadata_path.write_text(json.dumps(_json_safe(metadata), indent=2) + "\n")
 
-    return {
+    response = {
         **summary,
         "metrics_path": artifacts["metrics"],
         "predictions_path": artifacts["predictions"],
@@ -666,3 +667,7 @@ def evaluate_model_on_external_dataset(
         "external_evaluation_count": len(external_evaluations),
         "multiclass": bool(is_multiclass_task(task_type)),
     }
+    response["applicability_domain"] = compact_applicability_domain_for_response(
+        response.get("applicability_domain") or {}
+    )
+    return response

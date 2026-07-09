@@ -7,7 +7,14 @@ from cs_copilot.tools.prediction.qsar_reporting import (
     build_registry_reporting_handoff,
     build_training_reporting_handoff,
 )
-from cs_copilot.tools.prediction.qsar_training_toolkit import _compact_training_tool_result
+from cs_copilot.tools.prediction.qsar_response_compaction import (
+    compact_model_payload_for_response,
+    compact_prediction_result_for_response,
+)
+from cs_copilot.tools.prediction.qsar_training_toolkit import (
+    _compact_registry_payload,
+    _compact_training_tool_result,
+)
 
 
 def test_classification_training_handoff_keeps_validation_test_ad_rows():
@@ -192,3 +199,100 @@ def test_compact_training_result_preserves_reporting_handoff():
     )
 
     assert compact["reporting_handoff"]["evaluation_metrics_markdown"] == "| Source |"
+
+
+def test_compact_training_result_omits_heavy_ad_feature_lists():
+    feature_names = [f"fp_{index:04d}" for index in range(2048)]
+    ad = {
+        "available": True,
+        "method": "combined",
+        "feature_space": "morgan_only",
+        "feature_count": 2048,
+        "feature_names": feature_names,
+        "feature_kinds": ["morgan_binary"] * 2048,
+        "manifest_path": "/tmp/ad/manifest.json",
+        "methods": {
+            "similarity_matrix": {
+                "feature_names": feature_names,
+                "feature_kinds": ["morgan_binary"] * 2048,
+                "feature_count": 2048,
+                "subspaces": {
+                    "morgan_binary": {
+                        "feature_names": feature_names,
+                        "feature_kinds": ["morgan_binary"] * 2048,
+                        "feature_count": 2048,
+                        "threshold": 0.25,
+                        "matrix_all_path": "/tmp/matrix.npy",
+                    }
+                },
+            }
+        },
+        "split_score_summaries": {
+            "test": {
+                "row_count": 10,
+                "coverage_in_domain": 0.8,
+                "metrics_all": {"r2": 0.4, "n": 10},
+            }
+        },
+    }
+
+    compact = _compact_training_tool_result(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "applicability_domain": ad,
+            "recommended_registry_payload": {"applicability_domain": ad},
+        }
+    )
+    registry = _compact_registry_payload({"applicability_domain": ad})
+    rendered = str(compact) + str(registry)
+
+    assert "feature_names" not in rendered
+    assert "feature_kinds" not in rendered
+    assert compact["applicability_domain"]["methods"]["similarity_matrix"]["subspaces"][
+        "morgan_binary"
+    ]["threshold"] == 0.25
+    assert (
+        compact["applicability_domain"]["split_score_summaries"]["test"]["metrics_all"]["r2"]
+        == 0.4
+    )
+
+
+def test_common_compaction_handles_catalog_model_payloads():
+    feature_columns = [f"fp_{index:04d}" for index in range(64)]
+    feature_names = [f"fp_{index:04d}" for index in range(2048)]
+
+    compact = compact_model_payload_for_response(
+        {
+            "model_id": "model",
+            "inference_profile": {"feature_columns": feature_columns},
+            "applicability_domain": {
+                "feature_names": feature_names,
+                "methods": {"bounding_box": {"feature_names": feature_names}},
+            },
+        }
+    )
+    rendered = str(compact)
+
+    assert "feature_names" not in rendered
+    assert "feature_columns" not in compact["inference_profile"]
+    assert compact["inference_profile"]["feature_columns_count"] == 64
+
+
+def test_common_compaction_handles_prediction_results():
+    feature_columns = [f"fp_{index:04d}" for index in range(64)]
+    feature_names = [f"fp_{index:04d}" for index in range(2048)]
+
+    compact = compact_prediction_result_for_response(
+        {
+            "preds_path": "/tmp/preds.csv",
+            "feature_columns": feature_columns,
+            "applicability_domain": {"feature_names": feature_names, "feature_count": 2048},
+        }
+    )
+    rendered = str(compact)
+
+    assert "feature_names" not in rendered
+    assert "feature_columns" not in compact
+    assert compact["feature_columns_count"] == 64
+    assert compact["applicability_domain"]["feature_count"] == 2048

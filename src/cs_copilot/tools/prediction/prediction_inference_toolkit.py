@@ -24,6 +24,10 @@ from .applicability_domain import (
 )
 from .external_evaluation import evaluate_model_on_external_dataset
 from .model_registry_toolkit import ModelRegistryToolkit
+from .qsar_response_compaction import (
+    compact_applicability_domain_for_response,
+    compact_prediction_result_for_response,
+)
 from .session_state import get_prediction_state
 
 _MISSING_TARGETS_ERROR = "missing required target columns"
@@ -170,13 +174,16 @@ class PredictionInferenceToolkit(Toolkit):
         preview_columns = list(preview_df.columns)
         preview = preview_df.head(5).to_dict(orient="records")
         num_rows = int(len(preview_df))
+        compact_ad = compact_applicability_domain_for_response(
+            result.get("applicability_domain") or {}
+        )
 
         prediction_state["last_prediction"] = {
             "model_id": model_id,
             "input_csv": str(local_input),
             "preds_path": str(output_path),
             "return_uncertainty": return_uncertainty,
-            "applicability_domain": result.get("applicability_domain") or {},
+            "applicability_domain": compact_ad,
             "applicability_domain_columns": result.get("applicability_domain_columns") or [],
             "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
         }
@@ -190,7 +197,7 @@ class PredictionInferenceToolkit(Toolkit):
             "preview_columns": preview_columns,
             "preview": preview,
             "num_rows": num_rows,
-            "applicability_domain": result.get("applicability_domain") or {},
+            "applicability_domain": compact_ad,
             "applicability_domain_columns": result.get("applicability_domain_columns") or [],
             "ensemble_inference_summary": result.get("ensemble_inference_summary") or {},
         }
@@ -201,7 +208,7 @@ class PredictionInferenceToolkit(Toolkit):
         result["preview_columns"] = preview_columns
         result["preview"] = preview
         result["num_rows"] = num_rows
-        return result
+        return compact_prediction_result_for_response(result)
 
     def predict_from_smiles(
         self,

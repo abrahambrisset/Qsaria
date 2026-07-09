@@ -23,6 +23,11 @@ from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeature
 
 from .chemprop_toolkit import ChempropToolkit
 from .lightgbm_toolkit import LightGBMToolkit
+from .qsar_response_compaction import (
+    compact_applicability_domain_for_response as _compact_applicability_domain_for_response,
+    compact_registry_payload_for_response,
+    feature_columns_summary_for_response,
+)
 from .qsar_reporting import build_training_reporting_handoff
 from .qsar_training_policy import describe_compute_environment
 from .session_state import (
@@ -39,7 +44,6 @@ from .tabular_representations import (
 )
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
-FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT = 20
 QSAR_ROW_ID_COLUMN = "__qsar_row_id"
 
 
@@ -162,22 +166,7 @@ def _feature_columns_summary(
     *,
     source: Optional[str] = None,
 ) -> Dict[str, Any]:
-    columns = list(feature_columns or [])
-    omitted_count = max(0, len(columns) - FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT)
-    payload: Dict[str, Any] = {
-        "feature_columns_count": len(columns),
-        "feature_columns_sample": columns[:FEATURE_COLUMN_RESPONSE_SAMPLE_LIMIT],
-        "feature_columns_omitted_count": omitted_count,
-    }
-    if source:
-        payload["feature_columns_source"] = source
-    if omitted_count:
-        payload["feature_columns_note"] = (
-            "Full feature_columns are stored in the training summary and restored "
-            "during catalog persistence; they are omitted from the tool response "
-            "to keep agent context bounded."
-        )
-    return payload
+    return feature_columns_summary_for_response(feature_columns, source=source)
 
 
 def _feature_columns_summary_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -210,17 +199,14 @@ def _compact_registry_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dic
         return payload
     compacted = dict(payload)
     inference_profile = dict(compacted.get("inference_profile") or {})
-    feature_columns = inference_profile.pop("feature_columns", None)
-    if isinstance(feature_columns, list):
-        inference_profile.update(
-            _feature_columns_summary(
-                feature_columns,
-                source=inference_profile.get("feature_columns_source")
-                or (compacted.get("training_data_summary") or {}).get("training_summary_path"),
-            )
-        )
+    if inference_profile.get("feature_columns") and not inference_profile.get(
+        "feature_columns_source"
+    ):
+        inference_profile["feature_columns_source"] = (
+            compacted.get("training_data_summary") or {}
+        ).get("training_summary_path")
     compacted["inference_profile"] = inference_profile
-    return compacted
+    return compact_registry_payload_for_response(compacted)
 
 
 def _compact_feature_preparation_durations(feature_preparation: Dict[str, Any]) -> Dict[str, Any]:
@@ -356,11 +342,7 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "trained_at",
         "trained_date",
         "trained_time",
-        "applicability_domain",
         "plot_artifacts",
-        "recommended_registry_payload",
-        "candidate_registry_payloads",
-        "recommended_registry_payloads",
         "persistence_plan",
         "candidate_results",
         "ranking",
@@ -391,6 +373,26 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
     )
     if result.get("seed_policy"):
         compact["seed_policy"] = result["seed_policy"]
+    if result.get("applicability_domain"):
+        compact["applicability_domain"] = _compact_applicability_domain_for_response(
+            result["applicability_domain"]
+        )
+    if result.get("recommended_registry_payload"):
+        compact["recommended_registry_payload"] = _compact_registry_payload(
+            result["recommended_registry_payload"]
+        )
+    if result.get("recommended_registry_payloads"):
+        compact["recommended_registry_payloads"] = [
+            _compact_registry_payload(item) or {}
+            for item in result.get("recommended_registry_payloads") or []
+        ]
+    if result.get("candidate_registry_payloads"):
+        compact["candidate_registry_payloads"] = []
+        for item in result.get("candidate_registry_payloads") or []:
+            row = dict(item or {})
+            if row.get("registry_payload"):
+                row["registry_payload"] = _compact_registry_payload(row["registry_payload"])
+            compact["candidate_registry_payloads"].append(row)
     if result.get("split_results"):
         compact["split_results"] = [
             _compact_split_result_for_response(item) for item in result.get("split_results") or []
@@ -1106,6 +1108,8 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int,
         activity_cliff_flag_threshold: float,
         applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
         extra_args: Dict[str, Any],
         agent: Optional[Agent],
     ) -> Dict[str, Any]:
@@ -1138,6 +1142,8 @@ class QSARTrainingToolkit(Toolkit):
                 activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                 activity_cliff_flag_threshold=activity_cliff_flag_threshold,
                 applicability_domain_methods=applicability_domain_methods,
+                similarity_top_k_neighbors=similarity_top_k_neighbors,
+                similarity_threshold_percentile=similarity_threshold_percentile,
                 extra_args=candidate_extra_args,
                 agent=agent,
             )
@@ -1251,6 +1257,8 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1283,6 +1291,16 @@ class QSARTrainingToolkit(Toolkit):
             if applicability_domain_methods is not None
             else requested_extra_args.pop("applicability_domain_methods", None)
         )
+        requested_similarity_top_k = (
+            similarity_top_k_neighbors
+            if similarity_top_k_neighbors is not None
+            else requested_extra_args.pop("similarity_top_k_neighbors", None)
+        )
+        requested_similarity_percentile = (
+            similarity_threshold_percentile
+            if similarity_threshold_percentile is not None
+            else requested_extra_args.pop("similarity_threshold_percentile", None)
+        )
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
 
         if normalized_backend == "chemprop":
@@ -1302,6 +1320,8 @@ class QSARTrainingToolkit(Toolkit):
                 activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                 activity_cliff_flag_threshold=activity_cliff_flag_threshold,
                 applicability_domain_methods=requested_ad_methods,
+                similarity_top_k_neighbors=requested_similarity_top_k,
+                similarity_threshold_percentile=requested_similarity_percentile,
                 extra_args=requested_extra_args,
                 agent=agent,
             )
@@ -1333,6 +1353,8 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
                     applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1388,6 +1410,8 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
                     applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1408,6 +1432,8 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
                     applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1494,6 +1520,8 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1514,6 +1542,8 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1537,6 +1567,8 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1560,6 +1592,8 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1582,6 +1616,8 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1604,6 +1640,8 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
             extra_args=extra_args,
             agent=agent,
         )

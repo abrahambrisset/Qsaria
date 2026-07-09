@@ -240,6 +240,8 @@ class TabICLToolkit(Toolkit):
         feature_space: Optional[str] = None,
         prediction_artifact_paths: Optional[Dict[str, Any]] = None,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
     ) -> Dict[str, Any]:
         return build_applicability_domain_for_training(
             train_csv=train_csv,
@@ -250,6 +252,8 @@ class TabICLToolkit(Toolkit):
             feature_space=feature_space,
             prediction_artifact_paths=prediction_artifact_paths,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
         )
 
     def _summarize_training_resources(
@@ -449,6 +453,10 @@ class TabICLToolkit(Toolkit):
         requested_extra_args = dict(extra_args or {})
         requested_validation_strategy = requested_extra_args.pop("validation_strategy", None)
         requested_ad_methods = requested_extra_args.pop("applicability_domain_methods", None)
+        requested_similarity_top_k = requested_extra_args.pop("similarity_top_k_neighbors", None)
+        requested_similarity_percentile = requested_extra_args.pop(
+            "similarity_threshold_percentile", None
+        )
         requested_extra_args.setdefault("feature_columns", feature_columns)
         requested_extra_args.setdefault("split_sizes", split_sizes)
         requested_extra_args.setdefault("random_state", random_state)
@@ -706,6 +714,8 @@ class TabICLToolkit(Toolkit):
                 "test": root_artifacts.get("test_predictions_path"),
             },
             applicability_domain_methods=requested_ad_methods,
+            similarity_top_k_neighbors=requested_similarity_top_k,
+            similarity_threshold_percentile=requested_similarity_percentile,
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
@@ -938,6 +948,8 @@ class TabICLToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -973,8 +985,22 @@ class TabICLToolkit(Toolkit):
             if applicability_domain_methods is not None
             else requested_extra_args.pop("applicability_domain_methods", None)
         )
+        requested_similarity_top_k = (
+            similarity_top_k_neighbors
+            if similarity_top_k_neighbors is not None
+            else requested_extra_args.pop("similarity_top_k_neighbors", None)
+        )
+        requested_similarity_percentile = (
+            similarity_threshold_percentile
+            if similarity_threshold_percentile is not None
+            else requested_extra_args.pop("similarity_threshold_percentile", None)
+        )
         if requested_ad_methods is not None:
             requested_extra_args["applicability_domain_methods"] = requested_ad_methods
+        if requested_similarity_top_k is not None:
+            requested_extra_args["similarity_top_k_neighbors"] = requested_similarity_top_k
+        if requested_similarity_percentile is not None:
+            requested_extra_args["similarity_threshold_percentile"] = requested_similarity_percentile
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,

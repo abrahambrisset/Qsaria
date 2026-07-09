@@ -1110,6 +1110,8 @@ class ChempropToolkit(Toolkit):
         task: PredictionTaskSpec,
         prediction_artifact_paths: Optional[Dict[str, Any]] = None,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
     ) -> Dict[str, Any]:
         artifacts = self._resolve_chemprop_run_artifacts(primary_output_dir)
         model_path = (
@@ -1149,6 +1151,8 @@ class ChempropToolkit(Toolkit):
                     },
                     prediction_artifact_paths=prediction_artifact_paths,
                     applicability_domain_methods=applicability_domain_methods,
+                    similarity_top_k_neighbors=similarity_top_k_neighbors,
+                    similarity_threshold_percentile=similarity_threshold_percentile,
                 )
             except Exception as exc:
                 return {
@@ -1167,6 +1171,8 @@ class ChempropToolkit(Toolkit):
             feature_space="chemprop_embedding",
             prediction_artifact_paths=prediction_artifact_paths,
             applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
         )
 
     def describe_backend(
@@ -1344,6 +1350,8 @@ class ChempropToolkit(Toolkit):
         activity_cliff_flag_threshold: float = 0.35,
         validation_strategy: Optional[Dict[str, Any]] = None,
         applicability_domain_methods: Optional[List[str] | str] = None,
+        similarity_top_k_neighbors: int | str | None = None,
+        similarity_threshold_percentile: float | str | None = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1377,6 +1385,16 @@ class ChempropToolkit(Toolkit):
             applicability_domain_methods
             if applicability_domain_methods is not None
             else cleaned_extra_args.pop("applicability_domain_methods", None)
+        )
+        requested_similarity_top_k = (
+            similarity_top_k_neighbors
+            if similarity_top_k_neighbors is not None
+            else cleaned_extra_args.pop("similarity_top_k_neighbors", None)
+        )
+        requested_similarity_percentile = (
+            similarity_threshold_percentile
+            if similarity_threshold_percentile is not None
+            else cleaned_extra_args.pop("similarity_threshold_percentile", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1637,10 +1655,12 @@ class ChempropToolkit(Toolkit):
                 task=task,
                 prediction_artifact_paths={
                     "validation": root_artifacts.get("validation_predictions_path"),
-                    "test": root_artifacts.get("test_predictions_path"),
-                },
-                applicability_domain_methods=requested_ad_methods,
-            )
+                "test": root_artifacts.get("test_predictions_path"),
+            },
+            applicability_domain_methods=requested_ad_methods,
+            similarity_top_k_neighbors=requested_similarity_top_k,
+            similarity_threshold_percentile=requested_similarity_percentile,
+        )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
             if protocol_policy.get("validation_strategy_type") != "full_train":
