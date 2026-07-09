@@ -205,21 +205,6 @@ def compact_applicability_domain_for_response(ad: Optional[Dict[str, Any]]) -> D
             for name, summary in split_summaries.items()
             if isinstance(summary, dict)
         }
-    legacy = ad.get("legacy_similarity_ad")
-    if isinstance(legacy, dict):
-        compact["legacy_similarity_ad"] = {
-            key: legacy.get(key)
-            for key in (
-                "available",
-                "method",
-                "threshold",
-                "reference_size",
-                "reference_store_path",
-                "reference_manifest_path",
-                "applicability_domain_path",
-            )
-            if legacy.get(key) is not None
-        }
     return compact
 
 

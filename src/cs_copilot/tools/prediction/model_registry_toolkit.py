@@ -678,11 +678,6 @@ class ModelRegistryToolkit(Toolkit):
             "chemprop_input_manifest_path": run_dir
             / "chemprop_inputs"
             / "chemprop_input_manifest.json",
-            "reference_store_path": run_dir / "applicability_domain" / "reference_fingerprints.npz",
-            "reference_manifest_path": run_dir / "applicability_domain" / "reference_manifest.json",
-            "applicability_domain_path": run_dir
-            / "applicability_domain"
-            / "applicability_domain.json",
             "ad_manifest_path": run_dir / "applicability_domain" / "manifest.json",
             "ad_bounds_path": run_dir
             / "applicability_domain"
@@ -719,9 +714,6 @@ class ModelRegistryToolkit(Toolkit):
             "chemprop_training_input_csv",
             "chemprop_splits_file",
             "chemprop_input_manifest_path",
-            "reference_store_path",
-            "reference_manifest_path",
-            "applicability_domain_path",
             "ad_manifest_path",
             "ad_bounds_path",
             "ad_isolation_forest_model_path",
@@ -1187,27 +1179,7 @@ class ModelRegistryToolkit(Toolkit):
             ):
                 if copied_files.get(source_key):
                     metadata_ad[metadata_key] = copied_files[source_key]
-            if copied_files.get("applicability_domain_path"):
-                metadata_ad["legacy_similarity_ad"] = {
-                    "available": True,
-                    "legacy": True,
-                    "method": "legacy_similarity_ad",
-                    "reference_store_path": copied_files.get("reference_store_path"),
-                    "reference_manifest_path": copied_files.get("reference_manifest_path"),
-                    "index_path": copied_files.get("applicability_domain_path"),
-                }
-            else:
-                metadata_ad.pop("legacy_similarity_ad", None)
             metadata["applicability_domain"] = metadata_ad
-        elif copied_files.get("applicability_domain_path"):
-            metadata["applicability_domain"] = {
-                "available": True,
-                "legacy": True,
-                "method": "legacy_similarity_ad",
-                "reference_store_path": copied_files.get("reference_store_path"),
-                "reference_manifest_path": copied_files.get("reference_manifest_path"),
-                "index_path": copied_files.get("applicability_domain_path"),
-            }
         if copied_plot_artifacts:
             metadata["plot_artifacts"] = copied_plot_artifacts
         if copied_split_predictions:
@@ -1391,27 +1363,7 @@ class ModelRegistryToolkit(Toolkit):
             if similarity:
                 methods["similarity_matrix"] = similarity
             metadata_ad["methods"] = methods
-            if artifacts.get("applicability_domain_path"):
-                metadata_ad["legacy_similarity_ad"] = {
-                    "available": True,
-                    "legacy": True,
-                    "method": "legacy_similarity_ad",
-                    "reference_store_path": artifacts.get("reference_store_path"),
-                    "reference_manifest_path": artifacts.get("reference_manifest_path"),
-                    "index_path": artifacts.get("applicability_domain_path"),
-                }
-            else:
-                metadata_ad.pop("legacy_similarity_ad", None)
             payload["applicability_domain"] = metadata_ad
-        elif artifacts.get("applicability_domain_path"):
-            payload["applicability_domain"] = {
-                "available": True,
-                "legacy": True,
-                "method": "legacy_similarity_ad",
-                "reference_store_path": artifacts.get("reference_store_path"),
-                "reference_manifest_path": artifacts.get("reference_manifest_path"),
-                "index_path": artifacts.get("applicability_domain_path"),
-            }
         if artifacts.get("plot_artifacts"):
             payload["plot_artifacts"] = artifacts.get("plot_artifacts")
         if artifacts.get("activity_cliffs") and record.training_data_summary.get("activity_cliffs"):
@@ -1576,7 +1528,6 @@ class ModelRegistryToolkit(Toolkit):
                 "curated_dataset_path"
             )
 
-        legacy_applicability_domain = resolved_applicability_domain.get("legacy_similarity_ad") or {}
         source_artifacts = {
             "training_summary_path": (
                 str(summary_path) if summary_path and summary_path.exists() else None
@@ -1589,14 +1540,6 @@ class ModelRegistryToolkit(Toolkit):
             "chemprop_splits_file": summary_payload.get("chemprop_splits_file"),
             "chemprop_input_manifest_path": summary_payload.get("chemprop_input_manifest_path"),
             "split_results": summary_payload.get("split_results") or [],
-            "reference_store_path": resolved_applicability_domain.get("reference_store_path")
-            or legacy_applicability_domain.get("reference_store_path"),
-            "reference_manifest_path": resolved_applicability_domain.get("reference_manifest_path")
-            or legacy_applicability_domain.get("reference_manifest_path"),
-            "applicability_domain_path": resolved_applicability_domain.get(
-                "applicability_domain_path"
-            )
-            or legacy_applicability_domain.get("applicability_domain_path"),
             "ad_manifest_path": resolved_applicability_domain.get("manifest_path"),
             "ad_bounds_path": resolved_applicability_domain.get("bounds_path")
             or (

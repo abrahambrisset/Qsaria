@@ -28,12 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import numpy as np
 import pandas as pd
-from rdkit import Chem, DataStructs
-from rdkit.Chem import rdFingerprintGenerator
-
-from cs_copilot.tools.chemistry.standardize import standardize_smiles_column
 
 from .backend import (
     BackendNotAvailableError,
@@ -230,198 +225,6 @@ class ChempropBackend(PredictionBackend):
             except Exception:
                 continue
         return None
-
-    def _bitrow_to_fingerprint(self, row: np.ndarray):
-        bitstring = "".join("1" if int(value) else "0" for value in np.asarray(row).ravel())
-        if hasattr(DataStructs, "CreateFromBitString"):
-            return DataStructs.CreateFromBitString(bitstring)
-        bitvect = DataStructs.ExplicitBitVect(len(bitstring))
-        for idx, char in enumerate(bitstring):
-            if char == "1":
-                bitvect.SetBit(idx)
-        return bitvect
-
-    def _load_applicability_domain_assets(
-        self,
-        model_record: PredictionModelRecord,
-    ) -> Optional[Dict[str, Any]]:
-        applicability_domain = dict(model_record.applicability_domain or {})
-        legacy_domain = applicability_domain.get("legacy_similarity_ad")
-        if legacy_domain:
-            applicability_domain = {
-                **dict(legacy_domain or {}),
-                **{
-                    key: value
-                    for key, value in applicability_domain.items()
-                    if key
-                    in {
-                        "applicability_domain_path",
-                        "index_path",
-                        "reference_store_path",
-                        "reference_manifest_path",
-                    }
-                    and value
-                },
-            }
-        index_path = self._resolve_artifact_path(
-            model_record,
-            applicability_domain.get("index_path")
-            or applicability_domain.get("applicability_domain_path"),
-        )
-        store_path = self._resolve_artifact_path(
-            model_record,
-            applicability_domain.get("reference_store_path"),
-        )
-
-        if index_path is None or store_path is None:
-            return None
-
-        cache_key = (str(index_path), str(store_path))
-        cache = getattr(self, "_ad_cache", {})
-        if cache_key in cache:
-            return cache[cache_key]
-
-        try:
-            index_payload = json.loads(index_path.read_text())
-            store_payload = np.load(store_path, allow_pickle=True)
-        except Exception as exc:
-            logger.warning(
-                "Could not load applicability-domain artifacts for %s: %s",
-                model_record.model_id,
-                exc,
-            )
-            return None
-
-        fingerprint_matrix = store_payload.get("fingerprints")
-        if fingerprint_matrix is None:
-            logger.warning(
-                "Applicability-domain store for %s is missing fingerprints.", model_record.model_id
-            )
-            return None
-
-        reference_fps = [self._bitrow_to_fingerprint(row) for row in np.asarray(fingerprint_matrix)]
-        if not reference_fps:
-            return None
-
-        manifest_path = self._resolve_artifact_path(
-            model_record,
-            applicability_domain.get("reference_manifest_path"),
-        )
-        manifest_payload: Dict[str, Any] = {}
-        if manifest_path is not None and manifest_path.exists():
-            try:
-                manifest_payload = json.loads(manifest_path.read_text())
-            except Exception:
-                manifest_payload = {}
-
-        payload = {
-            "index": index_payload,
-            "manifest": manifest_payload,
-            "reference_fps": reference_fps,
-            "store_path": store_path,
-            "index_path": index_path,
-        }
-        cache[cache_key] = payload
-        self._ad_cache = cache
-        return payload
-
-    def _compute_applicability_domain_scores(
-        self,
-        *,
-        smiles_values: list[Any],
-        model_record: PredictionModelRecord,
-    ) -> Dict[str, list[Any]]:
-        assets = self._load_applicability_domain_assets(model_record)
-        if assets is None:
-            return {}
-
-        index_payload = assets["index"]
-        reference_fps = assets["reference_fps"]
-        if not reference_fps:
-            return {}
-
-        fingerprint_cfg = index_payload.get("fingerprint") or {}
-        radius = int(fingerprint_cfg.get("radius", 2))
-        nbits = int(fingerprint_cfg.get("nbits", 2048))
-        thresholds = index_payload.get("thresholds") or {}
-        in_domain_min = float(thresholds.get("in_domain_min", 0.5))
-        edge_domain_min = float(thresholds.get("edge_domain_min", 0.35))
-
-        generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=nbits)
-
-        ad_max_scores: list[Optional[float]] = []
-        ad_support_scores: list[Optional[float]] = []
-        ad_primary_status: list[Optional[str]] = []
-        ad_support_status: list[Optional[str]] = []
-        ad_status: list[Optional[str]] = []
-
-        for smiles in smiles_values:
-            if not isinstance(smiles, str) or not smiles.strip():
-                ad_max_scores.append(None)
-                ad_support_scores.append(None)
-                ad_primary_status.append(None)
-                ad_support_status.append(None)
-                ad_status.append(None)
-                continue
-
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                ad_max_scores.append(None)
-                ad_support_scores.append(None)
-                ad_primary_status.append(None)
-                ad_support_status.append(None)
-                ad_status.append(None)
-                continue
-
-            query_fp = generator.GetFingerprint(mol)
-            sims = DataStructs.BulkTanimotoSimilarity(query_fp, reference_fps)
-            if not sims:
-                ad_max_scores.append(None)
-                ad_support_scores.append(None)
-                ad_primary_status.append(None)
-                ad_support_status.append(None)
-                ad_status.append(None)
-                continue
-
-            sims_arr = np.asarray(sims, dtype=float)
-            max_sim = float(np.max(sims_arr))
-            top_k = min(5, len(sims_arr))
-            support_sim = float(np.mean(np.sort(sims_arr)[-top_k:])) if top_k > 0 else max_sim
-
-            def _status(score: float) -> str:
-                if score >= in_domain_min:
-                    return "in_domain"
-                if score >= edge_domain_min:
-                    return "edge_of_domain"
-                return "out_of_domain"
-
-            primary_status = _status(max_sim)
-            support_status = _status(support_sim)
-            statuses = {primary_status, support_status}
-            if "out_of_domain" in statuses:
-                final_status = "out_of_domain"
-            elif "edge_of_domain" in statuses:
-                final_status = "edge_of_domain"
-            else:
-                final_status = "in_domain"
-
-            ad_max_scores.append(max_sim)
-            ad_support_scores.append(support_sim)
-            ad_primary_status.append(primary_status)
-            ad_support_status.append(support_status)
-            ad_status.append(final_status)
-
-        return {
-            "ad_max_tanimoto": ad_max_scores,
-            "ad_support_tanimoto": ad_support_scores,
-            "ad_primary_status": ad_primary_status,
-            "ad_support_status": ad_support_status,
-            "ad_status": ad_status,
-            "ad_threshold_in_domain": [in_domain_min] * len(ad_status),
-            "ad_threshold_edge": [edge_domain_min] * len(ad_status),
-            "ad_reference_size": [len(reference_fps)] * len(ad_status),
-            "ad_method": [index_payload.get("method", "hybrid_morgan_domain")] * len(ad_status),
-        }
 
     def _extract_epoch_progress(self, line: str) -> tuple[Optional[int], Optional[int]]:
         match = EPOCH_PROGRESS_RE.search(line)
@@ -748,61 +551,12 @@ class ChempropBackend(PredictionBackend):
                 args.extend([flag, str(value)])
 
         completed = self._run_cli(args)
-        ad_columns: Dict[str, list[Any]] = {}
-        ad_summary: Dict[str, Any] = {}
-        try:
-            input_df = pd.read_csv(input_path)
-            smiles_column = (
-                model_record.task.smiles_columns[0]
-                if model_record.task.smiles_columns
-                else "smiles"
-            )
-            if smiles_column in input_df.columns:
-                standardized_df = standardize_smiles_column(input_df.copy(), smiles_column)
-                smiles_values = standardized_df["smiles"].tolist()
-                ad_columns = self._compute_applicability_domain_scores(
-                    smiles_values=smiles_values,
-                    model_record=model_record,
-                )
-                if ad_columns:
-                    ad_frame = pd.DataFrame(ad_columns)
-                    predictions_df = pd.read_csv(output_path)
-                    if len(predictions_df) == len(ad_frame):
-                        merged_df = pd.concat(
-                            [predictions_df.reset_index(drop=True), ad_frame], axis=1
-                        )
-                        merged_df.to_csv(output_path, index=False)
-                        counts = merged_df["ad_status"].value_counts(dropna=False).to_dict()
-                        ad_summary = {
-                            "available": True,
-                            "method": (
-                                ad_frame["ad_method"].dropna().iloc[0]
-                                if "ad_method" in ad_frame
-                                and not ad_frame["ad_method"].dropna().empty
-                                else None
-                            ),
-                            "reference_size": (
-                                int(ad_frame["ad_reference_size"].dropna().iloc[0])
-                                if "ad_reference_size" in ad_frame
-                                and not ad_frame["ad_reference_size"].dropna().empty
-                                else None
-                            ),
-                            "status_counts": {
-                                str(key): int(value) for key, value in counts.items()
-                            },
-                        }
-        except Exception as exc:
-            logger.warning("Could not enrich prediction output with applicability domain: %s", exc)
-            ad_columns = {}
-            ad_summary = {}
         return {
             "backend": self.backend_name,
             "command": args,
             "preds_path": str(output_path),
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
-            "applicability_domain": ad_summary,
-            "applicability_domain_columns": list(ad_columns.keys()),
         }
 
     def fingerprint_from_csv(

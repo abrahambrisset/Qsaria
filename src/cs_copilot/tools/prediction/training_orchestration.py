@@ -20,7 +20,6 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 import pandas as pd
 from scipy.stats import kendalltau, spearmanr
 
-from .ad_builder import build_applicability_domain_from_training_data as build_legacy_similarity_ad
 from .applicability_domain import (
     QSAR_ROW_ID_COLUMN,
     append_ad_scores_to_csv,
@@ -473,7 +472,7 @@ def build_applicability_domain_for_training(
     similarity_top_k_neighbors: int | str | None = None,
     similarity_threshold_percentile: float | str | None = None,
 ) -> Dict[str, Any]:
-    """Build the modern AD from the train split and keep legacy AD."""
+    """Build the modern AD from the train split."""
     splits_path = Path(str(primary_run.get("splits_path") or primary_output_dir / "splits.json"))
     if not splits_path.exists():
         return {}
@@ -624,28 +623,6 @@ def build_applicability_domain_for_training(
         ad_summary["split_score_summaries"] = split_score_summaries
         ad_summary.update(score_paths)
 
-    legacy_summary: Dict[str, Any] = {}
-    if smiles_column in dataset.columns or "smiles" in dataset.columns:
-        try:
-            legacy_summary = build_legacy_similarity_ad(
-                dataset=dataset,
-                train_indices=train_indices,
-                smiles_column=smiles_column if smiles_column in dataset.columns else "smiles",
-                output_dir=str(ad_output_dir / "legacy_similarity_ad"),
-                model_id=model_id_hint or primary_output_dir.name,
-            )
-            if legacy_summary:
-                legacy_summary["legacy"] = True
-                legacy_summary["method"] = "legacy_similarity_ad"
-        except Exception as exc:
-            legacy_summary = {
-                "available": False,
-                "legacy": True,
-                "method": "legacy_similarity_ad",
-                "error": str(exc),
-            }
-    if legacy_summary:
-        ad_summary["legacy_similarity_ad"] = legacy_summary
     return ad_summary
 
 
@@ -945,9 +922,6 @@ def collect_training_bundle_files(
         "scores_train_path",
         "scores_validation_path",
         "scores_test_path",
-        "reference_store_path",
-        "reference_manifest_path",
-        "applicability_domain_path",
     ):
         if ad_summary.get(key):
             files.append(Path(str(ad_summary[key])).expanduser())
@@ -956,11 +930,6 @@ def collect_training_bundle_files(
             for key in ("manifest_path", "bounds_path"):
                 if nested.get(key):
                     files.append(Path(str(nested[key])).expanduser())
-    legacy_ad = ad_summary.get("legacy_similarity_ad") or {}
-    if isinstance(legacy_ad, Mapping):
-        for key in ("reference_store_path", "reference_manifest_path", "applicability_domain_path"):
-            if legacy_ad.get(key):
-                files.append(Path(str(legacy_ad[key])).expanduser())
     for artifact_path in plot_artifacts.values():
         files.append(Path(str(artifact_path)).expanduser())
     for artifact_path in ((curation_artifacts or {}).get("artifacts") or {}).values():

@@ -7,34 +7,34 @@
       "model_path": "/app/data/model_assets/internal/cyp_veith_multitarget_training_ready_random_holdout_chemprop_molecular_graph_v1_0_0_07072026_104508/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/cyp_veith_multitarget_training_ready_random_holdout_chemprop_molecular_graph_v1_0_0_07072026_104508/metadata.json",
       "display_name": "Chemprop Molecular Graph - CYP Veith Multi-Target (3 cibles)",
-      "description": "Mod\u00e8le Chemprop (graphe mol\u00e9culaire) multi-target pour classification binaire simultan\u00e9e de 3 cytochromes P450 (CYP2C9, CYP2D6, CYP3A4). Entra\u00een\u00e9 sur le dataset CYP_Veith_multitarget cur\u00e9 (7165 compos\u00e9s). Split al\u00e9atoire 80/20.",
+      "description": "Modèle Chemprop (graphe moléculaire) multi-target pour classification binaire simultanée de 3 cytochromes P450 (CYP2C9, CYP2D6, CYP3A4). Entraîné sur le dataset CYP_Veith_multitarget curé (7165 composés). Split aléatoire 80/20.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "QSAR training pipeline - Chemprop backend",
       "domain_summary": "Classification multi-target de l'inhibition des cytochromes P450 (CYP2C9, CYP2D6, CYP3A4) - dataset CYP_Veith de la TDC.",
       "strengths": [
-        "Mod\u00e8le de graphe mol\u00e9culaire multi-target (3 cibles simultan\u00e9es)",
+        "Modèle de graphe moléculaire multi-target (3 cibles simultanées)",
         "Bon ROC-AUC pour toutes les cibles (0.83-0.86)",
-        "Large dataset d'entra\u00eenement (5732 compos\u00e9s)",
-        "Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes",
+        "Large dataset d'entraînement (5732 composés)",
+        "Domaine d'applicabilité hybride Morgan avec 100 prototypes",
         "3853 scaffolds uniques couverts"
       ],
       "limitations": [
-        "Une seule strat\u00e9gie de split (al\u00e9atoire 80/20) - sans split scaffold ou validation crois\u00e9e",
-        "Statut workflow_demo (Hardest Split Gate non pass\u00e9)",
-        "Rappel mod\u00e9r\u00e9 pour CYP2D6 (0.40) et CYP2C9 (0.60)",
-        "D\u00e9s\u00e9quilibre de classes pour CYP2D6 (20% de positifs)"
+        "Une seule stratégie de split (aléatoire 80/20) - sans split scaffold ou validation croisée",
+        "Statut workflow_demo (Hardest Split Gate non passé)",
+        "Rappel modéré pour CYP2D6 (0.40) et CYP2C9 (0.60)",
+        "Déséquilibre de classes pour CYP2D6 (20% de positifs)"
       ],
       "recommended_for": [
-        "Pr\u00e9diction simultan\u00e9e du profil d'inhibition CYP (3 enzymes)",
-        "Analyse de risque d'interactions m\u00e9dicamenteuses (DDI)",
-        "Criblage virtuel de compos\u00e9s pour le m\u00e9tabolisme CYP"
+        "Prédiction simultanée du profil d'inhibition CYP (3 enzymes)",
+        "Analyse de risque d'interactions médicamenteuses (DDI)",
+        "Criblage virtuel de composés pour le métabolisme CYP"
       ],
       "not_recommended_for": [
-        "D\u00e9cisions r\u00e9glementaires sans validation externe",
-        "Pr\u00e9dictions n\u00e9cessitant une quantification d'incertitude",
-        "Cas marginaux hors du domaine d'applicabilit\u00e9"
+        "Décisions réglementaires sans validation externe",
+        "Prédictions nécessitant une quantification d'incertitude",
+        "Cas marginaux hors du domaine d'applicabilité"
       ],
       "known_metrics": {
         "test_multi_target": {
@@ -131,7 +131,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -146,7 +146,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -189,10 +189,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",
@@ -222,13 +219,13 @@
       "backend_name": "chemprop",
       "model_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_08072026_134624/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_08072026_134624/metadata.json",
-      "display_name": "Chemprop DILI - Classification binaire toxicit\u00e9 h\u00e9patique",
-      "description": "Mod\u00e8le Chemprop (molecular_graph) entra\u00een\u00e9 sur le dataset DILI (Drug-Induced Liver Injury) pour la classification binaire de toxicit\u00e9 h\u00e9patique. Split random 70/15/15, 20 epochs, batch_size=32. M\u00e9triques test : Accuracy=82.6%, AUC-ROC=85.9%, F1 macro=82.6%.",
+      "display_name": "Chemprop DILI - Classification binaire toxicité hépatique",
+      "description": "Modèle Chemprop (molecular_graph) entraîné sur le dataset DILI (Drug-Induced Liver Injury) pour la classification binaire de toxicité hépatique. Split random 70/15/15, 20 epochs, batch_size=32. Métriques test : Accuracy=82.6%, AUC-ROC=85.9%, F1 macro=82.6%.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR training pipeline - DILI campaign",
-      "domain_summary": "Dataset DILI (TDC) - 460 mol\u00e9cules apr\u00e8s curation, classification binaire de toxicit\u00e9 h\u00e9patique (DILI). Domaine d'applicabilit\u00e9 : embedding Chemprop 300 features, bounding box.",
+      "domain_summary": "Dataset DILI (TDC) - 460 molécules après curation, classification binaire de toxicité hépatique (DILI). Domaine d'applicabilité : embedding Chemprop 300 features, bounding box.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -311,7 +308,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -327,7 +324,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -523,15 +520,7 @@
         },
         "scores_train_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/tdc_classification/chemprop_DILI/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/tdc_classification/chemprop_DILI/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/tdc_classification/chemprop_DILI/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/tdc_classification/chemprop_DILI/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -560,7 +549,7 @@
       "model_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_09072026_124847/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_09072026_124847/metadata.json",
       "display_name": "dili_chemprop",
-      "description": "Mod\u00e8le Chemprop classification binaire DILI - graphes mol\u00e9culaires (MPNN) - 10 epochs - split al\u00e9atoire 70/15/15",
+      "description": "Modèle Chemprop classification binaire DILI - graphes moléculaires (MPNN) - 10 epochs - split aléatoire 70/15/15",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
@@ -606,7 +595,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -622,7 +611,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -2268,15 +2257,7 @@
         },
         "scores_train_path": "/app/data/tdc_classification/chemprop_dili/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/tdc_classification/chemprop_dili/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/data/tdc_classification/chemprop_dili/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/data/tdc_classification/chemprop_dili/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -2301,13 +2282,13 @@
       "backend_name": "chemprop",
       "model_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_0_0_08072026_143631/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_0_0_08072026_143631/metadata.json",
-      "display_name": "Chemprop DILI - classification h\u00e9patotoxicit\u00e9",
-      "description": "Mod\u00e8le Chemprop (graphe mol\u00e9culaire) entra\u00een\u00e9 sur le dataset DILI (Drug-Induced Liver Injury) en classification binaire. Split random 70/15/15. 460 \u00e9chantillons apr\u00e8s curation ChEMBL.",
+      "display_name": "Chemprop DILI - classification hépatotoxicité",
+      "description": "Modèle Chemprop (graphe moléculaire) entraîné sur le dataset DILI (Drug-Induced Liver Injury) en classification binaire. Split random 70/15/15. 460 échantillons après curation ChEMBL.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR training pipeline",
-      "domain_summary": "H\u00e9patotoxicit\u00e9 m\u00e9dicamenteuse - 460 compos\u00e9s, 2 classes (228 non-toxiques, 232 toxiques).",
+      "domain_summary": "Hépatotoxicité médicamenteuse - 460 composés, 2 classes (228 non-toxiques, 232 toxiques).",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -2429,7 +2410,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -2445,7 +2426,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -2891,15 +2872,7 @@
         },
         "scores_train_path": "/app/.files/sessions/7d5aa472-5116-45eb-9fb4-8b69dc04f128/data/tdc_classification/chemprop_dili/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/7d5aa472-5116-45eb-9fb4-8b69dc04f128/data/tdc_classification/chemprop_dili/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/7d5aa472-5116-45eb-9fb4-8b69dc04f128/data/tdc_classification/chemprop_dili/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/7d5aa472-5116-45eb-9fb4-8b69dc04f128/data/tdc_classification/chemprop_dili/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -2921,12 +2894,12 @@
       "model_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_0_0_09072026_175305/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_dataset_random_holdout_chemprop_v1_0_0_09072026_175305/metadata.json",
       "display_name": "Chemprop DILI Molecular Graph",
-      "description": "Mod\u00e8le Chemprop (classification binaire) entra\u00een\u00e9 sur le dataset DILI (h\u00e9patotoxicit\u00e9). Repr\u00e9sentation : graphe mol\u00e9culaire (MPNN). Split random 70/15/15. Domaine d'applicabilit\u00e9 : bounding box + isolation forest + similarit\u00e9 (5 voisins).",
+      "description": "Modèle Chemprop (classification binaire) entraîné sur le dataset DILI (hépatotoxicité). Représentation : graphe moléculaire (MPNN). Split random 70/15/15. Domaine d'applicabilité : bounding box + isolation forest + similarité (5 voisins).",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "Training: train_chemprop_model on DILI curated dataset",
-      "domain_summary": "H\u00e9patotoxicit\u00e9 m\u00e9dicamenteuse (DILI) - classification binaire. 460 compos\u00e9s, repr\u00e9sentation en graphe mol\u00e9culaire (MPNN).",
+      "domain_summary": "Hépatotoxicité médicamenteuse (DILI) - classification binaire. 460 composés, représentation en graphe moléculaire (MPNN).",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -2986,7 +2959,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -3002,7 +2975,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -7055,30 +7028,7 @@
         },
         "scores_train_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/legacy_similarity_ad/reference_fingerprints.npz",
-          "reference_manifest_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/legacy_similarity_ad/reference_manifest.json",
-          "applicability_domain_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/legacy_similarity_ad/applicability_domain.json",
-          "train_size": 322,
-          "prototype_count": 100,
-          "thresholds": {
-            "in_domain_min": 0.2576148078725398,
-            "edge_domain_min": 0.20805229534987374
-          },
-          "similarity_stats": {
-            "nn_mean": 0.4018108118544425,
-            "nn_median": 0.3663657770800628,
-            "nn_p25": 0.2576148078725398,
-            "nn_p10": 0.20805229534987374
-          },
-          "coverage_summary": {
-            "num_unique_scaffolds": 222,
-            "largest_scaffold_fraction": 0.12111801242236025
-          },
-          "legacy": true
-        }
+        "scores_test_path": "/app/.files/sessions/99744b84-80d6-4470-bf6e-d49636325ae6/data/training_outputs/chemprop_dili/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -7106,7 +7056,7 @@
       "backend_name": "chemprop",
       "model_path": "/app/data/model_assets/internal/dili_dataset_standard_qsar_chemprop_v1_08072026_133524/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_dataset_standard_qsar_chemprop_v1_08072026_133524/metadata.json",
-      "display_name": "Chemprop Molecular Graph - DILI Toxicit\u00e9 H\u00e9patique (Scaffold Split)",
+      "display_name": "Chemprop Molecular Graph - DILI Toxicité Hépatique (Scaffold Split)",
       "description": "Modele Chemprop (graphe moleculaire) classification binaire pour la prediction de toxicite hepatique (DILI). Split base sur les scaffolds 80/10/10. Entraine sur le dataset TDC DILI (460 molecules).",
       "version": "1",
       "status": "validated",
@@ -7173,10 +7123,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -7473,15 +7423,7 @@
         },
         "scores_train_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/chemprop_dili/random_seed_768435578_split/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/chemprop_dili/random_seed_768435578_split/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/chemprop_dili/random_seed_768435578_split/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/chemprop_dili/random_seed_768435578_split/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -7503,30 +7445,30 @@
       "model_path": "/app/data/model_assets/internal/dili_training_ready_random_holdout_chemprop_molecular_graph_v1_0_0_07072026_103739/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/dili_training_ready_random_holdout_chemprop_molecular_graph_v1_0_0_07072026_103739/metadata.json",
       "display_name": "Chemprop Molecular Graph - DILI Classification",
-      "description": "Mod\u00e8le Chemprop (graphe mol\u00e9culaire) pour classification binaire de toxicit\u00e9 h\u00e9patique (DILI). Entra\u00een\u00e9 sur 460 compos\u00e9s cur\u00e9s avec split al\u00e9atoire 80/20.",
+      "description": "Modèle Chemprop (graphe moléculaire) pour classification binaire de toxicité hépatique (DILI). Entraîné sur 460 composés curés avec split aléatoire 80/20.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "QSAR training pipeline - Chemprop backend",
-      "domain_summary": "Classification binaire de l'h\u00e9patotoxicit\u00e9 m\u00e9dicamenteuse (Drug-Induced Liver Injury) - dataset DILI de la TDC.",
+      "domain_summary": "Classification binaire de l'hépatotoxicité médicamenteuse (Drug-Induced Liver Injury) - dataset DILI de la TDC.",
       "strengths": [
-        "Mod\u00e8le de graphe mol\u00e9culaire (Chemprop) sans pr\u00e9paration de features manuelle",
+        "Modèle de graphe moléculaire (Chemprop) sans préparation de features manuelle",
         "Bonne performance sur le test : accuracy=0.86, ROC-AUC=0.88",
-        "Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes",
-        "Entra\u00eenement rapide : 10 epochs, 10 secondes"
+        "Domaine d'applicabilité hybride Morgan avec 100 prototypes",
+        "Entraînement rapide : 10 epochs, 10 secondes"
       ],
       "limitations": [
-        "Une seule strat\u00e9gie de split (al\u00e9atoire 80/20) - sans split scaffold ou validation crois\u00e9e",
-        "Statut workflow_demo (Hardest Split Gate non pass\u00e9)",
-        "Ensemble de donn\u00e9es modeste (460 compos\u00e9s) - robustesse externe \u00e0 confirmer"
+        "Une seule stratégie de split (aléatoire 80/20) - sans split scaffold ou validation croisée",
+        "Statut workflow_demo (Hardest Split Gate non passé)",
+        "Ensemble de données modeste (460 composés) - robustesse externe à confirmer"
       ],
       "recommended_for": [
-        "Pr\u00e9diction de toxicit\u00e9 h\u00e9patique DILI",
-        "Analyse exploratoire de risque h\u00e9patique"
+        "Prédiction de toxicité hépatique DILI",
+        "Analyse exploratoire de risque hépatique"
       ],
       "not_recommended_for": [
-        "D\u00e9cisions r\u00e9glementaires sans validation externe",
-        "Pr\u00e9dictions n\u00e9cessitant une quantification d'incertitude"
+        "Décisions réglementaires sans validation externe",
+        "Prédictions nécessitant une quantification d'incertitude"
       ],
       "known_metrics": {
         "test": {
@@ -7613,7 +7555,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -7628,7 +7570,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -7666,10 +7608,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",
@@ -7745,13 +7684,13 @@
       "backend_name": "chemprop",
       "model_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_08072026_135000/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_08072026_135000/metadata.json",
-      "display_name": "Chemprop PXR - R\u00e9gression pEC50 (Full Train)",
-      "description": "Mod\u00e8le Chemprop (molecular_graph) entra\u00een\u00e9 sur l'int\u00e9gralit\u00e9 du dataset PXR Challenge Train (4131 mol\u00e9cules) pour la r\u00e9gression de l'activation du r\u00e9cepteur PXR (pEC50). Entra\u00eenement full_train sur 100% des donn\u00e9es - 20 epochs - batch_size=32. Domaine d'applicabilit\u00e9 construit (bounding box, 300 features Chemprop embedding). Pas de m\u00e9triques test internes car aucun split n'a \u00e9t\u00e9 effectu\u00e9. Mod\u00e8le pr\u00eat pour \u00e9valuation externe ou pr\u00e9diction sur nouvelles mol\u00e9cules.",
+      "display_name": "Chemprop PXR - Régression pEC50 (Full Train)",
+      "description": "Modèle Chemprop (molecular_graph) entraîné sur l'intégralité du dataset PXR Challenge Train (4131 molécules) pour la régression de l'activation du récepteur PXR (pEC50). Entraînement full_train sur 100% des données - 20 epochs - batch_size=32. Domaine d'applicabilité construit (bounding box, 300 features Chemprop embedding). Pas de métriques test internes car aucun split n'a été effectué. Modèle prêt pour évaluation externe ou prédiction sur nouvelles molécules.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR training pipeline - PXR Challenge campaign",
-      "domain_summary": "Dataset PXR Challenge (Train) - 4131 mol\u00e9cules apr\u00e8s curation, r\u00e9gression de pEC50 (activation PXR). Domaine d'applicabilit\u00e9 : embedding Chemprop 300 features, bounding box.",
+      "domain_summary": "Dataset PXR Challenge (Train) - 4131 molécules après curation, régression de pEC50 (activation PXR). Domaine d'applicabilité : embedding Chemprop 300 features, bounding box.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -7897,7 +7836,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -7910,7 +7849,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -8011,15 +7950,7 @@
             "scores_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/pxr_challenge/chemprop_PXR/applicability_domain/bounding_box/scores_train.csv"
           }
         },
-        "scores_train_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/pxr_challenge/chemprop_PXR/applicability_domain/bounding_box/scores_train.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_train_path": "/app/.files/sessions/e8d7d946-2682-4988-b55a-03cd387cd53b/data/pxr_challenge/chemprop_PXR/applicability_domain/bounding_box/scores_train.csv"
       },
       "task": {
         "task_type": "regression",
@@ -8048,7 +7979,7 @@
       "model_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_09072026_125100/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_09072026_125100/metadata.json",
       "display_name": "pxr_chemprop",
-      "description": "Mod\u00e8le Chemprop r\u00e9gression pEC50 (PXR) - graphes mol\u00e9culaires MPNN - entra\u00een\u00e9 sur 100% du dataset (full_train) - 10 epochs",
+      "description": "Modèle Chemprop régression pEC50 (PXR) - graphes moléculaires MPNN - entraîné sur 100% du dataset (full_train) - 10 epochs",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
@@ -8328,7 +8259,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -8341,7 +8272,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -9188,15 +9119,7 @@
             "scores_path": "/app/data/pxr_challenge/chemprop_pxr_fulltrain/applicability_domain/scores_train.csv"
           }
         },
-        "scores_train_path": "/app/data/pxr_challenge/chemprop_pxr_fulltrain/applicability_domain/scores_train.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_train_path": "/app/data/pxr_challenge/chemprop_pxr_fulltrain/applicability_domain/scores_train.csv"
       },
       "task": {
         "task_type": "regression",
@@ -9222,31 +9145,31 @@
       "model_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_0_0_07072026_131759/model/best.pt",
       "metadata_path": "/app/data/model_assets/internal/pxr_challenge_train_full_train_chemprop_v1_0_0_07072026_131759/metadata.json",
       "display_name": "Chemprop Molecular Graph - PXR pEC50 (Full Train)",
-      "description": "Mod\u00e8le Chemprop (GNN, Molecular Graph) entra\u00een\u00e9 en r\u00e9gression sur 100% du dataset PXR Challenge cur\u00e9 (4131 mol\u00e9cules) pour pr\u00e9dire pEC50. Entra\u00eenement complet sans split (full_train). \u00c9valuation externe requise.",
+      "description": "Modèle Chemprop (GNN, Molecular Graph) entraîné en régression sur 100% du dataset PXR Challenge curé (4131 molécules) pour prédire pEC50. Entraînement complet sans split (full_train). Évaluation externe requise.",
       "version": "1.0.0",
       "status": "experimental",
       "owner": "qsar_training_agent",
       "source": "QSAR training pipeline - Chemprop backend",
-      "domain_summary": "PXR (Pregnane X Receptor) activation - pEC50 regression. 4131 compos\u00e9s cur\u00e9s standards ChEMBL. Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes, 3668 scaffolds uniques, seuil in_domain=0.338.",
+      "domain_summary": "PXR (Pregnane X Receptor) activation - pEC50 regression. 4131 composés curés standards ChEMBL. Domaine d'applicabilité hybride Morgan avec 100 prototypes, 3668 scaffolds uniques, seuil in_domain=0.338.",
       "strengths": [
-        "Mod\u00e8le de graphe mol\u00e9culaire (GNN) sans pr\u00e9paration manuelle de features",
-        "Entra\u00een\u00e9 sur 100% du dataset PXR Challenge (4131 compos\u00e9s)",
-        "Domaine d'applicabilit\u00e9 construit et disponible (hybride Morgan, 100 prototypes)",
-        "3668 scaffolds uniques couverts dans le jeu d'entra\u00eenement"
+        "Modèle de graphe moléculaire (GNN) sans préparation manuelle de features",
+        "Entraîné sur 100% du dataset PXR Challenge (4131 composés)",
+        "Domaine d'applicabilité construit et disponible (hybride Morgan, 100 prototypes)",
+        "3668 scaffolds uniques couverts dans le jeu d'entraînement"
       ],
       "limitations": [
-        "Entra\u00eenement full_train : pas de m\u00e9triques de validation/test internes",
-        "\u00c9valuation externe requise avant d\u00e9ploiement",
-        "Pas d'incertitude quantifi\u00e9e",
-        "50 \u00e9poques sur CPU seulement (entra\u00eenement GPU non disponible)"
+        "Entraînement full_train : pas de métriques de validation/test internes",
+        "Évaluation externe requise avant déploiement",
+        "Pas d'incertitude quantifiée",
+        "50 époques sur CPU seulement (entraînement GPU non disponible)"
       ],
       "recommended_for": [
-        "Pr\u00e9diction pEC50 sur compos\u00e9s PXR (Pregnane X Receptor)",
-        "Screening virtuel dans le domaine d'applicabilit\u00e9"
+        "Prédiction pEC50 sur composés PXR (Pregnane X Receptor)",
+        "Screening virtuel dans le domaine d'applicabilité"
       ],
       "not_recommended_for": [
-        "Utilisation sans \u00e9valuation externe pr\u00e9alable",
-        "Pr\u00e9dictions hors domaine hors des seuils d'applicabilit\u00e9"
+        "Utilisation sans évaluation externe préalable",
+        "Prédictions hors domaine hors des seuils d'applicabilité"
       ],
       "known_metrics": {},
       "training_data_summary": {
@@ -9337,7 +9260,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -9350,7 +9273,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {
@@ -9403,10 +9326,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -9428,7 +9348,7 @@
       "model_path": "/app/data/model_assets/internal/pxr_lgbm_morgan_eval_protocol_lightgbm_v1_0_0_07072026_122956/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/pxr_lgbm_morgan_eval_protocol_lightgbm_v1_0_0_07072026_122956/metadata.json",
       "display_name": "PXR LightGBM Morgan Evaluation",
-      "description": "Mod\u00e8le LightGBM avec fingerprints Morgan binaires pour PXR pEC50 - pour \u00e9valuation externe",
+      "description": "Modèle LightGBM avec fingerprints Morgan binaires pour PXR pEC50 - pour évaluation externe",
       "version": "1.0.0",
       "status": "experimental",
       "owner": "QSAR evaluation agent",
@@ -9450,7 +9370,7 @@
         "evaluation_required": false,
         "external_evaluations": [],
         "seed_policy": null,
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {},
         "feature_preparation_durations": {},
         "replicate_policy": {},
@@ -9481,11 +9401,11 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_count_only_a043440453bb81f6_random_holdout_lightgbm_v1_0_0_09072026_171450/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_count_only_a043440453bb81f6_random_holdout_lightgbm_v1_0_0_09072026_171450/metadata.json",
       "display_name": "LightGBM PXR pEC50 (Morgan count)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de la pEC50 PXR - Repr\u00e9sentation Morgan count (2048 bits). Split al\u00e9atoire 80/10/10.",
+      "description": "Modèle LightGBM de régression pour la prédiction de la pEC50 PXR - Représentation Morgan count (2048 bits). Split aléatoire 80/10/10.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
-      "source": "PXR Challenge dataset (pxr-challenge_TRAIN.csv, cur\u00e9)",
+      "source": "PXR Challenge dataset (pxr-challenge_TRAIN.csv, curé)",
       "domain_summary": "PXR binding activity (pEC50) - Morgan count",
       "strengths": [],
       "limitations": [],
@@ -9527,7 +9447,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -9543,7 +9463,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_count_only",
@@ -25136,30 +25056,7 @@
         },
         "scores_train_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/legacy_similarity_ad/reference_fingerprints.npz",
-          "reference_manifest_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/legacy_similarity_ad/reference_manifest.json",
-          "applicability_domain_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/legacy_similarity_ad/applicability_domain.json",
-          "train_size": 3305,
-          "prototype_count": 100,
-          "thresholds": {
-            "in_domain_min": 0.3283582089552239,
-            "edge_domain_min": 0.29411764705882354
-          },
-          "similarity_stats": {
-            "nn_mean": 0.3958659873940249,
-            "nn_median": 0.37681159420289856,
-            "nn_p25": 0.3283582089552239,
-            "nn_p10": 0.29411764705882354
-          },
-          "coverage_summary": {
-            "num_unique_scaffolds": 2956,
-            "largest_scaffold_fraction": 0.03540090771558245
-          },
-          "legacy": true
-        }
+        "scores_test_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_count/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -25180,13 +25077,13 @@
       "backend_name": "lightgbm",
       "model_path": "/app/data/model_assets/internal/tabular_morgan_count_only_ff6b6320218c5cc8_standard_qsar_lightgbm_v1_06072026_203220/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_count_only_ff6b6320218c5cc8_standard_qsar_lightgbm_v1_06072026_203220/metadata.json",
-      "display_name": "LightGBM Morgan Count \u2014 CYP Veith Multiclasse",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 avec les fingerprints Morgan count (2048 bits) pour la pr\u00e9diction multi-classe du profil d'inhibition CYP (8 classes : cyp2c9, cyp2c9_cyp2d6, cyp2c9_cyp2d6_cyp3a4, cyp2c9_cyp3a4, cyp2d6, cyp2d6_cyp3a4, cyp3a4, inactive_all). Protocole standard_qsar avec split al\u00e9atoire et scaffold.",
+      "display_name": "LightGBM Morgan Count — CYP Veith Multiclasse",
+      "description": "Modèle LightGBM entraîné avec les fingerprints Morgan count (2048 bits) pour la prédiction multi-classe du profil d'inhibition CYP (8 classes : cyp2c9, cyp2c9_cyp2d6, cyp2c9_cyp2d6_cyp3a4, cyp2c9_cyp3a4, cyp2d6, cyp2d6_cyp3a4, cyp3a4, inactive_all). Protocole standard_qsar avec split aléatoire et scaffold.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
-      "source": "QSAR Training \u2014 LightGBM standard_qsar campaign",
-      "domain_summary": "Domaine d'applicabilit\u00e9 hybride Morgan (100 prototypes, 5733 \u00e9chantillons d'entra\u00eenement). Seuil in_domain_min=0.386, seuil edge_domain_min=0.325. 3844 scaffolds uniques dans le set d'entra\u00eenement.",
+      "source": "QSAR Training — LightGBM standard_qsar campaign",
+      "domain_summary": "Domaine d'applicabilité hybride Morgan (100 prototypes, 5733 échantillons d'entraînement). Seuil in_domain_min=0.386, seuil edge_domain_min=0.325. 3844 scaffolds uniques dans le set d'entraînement.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -25234,10 +25131,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_count_only",
@@ -27414,10 +27311,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -27503,7 +27397,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -27518,7 +27412,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -29684,10 +29578,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",
@@ -29714,12 +29605,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_498dd38fce793936_standard_qsar_lightgbm_v1_0_0_06072026_173342/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_498dd38fce793936_standard_qsar_lightgbm_v1_0_0_06072026_173342/metadata.json",
       "display_name": "LightGBM Morgan (scaffold split) - AMES Mutagenicity",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur fingerprints Morgan binaires (radius=2, nBits=2048) pour la classification de mutag\u00e9nicit\u00e9 AMES (binaire). Split scaffold-aware 80/10/10.",
+      "description": "Modèle LightGBM entraîné sur fingerprints Morgan binaires (radius=2, nBits=2048) pour la classification de mutagénicité AMES (binaire). Split scaffold-aware 80/10/10.",
       "version": "1.0.0",
       "status": "validated",
       "owner": "qsar_training_agent",
       "source": "QSAR training workflow - AMES dataset",
-      "domain_summary": "Domaine de mutag\u00e9nicit\u00e9 AMES : 5380 compos\u00e9s d'entra\u00eenement, 1353 scaffolds uniques, similarit\u00e9 moyenne au plus proche voisin de 0.61.",
+      "domain_summary": "Domaine de mutagénicité AMES : 5380 composés d'entraînement, 1353 scaffolds uniques, similarité moyenne au plus proche voisin de 0.61.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -29777,10 +29668,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -31946,10 +31837,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",
@@ -31970,13 +31858,13 @@
       "backend_name": "lightgbm",
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_57d4f704a550a640_standard_qsar_lightgbm_v1_06072026_203155/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_57d4f704a550a640_standard_qsar_lightgbm_v1_06072026_203155/metadata.json",
-      "display_name": "LightGBM Morgan Binary \u2014 CYP Veith Multiclasse",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 avec les fingerprints Morgan binaires (2048 bits) pour la pr\u00e9diction multi-classe du profil d'inhibition CYP (8 classes). Protocole standard_qsar avec split al\u00e9atoire et scaffold.",
+      "display_name": "LightGBM Morgan Binary — CYP Veith Multiclasse",
+      "description": "Modèle LightGBM entraîné avec les fingerprints Morgan binaires (2048 bits) pour la prédiction multi-classe du profil d'inhibition CYP (8 classes). Protocole standard_qsar avec split aléatoire et scaffold.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
-      "source": "QSAR Training \u2014 LightGBM standard_qsar campaign",
-      "domain_summary": "Domaine d'applicabilit\u00e9 hybride Morgan (100 prototypes, 5733 \u00e9chantillons d'entra\u00eenement). Seuil in_domain_min=0.387, seuil edge_domain_min=0.326. 3870 scaffolds uniques.",
+      "source": "QSAR Training — LightGBM standard_qsar campaign",
+      "domain_summary": "Domaine d'applicabilité hybride Morgan (100 prototypes, 5733 échantillons d'entraînement). Seuil in_domain_min=0.387, seuil edge_domain_min=0.326. 3870 scaffolds uniques.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -32024,10 +31912,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -34204,10 +34092,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -34229,12 +34114,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_8f1a8095d65d0770_random_holdout_lightgbm_v1_0_0_09072026_170016/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_8f1a8095d65d0770_random_holdout_lightgbm_v1_0_0_09072026_170016/metadata.json",
       "display_name": "LightGBM PXR pEC50 (Morgan binaire)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de pEC50 (activation PXR). Entra\u00een\u00e9 sur 4131 compos\u00e9s avec fingerprints Morgan binaires (2048 bits, radius 2). Split random 80/10/10.",
+      "description": "Modèle LightGBM de régression pour la prédiction de pEC50 (activation PXR). Entraîné sur 4131 composés avec fingerprints Morgan binaires (2048 bits, radius 2). Split random 80/10/10.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "pxr_challenge_train_curated",
-      "domain_summary": "Mod\u00e8le QSAR pour l'activit\u00e9 PXR (pEC50). Domaine d'applicabilit\u00e9 combin\u00e9 (bounding box, isolation forest, similarit\u00e9 Tanimoto). 3305 compos\u00e9s d'entra\u00eenement.",
+      "domain_summary": "Modèle QSAR pour l'activité PXR (pEC50). Domaine d'applicabilité combiné (bounding box, isolation forest, similarité Tanimoto). 3305 composés d'entraînement.",
       "strengths": [
         "Bon R2 entrainement (0.61 sur validation)",
         "Methode rapide et legere (LightGBM sur CPU)",
@@ -34310,7 +34195,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -34326,7 +34211,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -49587,30 +49472,7 @@
         },
         "scores_train_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/legacy_similarity_ad/reference_fingerprints.npz",
-          "reference_manifest_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/legacy_similarity_ad/reference_manifest.json",
-          "applicability_domain_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/legacy_similarity_ad/applicability_domain.json",
-          "train_size": 3305,
-          "prototype_count": 100,
-          "thresholds": {
-            "in_domain_min": 0.3283582089552239,
-            "edge_domain_min": 0.29333333333333333
-          },
-          "similarity_stats": {
-            "nn_mean": 0.3964601622972671,
-            "nn_median": 0.3783783783783784,
-            "nn_p25": 0.3283582089552239,
-            "nn_p10": 0.29333333333333333
-          },
-          "coverage_summary": {
-            "num_unique_scaffolds": 2958,
-            "largest_scaffold_fraction": 0.03721633888048412
-          },
-          "legacy": true
-        }
+        "scores_test_path": "/app/.files/sessions/a1ddbfbb-8d4d-4dc6-814e-76be05913b5f/data/pxr_challenge/lightgbm_pxr/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -49632,7 +49494,7 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_full_train_lightgbm_morgan_only_v1_0_0_07072026_122708/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_full_train_lightgbm_morgan_only_v1_0_0_07072026_122708/metadata.json",
       "display_name": "PXR LightGBM Morgan v1",
-      "description": "Mod\u00e8le LightGBM avec fingerprints Morgan binaires, entra\u00een\u00e9 sur 100% du dataset PXR cur\u00e9 (4131 mol\u00e9cules) pour pr\u00e9dire pEC50. Entra\u00eenement complet sans split (full_train). \u00c9valuation externe requise.",
+      "description": "Modèle LightGBM avec fingerprints Morgan binaires, entraîné sur 100% du dataset PXR curé (4131 molécules) pour prédire pEC50. Entraînement complet sans split (full_train). Évaluation externe requise.",
       "version": "1.0.0",
       "status": "experimental",
       "owner": "QSAR team",
@@ -49644,7 +49506,7 @@
       "not_recommended_for": [],
       "known_metrics": {
         "full_train": {
-          "note": "Mod\u00e8le entra\u00een\u00e9 sur 100% du dataset sans split test. \u00c9valuation externe requise."
+          "note": "Modèle entraîné sur 100% du dataset sans split test. Évaluation externe requise."
         }
       },
       "training_data_summary": {
@@ -49684,7 +49546,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -49697,7 +49559,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -51912,10 +51774,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -51937,12 +51796,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_standard_qsar_lightgbm_morgan_only_v1_07072026_120817/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_standard_qsar_lightgbm_morgan_only_v1_07072026_120817/metadata.json",
       "display_name": "PXR LightGBM Morgan (random split)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression PXR entra\u00een\u00e9 avec fingerprints Morgan binaires (2048 bits) sur le split al\u00e9atoire 80/10/10 du dataset PXR Challenge cur\u00e9 (4131 mol\u00e9cules).",
+      "description": "Modèle LightGBM de régression PXR entraîné avec fingerprints Morgan binaires (2048 bits) sur le split aléatoire 80/10/10 du dataset PXR Challenge curé (4131 molécules).",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "PXRa Challenge training campaign",
-      "domain_summary": "PXR activation prediction (pEC50). Domaine d'applicabilit\u00e9 hybride Morgan avec 3305 r\u00e9f\u00e9rences, 100 prototypes, seuil in_domain=0.328, 2955 scaffolds uniques.",
+      "domain_summary": "PXR activation prediction (pEC50). Domaine d'applicabilité hybride Morgan avec 3305 références, 100 prototypes, seuil in_domain=0.328, 2955 scaffolds uniques.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -52005,10 +51864,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -54200,10 +54059,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -54225,12 +54081,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_standard_qsar_lightgbm_v1_07072026_120817/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_a13f323ab9bac04a_standard_qsar_lightgbm_v1_07072026_120817/metadata.json",
       "display_name": "PXR LightGBM Morgan (random split)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression PXR entra\u00een\u00e9 avec fingerprints Morgan binaires (2048 bits) sur le split al\u00e9atoire 80/10/10 du dataset PXR Challenge cur\u00e9 (4131 mol\u00e9cules).",
+      "description": "Modèle LightGBM de régression PXR entraîné avec fingerprints Morgan binaires (2048 bits) sur le split aléatoire 80/10/10 du dataset PXR Challenge curé (4131 molécules).",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "PXRa Challenge training campaign",
-      "domain_summary": "PXR activation prediction (pEC50). Domaine d'applicabilit\u00e9 hybride Morgan avec 3305 r\u00e9f\u00e9rences, 100 prototypes, seuil in_domain=0.328, 2955 scaffolds uniques.",
+      "domain_summary": "PXR activation prediction (pEC50). Domaine d'applicabilité hybride Morgan avec 3305 références, 100 prototypes, seuil in_domain=0.328, 2955 scaffolds uniques.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -54293,10 +54149,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -56488,10 +56344,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -56513,12 +56366,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_07072026_121630/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_07072026_121630/metadata.json",
       "display_name": "Tabular Morgan Only F39a3bff0d20bda4 Full Train Lightgbm Morgan Only v1",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur 100% du jeu de donn\u00e9es PXR cur\u00e9 (4131 compos\u00e9s) avec des empreintes Morgan binaires (rayon 2, 2048 bits) comme caract\u00e9ristiques. Aucune division train/test - entra\u00eenement complet sans \u00e9valuation interne.",
+      "description": "Modèle LightGBM entraîné sur 100% du jeu de données PXR curé (4131 composés) avec des empreintes Morgan binaires (rayon 2, 2048 bits) comme caractéristiques. Aucune division train/test - entraînement complet sans évaluation interne.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "ChemSpace Copilot QSAR Training Pipeline",
-      "domain_summary": "R\u00e9cepteur PXR (Pregnane X Receptor) - activit\u00e9 pEC50. Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes et seuil in_domain_min=0.338.",
+      "domain_summary": "Récepteur PXR (Pregnane X Receptor) - activité pEC50. Domaine d'applicabilité hybride Morgan avec 100 prototypes et seuil in_domain_min=0.338.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -56557,7 +56410,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -56570,7 +56423,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -58762,10 +58615,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -58952,7 +58802,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -58965,7 +58815,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation_durations": {
           "total_duration_seconds": 14.151,
           "steps": [
@@ -61125,10 +60975,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -61150,29 +60997,29 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_0_0_07072026_125946/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_0_0_07072026_125946/metadata.json",
       "display_name": "pxr_lightgbm_morgan2048",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur le dataset PXR Challenge ciblant pEC50. Utilise les fingerprints Morgan binaires (radius=2, nBits=2048). Entra\u00eenement sur 100% du dataset (full_train) sans split de validation/test interne. Pr\u00eat pour \u00e9valuation externe.",
+      "description": "Modèle LightGBM entraîné sur le dataset PXR Challenge ciblant pEC50. Utilise les fingerprints Morgan binaires (radius=2, nBits=2048). Entraînement sur 100% du dataset (full_train) sans split de validation/test interne. Prêt pour évaluation externe.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "QSAR training workflow - PXR Challenge",
-      "domain_summary": "R\u00e9gression pEC50 sur 4131 compos\u00e9s du PXR Challenge. Domaine de applicabilit\u00e9 hybride (Morgan, 100 prototypes). 3668 scaffolds uniques.",
+      "domain_summary": "Régression pEC50 sur 4131 composés du PXR Challenge. Domaine de applicabilité hybride (Morgan, 100 prototypes). 3668 scaffolds uniques.",
       "strengths": [
-        "Entra\u00een\u00e9 sur 100% du dataset PXR Challenge (4131 compos\u00e9s)",
+        "Entraîné sur 100% du dataset PXR Challenge (4131 composés)",
         "Fingerprints Morgan binaires 2048 bits (ECFP-like)",
-        "Domaine d'applicabilit\u00e9 construit et disponible"
+        "Domaine d'applicabilité construit et disponible"
       ],
       "limitations": [
-        "Entra\u00eenement full_train : pas de m\u00e9triques de validation/test internes",
-        "\u00c9valuation externe requise avant d\u00e9ploiement",
-        "Pas d'incertitude quantifi\u00e9e"
+        "Entraînement full_train : pas de métriques de validation/test internes",
+        "Évaluation externe requise avant déploiement",
+        "Pas d'incertitude quantifiée"
       ],
       "recommended_for": [
-        "Pr\u00e9diction pEC50 sur compos\u00e9s PXR (Pregnane X Receptor)",
-        "Screening virtuel dans le domaine d'applicabilit\u00e9"
+        "Prédiction pEC50 sur composés PXR (Pregnane X Receptor)",
+        "Screening virtuel dans le domaine d'applicabilité"
       ],
       "not_recommended_for": [
-        "Pr\u00e9diction hors domaine hors des seuils d'applicabilit\u00e9",
-        "Utilisation sans \u00e9valuation externe pr\u00e9alable"
+        "Prédiction hors domaine hors des seuils d'applicabilité",
+        "Utilisation sans évaluation externe préalable"
       ],
       "known_metrics": {},
       "training_data_summary": {
@@ -61266,7 +61113,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -61348,7 +61195,7 @@
         "trained_time": "12:59:46",
         "endpoint_name": "tabular",
         "dataset_name": "morgan_only_f39a3bff0d20bda4",
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation_durations": {
           "total_duration_seconds": 14.272,
           "steps": [
@@ -63512,10 +63359,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -63537,30 +63381,30 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_0_0_09072026_121525/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_morgan_only_v1_0_0_09072026_121525/metadata.json",
       "display_name": "LightGBM PXR pEC50 (Morgan binaire, Full-train)",
-      "description": "Mod\u00e8le LightGBM r\u00e9gression pour pEC50 sur le dataset PXR Challenge complet (4131 mol\u00e9cules). Entra\u00een\u00e9 sur 100% des donn\u00e9es sans split train/val/test. Features : Morgan binaires (2048 bits, rayon 2). Domaine d'applicabilit\u00e9 : Isolation Forest.",
+      "description": "Modèle LightGBM régression pour pEC50 sur le dataset PXR Challenge complet (4131 molécules). Entraîné sur 100% des données sans split train/val/test. Features : Morgan binaires (2048 bits, rayon 2). Domaine d'applicabilité : Isolation Forest.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "QSAR training pipeline - LightGBM + Morgan binary fingerprints (full-train)",
-      "domain_summary": "Dataset PXR Challenge cur\u00e9 complet (4131 mol\u00e9cules). pEC50 : r\u00e9gression. Features : Morgan fingerprints binaires (2048 bits, rayon 2). Entra\u00eenement full-train.",
+      "domain_summary": "Dataset PXR Challenge curé complet (4131 molécules). pEC50 : régression. Features : Morgan fingerprints binaires (2048 bits, rayon 2). Entraînement full-train.",
       "strengths": [
-        "Entra\u00een\u00e9 sur 100% du dataset PXR (4131 mol\u00e9cules)",
-        "Mod\u00e8le tabulaire rapide et interpr\u00e9table (LightGBM)",
-        "2048 bits Morgan binaires couvrant la structure mol\u00e9culaire",
-        "Domaine d'applicabilit\u00e9 Isolation Forest int\u00e9gr\u00e9"
+        "Entraîné sur 100% du dataset PXR (4131 molécules)",
+        "Modèle tabulaire rapide et interprétable (LightGBM)",
+        "2048 bits Morgan binaires couvrant la structure moléculaire",
+        "Domaine d'applicabilité Isolation Forest intégré"
       ],
       "limitations": [
-        "Pas de m\u00e9triques internes (full-train sans split)",
-        "N\u00e9cessite une \u00e9valuation externe sur un jeu de test labellis\u00e9",
-        "Mod\u00e8le exp\u00e9rimental, statut en attente de validation externe"
+        "Pas de métriques internes (full-train sans split)",
+        "Nécessite une évaluation externe sur un jeu de test labellisé",
+        "Modèle expérimental, statut en attente de validation externe"
       ],
       "recommended_for": [
-        "Pr\u00e9dictions pEC50 sur l'ensemble du domaine de chimie PXR",
-        "Inf\u00e9rence sur le jeu de test PXR Challenge (PHASE 1)"
+        "Prédictions pEC50 sur l'ensemble du domaine de chimie PXR",
+        "Inférence sur le jeu de test PXR Challenge (PHASE 1)"
       ],
       "not_recommended_for": [
-        "Utilisation sans v\u00e9rification du domaine d'applicabilit\u00e9",
-        "Mol\u00e9cules tr\u00e8s divergentes de l'espace chimique PXR"
+        "Utilisation sans vérification du domaine d'applicabilité",
+        "Molécules très divergentes de l'espace chimique PXR"
       ],
       "known_metrics": {},
       "training_data_summary": {
@@ -63783,7 +63627,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -63796,7 +63640,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -74328,14 +74172,6 @@
           }
         },
         "scores_train_path": "/app/.files/sessions/0fea6f6c-889a-4294-ad19-6711f6815501/data/pxr_challenge/lgbm_morgan_binary_fulltrain/applicability_domain/scores_train.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        },
         "bounds_path": null
       },
       "task": {
@@ -74366,12 +74202,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_v1_07072026_121630/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_v1_07072026_121630/metadata.json",
       "display_name": "LightGBM Morgan Binaire - PXR pEC50 (Full Train)",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur 100% du jeu de donn\u00e9es PXR cur\u00e9 (4131 compos\u00e9s) avec des empreintes Morgan binaires (rayon 2, 2048 bits) comme caract\u00e9ristiques. Aucune division train/test - entra\u00eenement complet sans \u00e9valuation interne.",
+      "description": "Modèle LightGBM entraîné sur 100% du jeu de données PXR curé (4131 composés) avec des empreintes Morgan binaires (rayon 2, 2048 bits) comme caractéristiques. Aucune division train/test - entraînement complet sans évaluation interne.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "ChemSpace Copilot QSAR Training Pipeline",
-      "domain_summary": "R\u00e9cepteur PXR (Pregnane X Receptor) - activit\u00e9 pEC50. Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes et seuil in_domain_min=0.338.",
+      "domain_summary": "Récepteur PXR (Pregnane X Receptor) - activité pEC50. Domaine d'applicabilité hybride Morgan avec 100 prototypes et seuil in_domain_min=0.338.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -74410,7 +74246,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -74423,7 +74259,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -76615,10 +76451,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -76791,7 +76624,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -76804,7 +76637,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -79040,15 +78873,7 @@
             "scores_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_morgan_binary_fulltrain/applicability_domain/bounding_box/scores_train.csv"
           }
         },
-        "scores_train_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_morgan_binary_fulltrain/applicability_domain/bounding_box/scores_train.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_train_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_morgan_binary_fulltrain/applicability_domain/bounding_box/scores_train.csv"
       },
       "task": {
         "task_type": "regression",
@@ -79070,7 +78895,7 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_v1_09072026_122638/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_full_train_lightgbm_v1_09072026_122638/metadata.json",
       "display_name": "pxr_lightgbm_morgan",
-      "description": "Mod\u00e8le LightGBM r\u00e9gression pEC50 - fingerprints Morgan binaires (rayon=2, 2048 bits) - entra\u00een\u00e9 sur 100% du dataset PXR Challenge (full_train)",
+      "description": "Modèle LightGBM régression pEC50 - fingerprints Morgan binaires (rayon=2, 2048 bits) - entraîné sur 100% du dataset PXR Challenge (full_train)",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
@@ -79527,7 +79352,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "full_train",
           "generated_split_seeds": [
@@ -79540,7 +79365,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -86014,15 +85839,7 @@
             "scores_path": "/app/data/pxr_challenge/lightgbm_morgan_fulltrain/applicability_domain/scores_train.csv"
           }
         },
-        "scores_train_path": "/app/data/pxr_challenge/lightgbm_morgan_fulltrain/applicability_domain/scores_train.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_train_path": "/app/data/pxr_challenge/lightgbm_morgan_fulltrain/applicability_domain/scores_train.csv"
       },
       "task": {
         "task_type": "regression",
@@ -86048,11 +85865,11 @@
       "model_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_random_holdout_lightgbm_v1_0_0_09072026_171450/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_morgan_only_f39a3bff0d20bda4_random_holdout_lightgbm_v1_0_0_09072026_171450/metadata.json",
       "display_name": "LightGBM PXR pEC50 (Morgan binaire)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de la pEC50 PXR - Repr\u00e9sentation Morgan binaire (2048 bits). Split al\u00e9atoire 80/10/10.",
+      "description": "Modèle LightGBM de régression pour la prédiction de la pEC50 PXR - Représentation Morgan binaire (2048 bits). Split aléatoire 80/10/10.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
-      "source": "PXR Challenge dataset (pxr-challenge_TRAIN.csv, cur\u00e9)",
+      "source": "PXR Challenge dataset (pxr-challenge_TRAIN.csv, curé)",
       "domain_summary": "PXR binding activity (pEC50) - Morgan binaire",
       "strengths": [],
       "limitations": [],
@@ -86094,7 +85911,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -86110,7 +85927,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "morgan_only",
@@ -101371,30 +101188,7 @@
         },
         "scores_train_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/legacy_similarity_ad/reference_fingerprints.npz",
-          "reference_manifest_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/legacy_similarity_ad/reference_manifest.json",
-          "applicability_domain_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/legacy_similarity_ad/applicability_domain.json",
-          "train_size": 3305,
-          "prototype_count": 100,
-          "thresholds": {
-            "in_domain_min": 0.3287671232876712,
-            "edge_domain_min": 0.29319540229885055
-          },
-          "similarity_stats": {
-            "nn_mean": 0.3981390123702298,
-            "nn_median": 0.379746835443038,
-            "nn_p25": 0.3287671232876712,
-            "nn_p10": 0.29319540229885055
-          },
-          "coverage_summary": {
-            "num_unique_scaffolds": 2961,
-            "largest_scaffold_fraction": 0.03540090771558245
-          },
-          "legacy": true
-        }
+        "scores_test_path": "/app/data/pxr_challenge/lightgbm_pxr_morgan_binary/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -101416,7 +101210,7 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_07711840d967d7b0_random_holdout_tabicl_v1_09072026_124000/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_07711840d967d7b0_random_holdout_tabicl_v1_09072026_124000/metadata.json",
       "display_name": "cyp_tabicl_rdkit",
-      "description": "Mod\u00e8le TabICL classification multiclasses (8 profils CYP) - descripteurs RDKit complets (217 descripteurs) - split al\u00e9atoire 70/15/15",
+      "description": "Modèle TabICL classification multiclasses (8 profils CYP) - descripteurs RDKit complets (217 descripteurs) - split aléatoire 70/15/15",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
@@ -101462,7 +101256,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -101478,7 +101272,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -103765,15 +103559,7 @@
         },
         "scores_train_path": "/app/data/tdc_classification/tabicl_rdkit_cyp_multiclass/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/tdc_classification/tabicl_rdkit_cyp_multiclass/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/data/tdc_classification/tabicl_rdkit_cyp_multiclass/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/data/tdc_classification/tabicl_rdkit_cyp_multiclass/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -103799,12 +103585,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_16b65f0adf3075f2_random_holdout_lightgbm_rdkit_all_v2_0_0_08072026_155818/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_16b65f0adf3075f2_random_holdout_lightgbm_rdkit_all_v2_0_0_08072026_155818/metadata.json",
       "display_name": "LightGBM DILI (v2) - RDKit complet (split 70/15/15)",
-      "description": "LightGBM classification binaire DILI (v2) avec descripteurs RDKit complets (217 features). Split al\u00e9atoire 70/15/15. AUC-ROC test = 0.910.",
+      "description": "LightGBM classification binaire DILI (v2) avec descripteurs RDKit complets (217 features). Split aléatoire 70/15/15. AUC-ROC test = 0.910.",
       "version": "2.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR_training_workflow",
-      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 475 mol\u00e9cules, 217 descripteurs RDKit",
+      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 475 molécules, 217 descripteurs RDKit",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -103885,7 +103671,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -103901,7 +103687,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -104741,15 +104527,7 @@
         },
         "scores_train_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_v2/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_v2/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_v2/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_v2/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -104771,12 +104549,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_16b65f0adf3075f2_random_holdout_lightgbm_rdkit_all_v2_0_0_08072026_160153/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_16b65f0adf3075f2_random_holdout_lightgbm_rdkit_all_v2_0_0_08072026_160153/metadata.json",
       "display_name": "LightGBM DILI (run 140113) - RDKit complet (split 70/15/15 seed=140113)",
-      "description": "LightGBM classification binaire DILI (run 140113) avec descripteurs RDKit complets (217 features). Split al\u00e9atoire 70/15/15 avec seed=140113. AUC-ROC test = 0.832.",
+      "description": "LightGBM classification binaire DILI (run 140113) avec descripteurs RDKit complets (217 features). Split aléatoire 70/15/15 avec seed=140113. AUC-ROC test = 0.832.",
       "version": "2.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR_training_workflow",
-      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 475 mol\u00e9cules, 217 descripteurs RDKit, split seed 140113",
+      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 475 molécules, 217 descripteurs RDKit, split seed 140113",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -104858,7 +104636,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -104875,7 +104653,7 @@
             "random_state": 140113
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -105715,15 +105493,7 @@
         },
         "scores_train_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_run140113/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_run140113/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_run140113/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all_run140113/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -105745,12 +105515,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_rdkit_all_v1_0_0_08072026_153219/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_rdkit_all_v1_0_0_08072026_153219/metadata.json",
       "display_name": "LightGBM DILI - RDKit complet (split 70/15/15)",
-      "description": "LightGBM classification binaire DILI avec descripteurs RDKit complets (217 features). Split al\u00e9atoire 70/15/15. AUC-ROC test = 0.933.",
+      "description": "LightGBM classification binaire DILI avec descripteurs RDKit complets (217 features). Split aléatoire 70/15/15. AUC-ROC test = 0.933.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "QSAR_training_workflow",
-      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 460 mol\u00e9cules, 217 descripteurs RDKit",
+      "domain_summary": "Dataset DILI (Drug-Induced Liver Injury), classification binaire, 460 molécules, 217 descripteurs RDKit",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -105831,7 +105601,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -105847,7 +105617,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -106685,15 +106455,7 @@
         },
         "scores_train_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/36e9f11b-77ad-4891-8b4b-1134382f13ff/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -106715,34 +106477,34 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_rdkit_all_v1_0_0_08072026_161708/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_rdkit_all_v1_0_0_08072026_161708/metadata.json",
       "display_name": "DILI LightGBM Run 141603 - RDKit All",
-      "description": "Mod\u00e8le LightGBM de classification binaire DILI (Drug-Induced Liver Injury) entra\u00een\u00e9 sur le dataset TDC DILI (460 compos\u00e9s). Utilise 217 descripteurs RDKit complets. Split al\u00e9atoire 70/15/15. Run de r\u00e9f\u00e9rence : 141603.",
+      "description": "Modèle LightGBM de classification binaire DILI (Drug-Induced Liver Injury) entraîné sur le dataset TDC DILI (460 composés). Utilise 217 descripteurs RDKit complets. Split aléatoire 70/15/15. Run de référence : 141603.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "TDC DILI Dataset - QSAR Training Pipeline",
-      "domain_summary": "Pr\u00e9diction de toxicit\u00e9 h\u00e9patique (DILI) - Classification binaire bas\u00e9e sur des descripteurs mol\u00e9culaires RDKit. Domaine d'applicabilit\u00e9 construit par bounding box sur 217 features (322 compos\u00e9s d'entra\u00eenement).",
+      "domain_summary": "Prédiction de toxicité hépatique (DILI) - Classification binaire basée sur des descripteurs moléculaires RDKit. Domaine d'applicabilité construit par bounding box sur 217 features (322 composés d'entraînement).",
       "strengths": [
         "Bonne performance ROC-AUC sur le test (0.905)",
         "Bonne Accuracy (84.1%) sur le test",
-        "Classe positive (DILI+) bien d\u00e9tect\u00e9e : Recall=86.1%",
-        "Domaine d'applicabilit\u00e9 couvre 82.6% du test set",
-        "Classes \u00e9quilibr\u00e9es (228/232)"
+        "Classe positive (DILI+) bien détectée : Recall=86.1%",
+        "Domaine d'applicabilité couvre 82.6% du test set",
+        "Classes équilibrées (228/232)"
       ],
       "limitations": [
-        "Statut experimental - non valid\u00e9 pour production",
-        "Validation limited \u00e0 un seul split al\u00e9atoire",
-        "16/69 \u00e9chantillons de validation hors domaine",
-        "Pas d'incertitude quantifi\u00e9e",
-        "Pas de calibration des probabilit\u00e9s"
+        "Statut experimental - non validé pour production",
+        "Validation limited à un seul split aléatoire",
+        "16/69 échantillons de validation hors domaine",
+        "Pas d'incertitude quantifiée",
+        "Pas de calibration des probabilités"
       ],
       "recommended_for": [
         "Classification binaire DILI",
-        "Screening virtuel pr\u00e9liminaire de toxicit\u00e9 h\u00e9patique",
+        "Screening virtuel préliminaire de toxicité hépatique",
         "Analyse exploratoire QSAR"
       ],
       "not_recommended_for": [
-        "D\u00e9cisions cliniques ou r\u00e9glementaires",
-        "Pr\u00e9dictions hors domaine sans v\u00e9rification AD",
+        "Décisions cliniques ou réglementaires",
+        "Prédictions hors domaine sans vérification AD",
         "Classification multi-classes",
         "Usage en production sans validation externe"
       ],
@@ -106887,7 +106649,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -106903,7 +106665,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -107742,29 +107504,6 @@
         "scores_train_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/bounding_box/scores_validation.csv",
         "scores_test_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/legacy_similarity_ad/reference_fingerprints.npz",
-          "reference_manifest_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/legacy_similarity_ad/reference_manifest.json",
-          "applicability_domain_path": "/app/.files/sessions/e43710a9-b91c-4127-b08e-4f83856489a6/data/tdc_classification/lightgbm_dili_run141603/applicability_domain/legacy_similarity_ad/applicability_domain.json",
-          "train_size": 322,
-          "prototype_count": 100,
-          "thresholds": {
-            "in_domain_min": 0.2619047619047619,
-            "edge_domain_min": 0.21885302197802198
-          },
-          "similarity_stats": {
-            "nn_mean": 0.4000935559498569,
-            "nn_median": 0.3521462639109698,
-            "nn_p25": 0.2619047619047619,
-            "nn_p10": 0.21885302197802198
-          },
-          "coverage_summary": {
-            "num_unique_scaffolds": 224,
-            "largest_scaffold_fraction": 0.11490683229813664
-          },
-          "legacy": true
-        },
         "note": "Bounding box sur 217 descripteurs RDKit. Coverage: train=100%, validation=76.8%, test=82.6%"
       },
       "task": {
@@ -107796,30 +107535,30 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_06072026_171034/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_06072026_171034/metadata.json",
       "display_name": "LightGBM DILI (RDKit All) - Classification binaire",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur le jeu DILI cur\u00e9 (TDC) avec descripteurs RDKit complets (217 features). Split al\u00e9atoire 80/20. Classification binaire de toxicit\u00e9 h\u00e9patique (DILI). ROC-AUC test = 0.893.",
+      "description": "Modèle LightGBM entraîné sur le jeu DILI curé (TDC) avec descripteurs RDKit complets (217 features). Split aléatoire 80/20. Classification binaire de toxicité hépatique (DILI). ROC-AUC test = 0.893.",
       "version": "1.0.0",
       "status": "workflow_demo",
-      "owner": "\u00c9quipe QSAR",
-      "source": "Train\u00e9 localement sur donn\u00e9es DILI cur\u00e9es depuis TDC Benchmark",
-      "domain_summary": "Pr\u00e9diction de toxicit\u00e9 h\u00e9patique m\u00e9dicamenteuse (Drug-Induced Liver Injury). 460 compos\u00e9s organiques, 2 classes \u00e9quilibr\u00e9es. 247 scaffolds uniques.",
+      "owner": "Équipe QSAR",
+      "source": "Trainé localement sur données DILI curées depuis TDC Benchmark",
+      "domain_summary": "Prédiction de toxicité hépatique médicamenteuse (Drug-Induced Liver Injury). 460 composés organiques, 2 classes équilibrées. 247 scaffolds uniques.",
       "strengths": [
         "ROC-AUC de 0.893 sur le test indique une bonne discrimination entre toxiques et non-toxiques",
-        "Classes \u00e9quilibr\u00e9es (228/232) - pas de biais de d\u00e9s\u00e9quilibre",
-        "217 descripteurs RDKit complets fournissent une repr\u00e9sentation riche des propri\u00e9t\u00e9s mol\u00e9culaires"
+        "Classes équilibrées (228/232) - pas de biais de déséquilibre",
+        "217 descripteurs RDKit complets fournissent une représentation riche des propriétés moléculaires"
       ],
       "limitations": [
-        "Statut workflow_demo - un seul split al\u00e9atoire, pas de validation crois\u00e9e",
-        "Pas de validation scaffold-aware - la g\u00e9n\u00e9ralisation \u00e0 de nouveaux scaffolds n'est pas \u00e9valu\u00e9e",
-        "Domaine applicable limit\u00e9 aux petites mol\u00e9cules organiques (hors inorganiques/organom\u00e9talliques/m\u00e9langes)",
-        "Seulement 460 \u00e9chantillons d'entra\u00eenement"
+        "Statut workflow_demo - un seul split aléatoire, pas de validation croisée",
+        "Pas de validation scaffold-aware - la généralisation à de nouveaux scaffolds n'est pas évaluée",
+        "Domaine applicable limité aux petites molécules organiques (hors inorganiques/organométalliques/mélanges)",
+        "Seulement 460 échantillons d'entraînement"
       ],
       "recommended_for": [
-        "D\u00e9pistage pr\u00e9liminaire de toxicit\u00e9 h\u00e9patique (DILI)",
-        "\u00c9tudes de faisabilit\u00e9 QSAR sur petites mol\u00e9cules"
+        "Dépistage préliminaire de toxicité hépatique (DILI)",
+        "Études de faisabilité QSAR sur petites molécules"
       ],
       "not_recommended_for": [
-        "D\u00e9cisions cliniques ou r\u00e9glementaires sans validation externe",
-        "Compos\u00e9s inorganiques, organom\u00e9talliques ou m\u00e9langes"
+        "Décisions cliniques ou réglementaires sans validation externe",
+        "Composés inorganiques, organométalliques ou mélanges"
       ],
       "known_metrics": {
         "test": {
@@ -107895,7 +107634,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -107910,7 +107649,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -108241,10 +107980,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",
@@ -108395,7 +108131,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -108411,7 +108147,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -109236,15 +108972,7 @@
         },
         "scores_train_path": "/app/.files/sessions/38d3ed1c-1a09-42cd-aa62-a203a76f2e1c/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/38d3ed1c-1a09-42cd-aa62-a203a76f2e1c/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/38d3ed1c-1a09-42cd-aa62-a203a76f2e1c/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/38d3ed1c-1a09-42cd-aa62-a203a76f2e1c/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -109266,28 +108994,28 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_08072026_152045/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_08072026_152045/metadata.json",
       "display_name": "LightGBM DILI - RDKit complet (random 70/15/15)",
-      "description": "Mod\u00e8le LightGBM classification binaire DILI (Drug-Induced Liver Injury) utilisant les descripteurs RDKit complets. Split random 70/15/15. ROC-AUC test = 0.89.",
+      "description": "Modèle LightGBM classification binaire DILI (Drug-Induced Liver Injury) utilisant les descripteurs RDKit complets. Split random 70/15/15. ROC-AUC test = 0.89.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "TDC DILI dataset - QSAR training workflow",
-      "domain_summary": "DILI (Drug-Induced Liver Injury) - Toxicit\u00e9 h\u00e9patique - Donn\u00e9es TDC - 460 compos\u00e9s apr\u00e8s curation",
+      "domain_summary": "DILI (Drug-Induced Liver Injury) - Toxicité hépatique - Données TDC - 460 composés après curation",
       "strengths": [
         "ROC-AUC test de 0.89, bon pouvoir discriminant",
-        "Accuracy et F1 \u00e9quilibr\u00e9s (81%)",
-        "Domaine d'applicabilit\u00e9 bounding_box avec analyse AD compl\u00e8te"
+        "Accuracy et F1 équilibrés (81%)",
+        "Domaine d'applicabilité bounding_box avec analyse AD complète"
       ],
       "limitations": [
-        "Dataset de taille modeste (460 compos\u00e9s apr\u00e8s curation)",
-        "Hardest Split Gate non pass\u00e9 (balanced_accuracy < 0.7 hors AD)",
-        "Pr\u00e9cision d\u00e9grad\u00e9e sur les compos\u00e9s hors domaine AD"
+        "Dataset de taille modeste (460 composés après curation)",
+        "Hardest Split Gate non passé (balanced_accuracy < 0.7 hors AD)",
+        "Précision dégradée sur les composés hors domaine AD"
       ],
       "recommended_for": [
-        "Pr\u00e9diction de toxicit\u00e9 DILI pour compos\u00e9s dans le domaine AD",
-        "Classification binaire de risque h\u00e9patique"
+        "Prédiction de toxicité DILI pour composés dans le domaine AD",
+        "Classification binaire de risque hépatique"
       ],
       "not_recommended_for": [
-        "Pr\u00e9diction sur compos\u00e9s tr\u00e8s diff\u00e9rents du set d'entra\u00eenement (hors AD)"
+        "Prédiction sur composés très différents du set d'entraînement (hors AD)"
       ],
       "known_metrics": {
         "validation": {
@@ -109406,7 +109134,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -109422,7 +109150,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -110259,15 +109987,7 @@
         },
         "scores_train_path": "/app/.files/sessions/20e887b6-dcf7-4cb2-8ab6-18710bab9165/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/20e887b6-dcf7-4cb2-8ab6-18710bab9165/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/20e887b6-dcf7-4cb2-8ab6-18710bab9165/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/20e887b6-dcf7-4cb2-8ab6-18710bab9165/data/tdc_classification/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -110296,12 +110016,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_08072026_152759/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_lightgbm_v1_0_0_08072026_152759/metadata.json",
       "display_name": "LightGBM DILI - RDKit All (217 descriptors)",
-      "description": "Mod\u00e8le LightGBM avec descripteurs RDKit complets (tous 2D) entra\u00een\u00e9 sur le dataset TDC DILI pour la classification binaire de l'h\u00e9patotoxicit\u00e9 m\u00e9dicamenteuse (DILI). Split al\u00e9atoire 70/15/15.",
+      "description": "Modèle LightGBM avec descripteurs RDKit complets (tous 2D) entraîné sur le dataset TDC DILI pour la classification binaire de l'hépatotoxicité médicamenteuse (DILI). Split aléatoire 70/15/15.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "train_lightgbm_model",
-      "domain_summary": "Classification binaire DILI (Drug-Induced Liver Injury) bas\u00e9e sur 460 compos\u00e9s du dataset TDC. 217 descripteurs RDKit 2D. Domaine d'applicabilit\u00e9 bounding-box entra\u00een\u00e9 sur 322 compos\u00e9s d'entra\u00eenement.",
+      "domain_summary": "Classification binaire DILI (Drug-Induced Liver Injury) basée sur 460 composés du dataset TDC. 217 descripteurs RDKit 2D. Domaine d'applicabilité bounding-box entraîné sur 322 composés d'entraînement.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -110425,7 +110145,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -110441,7 +110161,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -111270,15 +110990,7 @@
         },
         "scores_train_path": "/app/.files/sessions/45b2d1c2-2817-402f-ae80-aad200bf4916/data/tdc_classification/lightgbm_dili_model/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/45b2d1c2-2817-402f-ae80-aad200bf4916/data/tdc_classification/lightgbm_dili_model/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/45b2d1c2-2817-402f-ae80-aad200bf4916/data/tdc_classification/lightgbm_dili_model/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/45b2d1c2-2817-402f-ae80-aad200bf4916/data/tdc_classification/lightgbm_dili_model/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -111304,7 +111016,7 @@
       "backend_name": "tabicl",
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_tabicl_v1_08072026_133325/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_tabicl_v1_08072026_133325/metadata.json",
-      "display_name": "TabICL RDKit All - DILI Toxicit\u00e9 H\u00e9patique",
+      "display_name": "TabICL RDKit All - DILI Toxicité Hépatique",
       "description": "Modele TabICL classification binaire pour la prediction de toxicite hepatique (DILI). Utilise les 217 descripteurs RDKit complets comme representation. Entraine sur le dataset TDC DILI avec un split aleatoire 70/15/15.",
       "version": "1",
       "status": "workflow_demo",
@@ -111361,7 +111073,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -111377,7 +111089,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -111959,15 +111671,7 @@
         },
         "scores_train_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/tabicl_rdkit_all/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/tabicl_rdkit_all/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/tabicl_rdkit_all/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/tdc_classification/tabicl_rdkit_all/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -111989,7 +111693,7 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_tabicl_v1_09072026_123549/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_37704528da0ff8d7_random_holdout_tabicl_v1_09072026_123549/metadata.json",
       "display_name": "dili_tabicl_rdkit",
-      "description": "Mod\u00e8le TabICL classification binaire DILI - descripteurs RDKit complets (217 descripteurs) - split al\u00e9atoire 70/15/15",
+      "description": "Modèle TabICL classification binaire DILI - descripteurs RDKit complets (217 descripteurs) - split aléatoire 70/15/15",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
@@ -112035,7 +111739,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -112051,7 +111755,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -113827,15 +113531,7 @@
         },
         "scores_train_path": "/app/data/tdc_classification/tabicl_rdkit_dili/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/tdc_classification/tabicl_rdkit_dili/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/data/tdc_classification/tabicl_rdkit_dili/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/data/tdc_classification/tabicl_rdkit_dili/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -117317,15 +117013,7 @@
         },
         "scores_train_path": "artifacts/applicability_domain/scores_train.csv",
         "scores_validation_path": "artifacts/applicability_domain/scores_validation.csv",
-        "scores_test_path": "artifacts/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "artifacts/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "classification",
@@ -117347,31 +117035,31 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_rdkit_all_v1_0_0_09072026_121020/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_rdkit_all_v1_0_0_09072026_121020/metadata.json",
       "display_name": "LightGBM PXR pEC50 (RDKit complet)",
-      "description": "Mod\u00e8le LightGBM r\u00e9gression pour pEC50 sur le dataset PXR Challenge, utilisant les descripteurs complets RDKit (217 features). Split random 70/15/15. Domaine d'applicabilit\u00e9 : Isolation Forest uniquement.",
+      "description": "Modèle LightGBM régression pour pEC50 sur le dataset PXR Challenge, utilisant les descripteurs complets RDKit (217 features). Split random 70/15/15. Domaine d'applicabilité : Isolation Forest uniquement.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "QSAR training pipeline - LightGBM + RDKit all descriptors",
-      "domain_summary": "Dataset PXR Challenge cur\u00e9 (4131 mol\u00e9cules). pEC50 : r\u00e9gression. Descripteurs RDKit complets (217 features).",
+      "domain_summary": "Dataset PXR Challenge curé (4131 molécules). pEC50 : régression. Descripteurs RDKit complets (217 features).",
       "strengths": [
-        "Mod\u00e8le tabulaire rapide et interpr\u00e9table (LightGBM)",
-        "217 descripteurs RDKit complets couvrant propri\u00e9t\u00e9s mol\u00e9culaires et fragments",
-        "Domaine d'applicabilit\u00e9 Isolation Forest int\u00e9gr\u00e9",
-        "Bon \u00e9quilibre performance/vitesse d'inf\u00e9rence"
+        "Modèle tabulaire rapide et interprétable (LightGBM)",
+        "217 descripteurs RDKit complets couvrant propriétés moléculaires et fragments",
+        "Domaine d'applicabilité Isolation Forest intégré",
+        "Bon équilibre performance/vitesse d'inférence"
       ],
       "limitations": [
-        "R\u00b2 test de 0.568 \u2014 capacit\u00e9 pr\u00e9dictive mod\u00e9r\u00e9e",
-        "Performances limit\u00e9es hors du domaine d'applicabilit\u00e9 (R\u00b2 ~0.006)",
-        "Mod\u00e8le exp\u00e9rimental, n\u00e9cessite validation suppl\u00e9mentaire"
+        "R² test de 0.568 — capacité prédictive modérée",
+        "Performances limitées hors du domaine d'applicabilité (R² ~0.006)",
+        "Modèle expérimental, nécessite validation supplémentaire"
       ],
       "recommended_for": [
-        "Pr\u00e9dictions pEC50 dans le domaine de chimie du PXR",
-        "Screening virtuel avec filtre de domaine d'applicabilit\u00e9"
+        "Prédictions pEC50 dans le domaine de chimie du PXR",
+        "Screening virtuel avec filtre de domaine d'applicabilité"
       ],
       "not_recommended_for": [
-        "Mol\u00e9cules tr\u00e8s diff\u00e9rentes du jeu d'entra\u00eenement PXR",
-        "Pr\u00e9dictions hors du domaine Isolation Forest",
-        "Cas n\u00e9cessitant R\u00b2 > 0.6"
+        "Molécules très différentes du jeu d'entraînement PXR",
+        "Prédictions hors du domaine Isolation Forest",
+        "Cas nécessitant R² > 0.6"
       ],
       "known_metrics": {
         "validation": {
@@ -117445,7 +117133,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -117461,7 +117149,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -119086,14 +118774,6 @@
         "scores_train_path": "/app/.files/sessions/0fea6f6c-889a-4294-ad19-6711f6815501/data/pxr_challenge/lgbm_rdkit_all/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/0fea6f6c-889a-4294-ad19-6711f6815501/data/pxr_challenge/lgbm_rdkit_all/applicability_domain/scores_validation.csv",
         "scores_test_path": "/app/.files/sessions/0fea6f6c-889a-4294-ad19-6711f6815501/data/pxr_challenge/lgbm_rdkit_all/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        },
         "bounds_path": null
       },
       "task": {
@@ -119313,7 +118993,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -119329,7 +119009,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -119874,15 +119554,7 @@
         },
         "scores_train_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/662e44f7-16d0-4ade-8a0f-fb0668166002/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/bounding_box/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -119904,28 +119576,28 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114121/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114121/metadata.json",
       "display_name": "LightGBM PXR - RDKit complet (pEC50)",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de pEC50 (PXR). Repr\u00e9sentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Entra\u00een\u00e9 sur le jeu de donn\u00e9es PXR Challenge cur\u00e9 (4131 compos\u00e9s).",
+      "description": "Modèle LightGBM de régression pour la prédiction de pEC50 (PXR). Représentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Entraîné sur le jeu de données PXR Challenge curé (4131 composés).",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "PXR Challenge QSAR training",
-      "domain_summary": "PXR (r\u00e9cepteur nucl\u00e9aire) - pr\u00e9diction de l'activit\u00e9 agoniste pEC50",
+      "domain_summary": "PXR (récepteur nucléaire) - prédiction de l'activité agoniste pEC50",
       "strengths": [
-        "Mod\u00e8le tabulaire rapide avec 217 descripteurs RDKit",
-        "Domaine d'applicabilit\u00e9 combin\u00e9 (bounding box + isolation forest) disponible",
-        "Bas\u00e9 sur des descripteurs interpr\u00e9tables"
+        "Modèle tabulaire rapide avec 217 descripteurs RDKit",
+        "Domaine d'applicabilité combiné (bounding box + isolation forest) disponible",
+        "Basé sur des descripteurs interprétables"
       ],
       "limitations": [
-        "R\u00b2 test de 0.55 - performance mod\u00e9r\u00e9e",
-        "Mod\u00e8le exp\u00e9rimental n\u00e9cessitant validation externe",
-        "9 compos\u00e9s test hors du domaine d'applicabilit\u00e9"
+        "R² test de 0.55 - performance modérée",
+        "Modèle expérimental nécessitant validation externe",
+        "9 composés test hors du domaine d'applicabilité"
       ],
       "recommended_for": [
-        "Pr\u00e9diction rapide de pEC50 PXR",
+        "Prédiction rapide de pEC50 PXR",
         "Criblage virtuel de ligands PXR"
       ],
       "not_recommended_for": [
-        "Pr\u00e9dictions hors du domaine de similarit\u00e9 structurelle",
+        "Prédictions hors du domaine de similarité structurelle",
         "Classification binaire"
       ],
       "known_metrics": {
@@ -119981,7 +119653,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -119997,7 +119669,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -121506,15 +121178,7 @@
         },
         "scores_train_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/scores_validation.csv",
-        "scores_test_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -121536,28 +121200,28 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114433/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114433/metadata.json",
       "display_name": "LightGBM PXR - RDKit complet (pEC50) - AD bounding box uniquement",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de pEC50 (PXR). Repr\u00e9sentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Domaine d'applicabilit\u00e9 : bounding box uniquement. Entra\u00een\u00e9 sur le jeu de donn\u00e9es PXR Challenge cur\u00e9 (4131 compos\u00e9s).",
+      "description": "Modèle LightGBM de régression pour la prédiction de pEC50 (PXR). Représentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Domaine d'applicabilité : bounding box uniquement. Entraîné sur le jeu de données PXR Challenge curé (4131 composés).",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "PXR Challenge QSAR training",
-      "domain_summary": "PXR (r\u00e9cepteur nucl\u00e9aire) - pr\u00e9diction de l'activit\u00e9 agoniste pEC50 - AD bounding box uniquement",
+      "domain_summary": "PXR (récepteur nucléaire) - prédiction de l'activité agoniste pEC50 - AD bounding box uniquement",
       "strengths": [
-        "Mod\u00e8le tabulaire rapide avec 217 descripteurs RDKit",
-        "Domaine d'applicabilit\u00e9 bounding box (strict min/max)",
-        "Bas\u00e9 sur des descripteurs interpr\u00e9tables"
+        "Modèle tabulaire rapide avec 217 descripteurs RDKit",
+        "Domaine d'applicabilité bounding box (strict min/max)",
+        "Basé sur des descripteurs interprétables"
       ],
       "limitations": [
-        "R\u00b2 test de 0.52 - performance mod\u00e9r\u00e9e",
-        "Mod\u00e8le exp\u00e9rimental n\u00e9cessitant validation externe",
-        "14 compos\u00e9s test hors du domaine d'applicabilit\u00e9 (bounding box)"
+        "R² test de 0.52 - performance modérée",
+        "Modèle expérimental nécessitant validation externe",
+        "14 composés test hors du domaine d'applicabilité (bounding box)"
       ],
       "recommended_for": [
-        "Pr\u00e9diction rapide de pEC50 PXR",
+        "Prédiction rapide de pEC50 PXR",
         "Criblage virtuel de ligands PXR"
       ],
       "not_recommended_for": [
-        "Pr\u00e9dictions hors du domaine de similarit\u00e9 structurelle",
+        "Prédictions hors du domaine de similarité structurelle",
         "Classification binaire"
       ],
       "known_metrics": {
@@ -121613,7 +121277,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -121629,7 +121293,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -122656,14 +122320,6 @@
         "scores_train_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_bb_only/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_bb_only/applicability_domain/scores_validation.csv",
         "scores_test_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_bb_only/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        },
         "isolation_forest_model_path": null
       },
       "task": {
@@ -122686,28 +122342,28 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114741/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_114741/metadata.json",
       "display_name": "LightGBM PXR - RDKit complet (pEC50) - AD Isolation Forest uniquement",
-      "description": "Mod\u00e8le LightGBM de r\u00e9gression pour la pr\u00e9diction de pEC50 (PXR). Repr\u00e9sentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Domaine d'applicabilit\u00e9 : Isolation Forest uniquement. Entra\u00een\u00e9 sur le jeu de donn\u00e9es PXR Challenge cur\u00e9 (4131 compos\u00e9s).",
+      "description": "Modèle LightGBM de régression pour la prédiction de pEC50 (PXR). Représentation : descripteurs RDKit complets (217 features). Split : random 70/15/15. Domaine d'applicabilité : Isolation Forest uniquement. Entraîné sur le jeu de données PXR Challenge curé (4131 composés).",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
       "source": "PXR Challenge QSAR training",
-      "domain_summary": "PXR (r\u00e9cepteur nucl\u00e9aire) - pr\u00e9diction de l'activit\u00e9 agoniste pEC50 - AD Isolation Forest uniquement",
+      "domain_summary": "PXR (récepteur nucléaire) - prédiction de l'activité agoniste pEC50 - AD Isolation Forest uniquement",
       "strengths": [
-        "Mod\u00e8le tabulaire rapide avec 217 descripteurs RDKit",
-        "Domaine d'applicabilit\u00e9 Isolation Forest (d\u00e9tection d'anomalies multivari\u00e9e)",
+        "Modèle tabulaire rapide avec 217 descripteurs RDKit",
+        "Domaine d'applicabilité Isolation Forest (détection d'anomalies multivariée)",
         "Meilleure robustesse aux chimies non vues que la bounding box"
       ],
       "limitations": [
-        "R\u00b2 test de 0.57 - performance mod\u00e9r\u00e9e",
-        "Mod\u00e8le exp\u00e9rimental n\u00e9cessitant validation externe",
-        "8 compos\u00e9s test hors du domaine d'applicabilit\u00e9 (Isolation Forest)"
+        "R² test de 0.57 - performance modérée",
+        "Modèle expérimental nécessitant validation externe",
+        "8 composés test hors du domaine d'applicabilité (Isolation Forest)"
       ],
       "recommended_for": [
-        "Pr\u00e9diction rapide de pEC50 PXR",
+        "Prédiction rapide de pEC50 PXR",
         "Criblage virtuel de ligands PXR"
       ],
       "not_recommended_for": [
-        "Pr\u00e9dictions sur des compos\u00e9s tr\u00e8s \u00e9loign\u00e9s chimiquement du jeu d'entra\u00eenement",
+        "Prédictions sur des composés très éloignés chimiquement du jeu d'entraînement",
         "Classification binaire"
       ],
       "known_metrics": {
@@ -122763,7 +122419,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -122779,7 +122435,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -124406,14 +124062,6 @@
         "scores_train_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_if_only/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_if_only/applicability_domain/scores_validation.csv",
         "scores_test_path": "/app/.files/sessions/0c9699eb-2842-4a8a-8368-a5abfc8fdce1/data/pxr_challenge/lightgbm_rdkit_all_if_only/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        },
         "bounds_path": null
       },
       "task": {
@@ -124436,30 +124084,30 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_115806/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_97c3bc80a6dbf0b5_random_holdout_lightgbm_v1_0_0_09072026_115806/metadata.json",
       "display_name": "LightGBM RDKit All - PXR pEC50",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur 4131 compos\u00e9s PXR pour la pr\u00e9diction de pEC50, utilisant les descripteurs RDKit complets (217 features). Split random 70/15/15. Domaine d'applicabilit\u00e9 via Isolation Forest.",
+      "description": "Modèle LightGBM entraîné sur 4131 composés PXR pour la prédiction de pEC50, utilisant les descripteurs RDKit complets (217 features). Split random 70/15/15. Domaine d'applicabilité via Isolation Forest.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "pxr_challenge_training_workflow",
-      "domain_summary": "PXR (Pregnane X Receptor) agonistes, domaine de chimie m\u00e9dicinale. 217 descripteurs RDKit, Isolation Forest pour AD.",
+      "domain_summary": "PXR (Pregnane X Receptor) agonistes, domaine de chimie médicinale. 217 descripteurs RDKit, Isolation Forest pour AD.",
       "strengths": [
-        "R\u00b2 test de 0.57 - mod\u00e8le raisonnable pour la pr\u00e9diction pEC50",
+        "R² test de 0.57 - modèle raisonnable pour la prédiction pEC50",
         "97.8% de couverture AD sur le split test (Isolation Forest)",
         "217 descripteurs RDKit complets - bonne couverture physico-chimique",
-        "Entra\u00eenement rapide (~4 sec) sur CPU"
+        "Entraînement rapide (~4 sec) sur CPU"
       ],
       "limitations": [
-        "R\u00b2 test inf\u00e9rieur \u00e0 0.7 - Hardest Split Gate non pass\u00e9",
-        "Mod\u00e8le \u00e9valu\u00e9 sur un seul split al\u00e9atoire (pas de validation crois\u00e9e)",
-        "Validation uniquement interne (pas d'\u00e9valuation externe)"
+        "R² test inférieur à 0.7 - Hardest Split Gate non passé",
+        "Modèle évalué sur un seul split aléatoire (pas de validation croisée)",
+        "Validation uniquement interne (pas d'évaluation externe)"
       ],
       "recommended_for": [
-        "Pr\u00e9diction rapide de pEC50 pour compos\u00e9s PXR",
-        "Screening virtuel pr\u00e9liminaire de ligands PXR"
+        "Prédiction rapide de pEC50 pour composés PXR",
+        "Screening virtuel préliminaire de ligands PXR"
       ],
       "not_recommended_for": [
-        "Pr\u00e9dictions hors domaine AD (compos\u00e9s tr\u00e8s \u00e9loign\u00e9s chimiquement)",
-        "D\u00e9cisions r\u00e9glementaires sans validation externe suppl\u00e9mentaire"
+        "Prédictions hors domaine AD (composés très éloignés chimiquement)",
+        "Décisions réglementaires sans validation externe supplémentaire"
       ],
       "known_metrics": {
         "validation": {
@@ -124520,7 +124168,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -124536,7 +124184,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -126163,14 +125811,6 @@
         "scores_train_path": "/app/data/pxr_challenge/models/lightgbm_rdkit_all/applicability_domain/scores_train.csv",
         "scores_validation_path": "/app/data/pxr_challenge/models/lightgbm_rdkit_all/applicability_domain/scores_validation.csv",
         "scores_test_path": "/app/data/pxr_challenge/models/lightgbm_rdkit_all/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        },
         "bounds_path": null
       },
       "task": {
@@ -129378,15 +129018,7 @@
         },
         "scores_train_path": "artifacts/applicability_domain/scores_train.csv",
         "scores_validation_path": "artifacts/applicability_domain/scores_validation.csv",
-        "scores_test_path": "artifacts/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "artifacts/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -132576,15 +132208,7 @@
         },
         "scores_train_path": "artifacts/applicability_domain/scores_train.csv",
         "scores_validation_path": "artifacts/applicability_domain/scores_validation.csv",
-        "scores_test_path": "artifacts/applicability_domain/scores_test.csv",
-        "legacy_similarity_ad": {
-          "available": true,
-          "legacy": true,
-          "method": "legacy_similarity_ad",
-          "reference_store_path": "artifacts/reference_fingerprints.npz",
-          "reference_manifest_path": "artifacts/reference_manifest.json",
-          "index_path": "artifacts/applicability_domain.json"
-        }
+        "scores_test_path": "artifacts/applicability_domain/scores_test.csv"
       },
       "task": {
         "task_type": "regression",
@@ -132615,10 +132239,10 @@
       "strengths": [
         "Fast training on CPU",
         "217 RDKit 2D descriptors",
-        "R\u00b2=0.562 on random holdout test set"
+        "R²=0.562 on random holdout test set"
       ],
       "limitations": [
-        "Hardest Split Gate not passed (scaffold R\u00b2=0.480)",
+        "Hardest Split Gate not passed (scaffold R²=0.480)",
         "Only 217 descriptor features (no graph/molecular fingerprint combined)"
       ],
       "recommended_for": [
@@ -132729,10 +132353,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -133089,10 +132713,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "regression",
@@ -133114,29 +132735,29 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_a182adee8a1c906e_random_holdout_tabicl_rdkit_all_v1_0_0_07072026_102707/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_a182adee8a1c906e_random_holdout_tabicl_rdkit_all_v1_0_0_07072026_102707/metadata.json",
       "display_name": "TabICL RDKit All - CYP Veith Multiclass Profile",
-      "description": "Mod\u00e8le TabICL avec descripteurs RDKit complets (217 features) pour classification multiclasse du profil CYP (8 classes). Entra\u00een\u00e9 sur le dataset CYP_Veith_multiclass_profile cur\u00e9 (970 compos\u00e9s). Split al\u00e9atoire 80/20.",
+      "description": "Modèle TabICL avec descripteurs RDKit complets (217 features) pour classification multiclasse du profil CYP (8 classes). Entraîné sur le dataset CYP_Veith_multiclass_profile curé (970 composés). Split aléatoire 80/20.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "QSAR Training Agent",
       "source": "QSAR training pipeline - TabICL backend",
       "domain_summary": "Classification multiclasse du profil cytochrome P450 (CYP) - 8 classes incluant CYP2C9, CYP2D6, CYP3A4, et combinaisons.",
       "strengths": [
-        "Mod\u00e8le tabulaire avec 217 descripteurs RDKit complets",
-        "G\u00e8re la classification multi-classes (8 classes CYP)",
-        "Domaine d'applicabilit\u00e9 hybride Morgan avec 100 prototypes"
+        "Modèle tabulaire avec 217 descripteurs RDKit complets",
+        "Gère la classification multi-classes (8 classes CYP)",
+        "Domaine d'applicabilité hybride Morgan avec 100 prototypes"
       ],
       "limitations": [
-        "Pr\u00e9cision mod\u00e9r\u00e9e (accuracy=0.50, F1 macro=0.49)",
-        "Une seule strat\u00e9gie de split (al\u00e9atoire 80/20) - sans validation crois\u00e9e",
-        "Statut workflow_demo (Hardest Split Gate non pass\u00e9)"
+        "Précision modérée (accuracy=0.50, F1 macro=0.49)",
+        "Une seule stratégie de split (aléatoire 80/20) - sans validation croisée",
+        "Statut workflow_demo (Hardest Split Gate non passé)"
       ],
       "recommended_for": [
         "Classification du profil CYP",
-        "Exploration/analyse pr\u00e9liminaire de profil d'inhibition CYP"
+        "Exploration/analyse préliminaire de profil d'inhibition CYP"
       ],
       "not_recommended_for": [
-        "Pr\u00e9dictions r\u00e9glementaires ou valid\u00e9es",
-        "D\u00e9cisions cliniques sans validation externe suppl\u00e9mentaire"
+        "Prédictions réglementaires ou validées",
+        "Décisions cliniques sans validation externe supplémentaire"
       ],
       "known_metrics": {
         "test": {
@@ -133283,7 +132904,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -133298,7 +132919,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -133641,10 +133262,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -133672,12 +133290,12 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_a2b44cca74a5ec60_random_holdout_lightgbm_v1_0_0_06072026_173815/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_a2b44cca74a5ec60_random_holdout_lightgbm_v1_0_0_06072026_173815/metadata.json",
       "display_name": "LightGBM RDKit All - CYP Veith Multiclass",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 sur les descripteurs RDKit complets (217 descripteurs 2D) pour la classification multiclasse du profil d'inhibition CYP (8 classes). Split al\u00e9atoire 80/20 sans validation.",
+      "description": "Modèle LightGBM entraîné sur les descripteurs RDKit complets (217 descripteurs 2D) pour la classification multiclasse du profil d'inhibition CYP (8 classes). Split aléatoire 80/20 sans validation.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "QSAR training workflow - CYP Veith multiclass dataset",
-      "domain_summary": "Domaine CYP Veith : 5732 compos\u00e9s d'entra\u00eenement, 3857 scaffolds uniques, similarit\u00e9 moyenne au plus proche voisin de 0.54.",
+      "domain_summary": "Domaine CYP Veith : 5732 composés d'entraînement, 3857 scaffolds uniques, similarité moyenne au plus proche voisin de 0.54.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -133734,7 +133352,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -133749,7 +133367,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -134091,10 +133709,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -134115,13 +133730,13 @@
       "backend_name": "lightgbm",
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_a2b44cca74a5ec60_standard_qsar_lightgbm_v1_06072026_203123/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_a2b44cca74a5ec60_standard_qsar_lightgbm_v1_06072026_203123/metadata.json",
-      "display_name": "LightGBM RDKit All \u2014 CYP Veith Multiclasse",
-      "description": "Mod\u00e8le LightGBM entra\u00een\u00e9 avec les descripteurs RDKit complets (217 descripteurs) pour la pr\u00e9diction multi-classe du profil d'inhibition CYP (8 classes). Protocole standard_qsar avec split al\u00e9atoire et scaffold.",
+      "display_name": "LightGBM RDKit All — CYP Veith Multiclasse",
+      "description": "Modèle LightGBM entraîné avec les descripteurs RDKit complets (217 descripteurs) pour la prédiction multi-classe du profil d'inhibition CYP (8 classes). Protocole standard_qsar avec split aléatoire et scaffold.",
       "version": "1",
       "status": "workflow_demo",
       "owner": "chemspacecopilot",
-      "source": "QSAR Training \u2014 LightGBM standard_qsar campaign",
-      "domain_summary": "Domaine d'applicabilit\u00e9 hybride Morgan (100 prototypes, 5733 \u00e9chantillons d'entra\u00eenement). Seuil in_domain_min=0.387, seuil edge_domain_min=0.325. 3827 scaffolds uniques.",
+      "source": "QSAR Training — LightGBM standard_qsar campaign",
+      "domain_summary": "Domaine d'applicabilité hybride Morgan (100 prototypes, 5733 échantillons d'entraînement). Seuil in_domain_min=0.387, seuil edge_domain_min=0.325. 3827 scaffolds uniques.",
       "strengths": [],
       "limitations": [],
       "recommended_for": [],
@@ -134169,10 +133784,10 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -134514,10 +134129,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "multiclass_classification",
@@ -134539,29 +134151,29 @@
       "model_path": "/app/data/model_assets/internal/tabular_rdkit_all_c479e0faad3ee8f4_random_holdout_tabicl_rdkit_all_v1_0_0_06072026_195449/model/best.pkl",
       "metadata_path": "/app/data/model_assets/internal/tabular_rdkit_all_c479e0faad3ee8f4_random_holdout_tabicl_rdkit_all_v1_0_0_06072026_195449/metadata.json",
       "display_name": "DILI_TabICL_RDKitFull",
-      "description": "Mod\u00e8le TabICL avec descripteurs RDKit complets (217 descripteurs) pour la classification binaire de la toxicit\u00e9 h\u00e9patique (DILI). Entra\u00een\u00e9 sur 460 compos\u00e9s avec split al\u00e9atoire 80/20.",
+      "description": "Modèle TabICL avec descripteurs RDKit complets (217 descripteurs) pour la classification binaire de la toxicité hépatique (DILI). Entraîné sur 460 composés avec split aléatoire 80/20.",
       "version": "1.0.0",
       "status": "workflow_demo",
       "owner": "qsar_training_agent",
       "source": "qsar_training_workflow",
-      "domain_summary": "Classification binaire de la toxicit\u00e9 h\u00e9patique m\u00e9dicamenteuse (DILI). 460 compos\u00e9s, 252 scaffolds uniques. Domaine d'applicabilit\u00e9 : hybrid_morgan_domain avec 100 prototypes.",
+      "domain_summary": "Classification binaire de la toxicité hépatique médicamenteuse (DILI). 460 composés, 252 scaffolds uniques. Domaine d'applicabilité moderne non disponible pour ce modèle historique.",
       "strengths": [
-        "Bonne performance ROC-AUC (0.889) sur split al\u00e9atoire",
-        "217 descripteurs RDKit couvrant la diversit\u00e9 physico-chimique",
-        "Domaine d'applicabilit\u00e9 construit avec 368 compos\u00e9s d'entra\u00eenement"
+        "Bonne performance ROC-AUC (0.889) sur split aléatoire",
+        "217 descripteurs RDKit couvrant la diversité physico-chimique",
+        "Domaine d'applicabilité construit avec 368 composés d'entraînement"
       ],
       "limitations": [
-        "Validation uniquement sur split al\u00e9atoire (aucun split scaffold)",
-        "Jeu de donn\u00e9es modeste (460 compos\u00e9s)",
-        "Pas de validation crois\u00e9e ni de r\u00e9p\u00e9tition"
+        "Validation uniquement sur split aléatoire (aucun split scaffold)",
+        "Jeu de données modeste (460 composés)",
+        "Pas de validation croisée ni de répétition"
       ],
       "recommended_for": [
-        "Pr\u00e9diction DILI binaire",
-        "D\u00e9pistage pr\u00e9coce de toxicit\u00e9 h\u00e9patique"
+        "Prédiction DILI binaire",
+        "Dépistage précoce de toxicité hépatique"
       ],
       "not_recommended_for": [
-        "R\u00e9gression",
-        "Autres endpoints de toxicit\u00e9 que DILI"
+        "Régression",
+        "Autres endpoints de toxicité que DILI"
       ],
       "known_metrics": {
         "test": {
@@ -134659,7 +134271,7 @@
           "cluster_seed": null,
           "shared_across_candidates": false,
           "reproducibility_note": "Seeds were generated for this run and persisted for replay.",
-          "reporting_text": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+          "reporting_text": "Politique de seeds : générées automatiquement et persistées",
           "replay_supported": true,
           "strategy_name": "random_holdout",
           "generated_split_seeds": [
@@ -134674,7 +134286,7 @@
             ]
           }
         },
-        "seed_policy_report": "Politique de seeds : g\u00e9n\u00e9r\u00e9es automatiquement et persist\u00e9es",
+        "seed_policy_report": "Politique de seeds : générées automatiquement et persistées",
         "feature_preparation": {
           "mode": "generated_tabular_features",
           "representation_name": "rdkit_all",
@@ -135005,10 +134617,7 @@
       },
       "applicability_domain": {
         "available": true,
-        "method": "hybrid_morgan_domain",
-        "reference_store_path": "artifacts/reference_fingerprints.npz",
-        "reference_manifest_path": "artifacts/reference_manifest.json",
-        "index_path": "artifacts/applicability_domain.json"
+        "method": "AD historique supprimé"
       },
       "task": {
         "task_type": "classification",

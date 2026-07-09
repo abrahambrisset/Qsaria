@@ -1800,8 +1800,6 @@ class ChempropToolkit(Toolkit):
             elif primary_run.get("test_predictions_path"):
                 result["test_predictions_file_ref"] = primary_run["test_predictions_path"]
                 result["test_predictions_path"] = primary_run["test_predictions_path"]
-            if ad_summary.get("applicability_domain_path"):
-                result["applicability_domain_file_ref"] = ad_summary["applicability_domain_path"]
             bundle_path = (
                 Path(".files")
                 / "prediction_outputs"
