@@ -203,10 +203,11 @@ def _external_metric_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
 def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> str:
     if not ad:
         return "### Domaine d'applicabilite\n\nAD moderne non disponible."
+    methods = ad.get("methods") if isinstance(ad.get("methods"), Mapping) else {}
     lines = [
         "### Domaine d'applicabilite",
         "",
-        f"- Methode: `{ad.get('method') or ad.get('primary_method') or 'bounding_box'}`",
+        f"- Methode globale: `{ad.get('method') or ad.get('primary_method') or 'bounding_box'}`",
         f"- Espace de features: `{ad.get('feature_space') or ad.get('representation_name') or 'non specifie'}`",
         f"- Nombre de features: `{ad.get('feature_count') or 'non specifie'}`",
         f"- Reference train: `{ad.get('fit_row_count') or ad.get('reference_size') or 'non specifie'}`",
@@ -219,6 +220,42 @@ def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> st
                 coverage_rows.append((split, split_summaries[split]))
     elif ad.get("row_count") is not None:
         coverage_rows.append((source_label, ad))
+    if methods:
+        reference_summary = {}
+        if coverage_rows:
+            reference_summary = coverage_rows[0][1].get("method_summaries") or coverage_rows[0][1].get(
+                "method_status_summaries"
+            ) or {}
+        lines.extend(
+            [
+                "",
+                "| Methode | Feature space | In-domain | Out-of-domain | Invalid | Coverage | Seuil / regle |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for method_name, method_payload in methods.items():
+            method_summary = reference_summary.get(method_name) if isinstance(reference_summary, Mapping) else {}
+            counts = (method_summary or {}).get("status_counts") or {}
+            rule = (
+                method_payload.get("rule")
+                or method_payload.get("decision_rule")
+                or f"threshold={method_payload.get('threshold')}"
+            )
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _safe_cell(method_name),
+                        _safe_cell(method_payload.get("feature_space") or ad.get("feature_space")),
+                        _safe_cell(counts.get("in_domain")),
+                        _safe_cell(counts.get("out_of_domain")),
+                        _safe_cell(counts.get("invalid_features")),
+                        _safe_cell((method_summary or {}).get("coverage_in_domain")),
+                        _safe_cell(rule),
+                    ]
+                )
+                + " |"
+            )
     if coverage_rows:
         lines.extend(
             [

@@ -225,6 +225,7 @@ class LightGBMToolkit(Toolkit):
         feature_columns: Optional[List[str]] = None,
         feature_space: Optional[str] = None,
         prediction_artifact_paths: Optional[Dict[str, Any]] = None,
+        applicability_domain_methods: Optional[List[str] | str] = None,
     ) -> Dict[str, Any]:
         return build_applicability_domain_for_training(
             train_csv=train_csv,
@@ -234,6 +235,7 @@ class LightGBMToolkit(Toolkit):
             feature_columns=feature_columns,
             feature_space=feature_space,
             prediction_artifact_paths=prediction_artifact_paths,
+            applicability_domain_methods=applicability_domain_methods,
         )
 
     def _summarize_training_resources(
@@ -698,6 +700,7 @@ class LightGBMToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -731,6 +734,11 @@ class LightGBMToolkit(Toolkit):
             validation_strategy
             if validation_strategy is not None
             else requested_extra_args.pop("validation_strategy", None)
+        )
+        requested_ad_methods = (
+            applicability_domain_methods
+            if applicability_domain_methods is not None
+            else requested_extra_args.pop("applicability_domain_methods", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1149,6 +1157,7 @@ class LightGBMToolkit(Toolkit):
                 "validation": root_artifacts.get("validation_predictions_path"),
                 "test": root_artifacts.get("test_predictions_path"),
             },
+            applicability_domain_methods=requested_ad_methods,
         )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None

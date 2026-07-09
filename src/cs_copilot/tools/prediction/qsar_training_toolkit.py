@@ -1105,6 +1105,7 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_similarity_threshold: float,
         activity_cliff_top_k_neighbors: int,
         activity_cliff_flag_threshold: float,
+        applicability_domain_methods: Optional[List[str] | str],
         extra_args: Dict[str, Any],
         agent: Optional[Agent],
     ) -> Dict[str, Any]:
@@ -1136,6 +1137,7 @@ class QSARTrainingToolkit(Toolkit):
                 activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
                 activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                 activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+                applicability_domain_methods=applicability_domain_methods,
                 extra_args=candidate_extra_args,
                 agent=agent,
             )
@@ -1248,6 +1250,7 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1275,6 +1278,11 @@ class QSARTrainingToolkit(Toolkit):
             if validation_strategy is not None
             else requested_extra_args.pop("validation_strategy", None)
         )
+        requested_ad_methods = (
+            applicability_domain_methods
+            if applicability_domain_methods is not None
+            else requested_extra_args.pop("applicability_domain_methods", None)
+        )
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
 
         if normalized_backend == "chemprop":
@@ -1293,6 +1301,7 @@ class QSARTrainingToolkit(Toolkit):
                 activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
                 activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                 activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+                applicability_domain_methods=requested_ad_methods,
                 extra_args=requested_extra_args,
                 agent=agent,
             )
@@ -1323,6 +1332,7 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+                    applicability_domain_methods=requested_ad_methods,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1377,6 +1387,7 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+                    applicability_domain_methods=requested_ad_methods,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1396,6 +1407,7 @@ class QSARTrainingToolkit(Toolkit):
                     activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
                     activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
                     activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+                    applicability_domain_methods=requested_ad_methods,
                     extra_args=requested_extra_args,
                     agent=agent,
                 )
@@ -1481,6 +1493,7 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1500,6 +1513,7 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+            applicability_domain_methods=applicability_domain_methods,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1522,6 +1536,7 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1544,6 +1559,7 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+            applicability_domain_methods=applicability_domain_methods,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1565,6 +1581,7 @@ class QSARTrainingToolkit(Toolkit):
         activity_cliff_similarity_threshold: float = 0.70,
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1586,6 +1603,7 @@ class QSARTrainingToolkit(Toolkit):
             activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
             activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
             activity_cliff_flag_threshold=activity_cliff_flag_threshold,
+            applicability_domain_methods=applicability_domain_methods,
             extra_args=extra_args,
             agent=agent,
         )

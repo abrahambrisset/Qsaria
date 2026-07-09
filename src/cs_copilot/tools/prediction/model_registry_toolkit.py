@@ -726,18 +726,15 @@ class ModelRegistryToolkit(Toolkit):
             / "applicability_domain"
             / "bounding_box"
             / "bounds.npz",
-            "ad_scores_train_path": run_dir
+            "ad_isolation_forest_model_path": run_dir
             / "applicability_domain"
-            / "bounding_box"
-            / "scores_train.csv",
+            / "isolation_forest"
+            / "model.joblib",
+            "ad_scores_train_path": run_dir / "applicability_domain" / "scores_train.csv",
             "ad_scores_validation_path": run_dir
             / "applicability_domain"
-            / "bounding_box"
             / "scores_validation.csv",
-            "ad_scores_test_path": run_dir
-            / "applicability_domain"
-            / "bounding_box"
-            / "scores_test.csv",
+            "ad_scores_test_path": run_dir / "applicability_domain" / "scores_test.csv",
         }
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
@@ -762,6 +759,7 @@ class ModelRegistryToolkit(Toolkit):
             "applicability_domain_path",
             "ad_manifest_path",
             "ad_bounds_path",
+            "ad_isolation_forest_model_path",
             "ad_scores_train_path",
             "ad_scores_validation_path",
             "ad_scores_test_path",
@@ -882,10 +880,15 @@ class ModelRegistryToolkit(Toolkit):
                     target_path = (
                         artifacts_dir / "applicability_domain" / "bounding_box" / "bounds.npz"
                     )
-                elif key.startswith("ad_scores_"):
+                elif key == "ad_isolation_forest_model_path":
                     target_path = (
-                        artifacts_dir / "applicability_domain" / "bounding_box" / source_path.name
+                        artifacts_dir
+                        / "applicability_domain"
+                        / "isolation_forest"
+                        / "model.joblib"
                     )
+                elif key.startswith("ad_scores_"):
+                    target_path = artifacts_dir / "applicability_domain" / source_path.name
                 else:
                     target_path = artifacts_dir / source_path.name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1057,6 +1060,17 @@ class ModelRegistryToolkit(Toolkit):
                     bounding_box["manifest_path"] = copied_files.get("ad_manifest_path")
                     methods["bounding_box"] = bounding_box
                     manifest_payload["methods"] = methods
+                if copied_files.get("ad_isolation_forest_model_path"):
+                    manifest_payload["isolation_forest_model_path"] = copied_files[
+                        "ad_isolation_forest_model_path"
+                    ]
+                    methods = dict(manifest_payload.get("methods") or {})
+                    isolation_forest = dict(methods.get("isolation_forest") or {})
+                    isolation_forest["model_path"] = copied_files[
+                        "ad_isolation_forest_model_path"
+                    ]
+                    methods["isolation_forest"] = isolation_forest
+                    manifest_payload["methods"] = methods
                 for source_key, manifest_key in (
                     ("ad_scores_train_path", "scores_train_path"),
                     ("ad_scores_validation_path", "scores_validation_path"),
@@ -1114,28 +1128,40 @@ class ModelRegistryToolkit(Toolkit):
                 record.training_data_summary.get("seed_policy")
             )
         modern_ad_available = bool(
-            copied_files.get("ad_manifest_path") or copied_files.get("ad_bounds_path")
+            copied_files.get("ad_manifest_path")
+            or copied_files.get("ad_bounds_path")
+            or copied_files.get("ad_isolation_forest_model_path")
         )
         if modern_ad_available:
             metadata_ad = dict(record.applicability_domain or {})
             metadata_ad.update(
                 {
                     "available": True,
-                    "primary_method": "bounding_box",
-                    "method": "bounding_box",
+                    "primary_method": metadata_ad.get("primary_method") or "combined",
+                    "method": metadata_ad.get("method") or "combined",
                     "manifest_path": copied_files.get("ad_manifest_path")
                     or metadata_ad.get("manifest_path"),
                     "bounds_path": copied_files.get("ad_bounds_path")
                     or metadata_ad.get("bounds_path"),
+                    "isolation_forest_model_path": copied_files.get(
+                        "ad_isolation_forest_model_path"
+                    )
+                    or metadata_ad.get("isolation_forest_model_path"),
                 }
             )
             methods = dict(metadata_ad.get("methods") or {})
             bounding_box = dict(methods.get("bounding_box") or {})
             if copied_files.get("ad_bounds_path"):
                 bounding_box["bounds_path"] = copied_files["ad_bounds_path"]
-            if copied_files.get("ad_manifest_path"):
+            if copied_files.get("ad_manifest_path") and bounding_box:
                 bounding_box["manifest_path"] = copied_files["ad_manifest_path"]
-            methods["bounding_box"] = bounding_box
+            if bounding_box:
+                methods["bounding_box"] = bounding_box
+            isolation_forest = dict(methods.get("isolation_forest") or {})
+            if copied_files.get("ad_isolation_forest_model_path"):
+                isolation_forest["model_path"] = copied_files["ad_isolation_forest_model_path"]
+            if isolation_forest:
+                methods["isolation_forest"] = isolation_forest
             metadata_ad["methods"] = methods
             for source_key, metadata_key in (
                 ("ad_scores_train_path", "scores_train_path"),
@@ -1288,26 +1314,42 @@ class ModelRegistryToolkit(Toolkit):
                 (record.training_data_summary or {}).get("evaluation_required")
             )
         artifacts = payload.get("artifacts") or {}
-        if artifacts.get("ad_manifest_path") or artifacts.get("ad_bounds_path"):
+        if (
+            artifacts.get("ad_manifest_path")
+            or artifacts.get("ad_bounds_path")
+            or artifacts.get("ad_isolation_forest_model_path")
+        ):
             metadata_ad = dict(record.applicability_domain or {})
             metadata_ad.update(
                 {
                     "available": True,
-                    "primary_method": "bounding_box",
-                    "method": "bounding_box",
+                    "primary_method": metadata_ad.get("primary_method") or "combined",
+                    "method": metadata_ad.get("method") or "combined",
                     "manifest_path": artifacts.get("ad_manifest_path")
                     or metadata_ad.get("manifest_path"),
                     "bounds_path": artifacts.get("ad_bounds_path")
                     or metadata_ad.get("bounds_path"),
+                    "isolation_forest_model_path": artifacts.get(
+                        "ad_isolation_forest_model_path"
+                    )
+                    or metadata_ad.get("isolation_forest_model_path"),
                 }
             )
             methods = dict(metadata_ad.get("methods") or {})
             bounding_box = dict(methods.get("bounding_box") or {})
             if artifacts.get("ad_bounds_path"):
                 bounding_box["bounds_path"] = artifacts.get("ad_bounds_path")
-            if artifacts.get("ad_manifest_path"):
+            if artifacts.get("ad_manifest_path") and bounding_box:
                 bounding_box["manifest_path"] = artifacts.get("ad_manifest_path")
-            methods["bounding_box"] = bounding_box
+            if bounding_box:
+                methods["bounding_box"] = bounding_box
+            isolation_forest = dict(methods.get("isolation_forest") or {})
+            if artifacts.get("ad_isolation_forest_model_path"):
+                isolation_forest["model_path"] = artifacts.get(
+                    "ad_isolation_forest_model_path"
+                )
+            if isolation_forest:
+                methods["isolation_forest"] = isolation_forest
             metadata_ad["methods"] = methods
             if artifacts.get("applicability_domain_path"):
                 metadata_ad["legacy_similarity_ad"] = {
@@ -1521,6 +1563,14 @@ class ModelRegistryToolkit(Toolkit):
                 (resolved_applicability_domain.get("methods") or {})
                 .get("bounding_box", {})
                 .get("bounds_path")
+            ),
+            "ad_isolation_forest_model_path": resolved_applicability_domain.get(
+                "isolation_forest_model_path"
+            )
+            or (
+                (resolved_applicability_domain.get("methods") or {})
+                .get("isolation_forest", {})
+                .get("model_path")
             ),
             "ad_scores_train_path": resolved_applicability_domain.get("scores_train_path"),
             "ad_scores_validation_path": resolved_applicability_domain.get(

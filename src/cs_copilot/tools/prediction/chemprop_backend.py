@@ -49,7 +49,7 @@ from .training_orchestration import normalize_task_type
 logger = logging.getLogger(__name__)
 
 EPOCH_PROGRESS_RE = re.compile(r"\bepoch\b[^0-9]*(\d+)(?:\s*/\s*(\d+))?", re.IGNORECASE)
-DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX = 1
+DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX = -1
 
 
 class ChempropBackend(PredictionBackend):

@@ -1109,6 +1109,7 @@ class ChempropToolkit(Toolkit):
         model_id_hint: str,
         task: PredictionTaskSpec,
         prediction_artifact_paths: Optional[Dict[str, Any]] = None,
+        applicability_domain_methods: Optional[List[str] | str] = None,
     ) -> Dict[str, Any]:
         artifacts = self._resolve_chemprop_run_artifacts(primary_output_dir)
         model_path = (
@@ -1147,6 +1148,7 @@ class ChempropToolkit(Toolkit):
                         }
                     },
                     prediction_artifact_paths=prediction_artifact_paths,
+                    applicability_domain_methods=applicability_domain_methods,
                 )
             except Exception as exc:
                 return {
@@ -1164,6 +1166,7 @@ class ChempropToolkit(Toolkit):
             feature_columns=[],
             feature_space="chemprop_embedding",
             prediction_artifact_paths=prediction_artifact_paths,
+            applicability_domain_methods=applicability_domain_methods,
         )
 
     def describe_backend(
@@ -1340,6 +1343,7 @@ class ChempropToolkit(Toolkit):
         activity_cliff_top_k_neighbors: int = 10,
         activity_cliff_flag_threshold: float = 0.35,
         validation_strategy: Optional[Dict[str, Any]] = None,
+        applicability_domain_methods: Optional[List[str] | str] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1368,6 +1372,11 @@ class ChempropToolkit(Toolkit):
             validation_strategy
             if validation_strategy is not None
             else cleaned_extra_args.pop("validation_strategy", None)
+        )
+        requested_ad_methods = (
+            applicability_domain_methods
+            if applicability_domain_methods is not None
+            else cleaned_extra_args.pop("applicability_domain_methods", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1630,6 +1639,7 @@ class ChempropToolkit(Toolkit):
                     "validation": root_artifacts.get("validation_predictions_path"),
                     "test": root_artifacts.get("test_predictions_path"),
                 },
+                applicability_domain_methods=requested_ad_methods,
             )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None

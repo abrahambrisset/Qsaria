@@ -18,8 +18,8 @@ from cs_copilot.tools.chemistry.standardize import (
 )
 
 from .applicability_domain import (
-    BOUNDING_BOX_METHOD,
     append_ad_scores_to_csv,
+    has_modern_applicability_domain,
     score_record_applicability_domain,
 )
 from .external_evaluation import evaluate_model_on_external_dataset
@@ -138,12 +138,7 @@ class PredictionInferenceToolkit(Toolkit):
             return_uncertainty=return_uncertainty,
         )
         record_ad = record.applicability_domain or {}
-        has_modern_ad = bool(
-            record_ad.get("primary_method") == BOUNDING_BOX_METHOD
-            or record_ad.get("method") == BOUNDING_BOX_METHOD
-            or BOUNDING_BOX_METHOD in (record_ad.get("methods") or {})
-            or record_ad.get("manifest_path")
-        )
+        has_modern_ad = has_modern_applicability_domain(record_ad)
         if has_modern_ad:
             common_ad_result = score_record_applicability_domain(
                 record=record,
@@ -295,6 +290,23 @@ class PredictionInferenceToolkit(Toolkit):
         prediction_state = get_prediction_state(agent)
         history = prediction_state.get("prediction_history") or []
         if not history:
+            latest_evaluation = prediction_state.get("last_external_evaluation") or {}
+            if latest_evaluation:
+                return {
+                    "status": "skipped_no_prediction_history",
+                    "summary_exported": False,
+                    "reason": (
+                        "`export_prediction_summary` only summarizes prediction-history "
+                        "records. The latest result is an external evaluation; use its "
+                        "`predictions.csv`, `metrics.json`, and `evaluation_report.md` "
+                        "artifacts instead."
+                    ),
+                    "latest_external_evaluation": {
+                        "model_id": latest_evaluation.get("model_id"),
+                        "evaluation_id": latest_evaluation.get("evaluation_id"),
+                        "artifacts": latest_evaluation.get("artifacts") or {},
+                    },
+                }
             raise ValueError("No prediction history is available for summary export")
 
         summary_path = (

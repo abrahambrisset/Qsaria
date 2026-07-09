@@ -8,7 +8,10 @@ import pytest
 
 from cs_copilot.tools.prediction.backend import InvalidPredictionInputError, PredictionTaskSpec
 from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
-from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.chemprop_backend import (
+    DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX,
+    ChempropBackend,
+)
 
 
 def _task() -> PredictionTaskSpec:
@@ -171,3 +174,33 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     assert "--split-sizes" not in args
     assert "--data-seed" not in args
     assert "--validation-strategy" not in args
+
+
+def test_chemprop_fingerprint_uses_official_default_ffn_block(monkeypatch, tmp_path):
+    input_csv = tmp_path / "input.csv"
+    input_csv.write_text("smiles\nCCO\n")
+    model_path = tmp_path / "best.pt"
+    model_path.write_text("mock")
+    output_csv = tmp_path / "fingerprints.csv"
+    captured = {}
+    backend = ChempropBackend()
+
+    monkeypatch.setattr(backend, "is_available", lambda: True)
+
+    def fake_run_cli(args, **kwargs):
+        captured["args"] = args
+        output_csv.with_stem(f"{output_csv.stem}_0").write_text("fp_0,fp_1\n0.1,0.2\n")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+
+    result = backend.fingerprint_from_csv(
+        input_csv=str(input_csv),
+        model_path=str(model_path),
+        output_csv=str(output_csv),
+    )
+
+    args = captured["args"]
+    assert DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX == -1
+    assert args[args.index("--ffn-block-index") + 1] == "-1"
+    assert result["feature_columns"] == ["chemprop_fp_0", "chemprop_fp_1"]

@@ -5,8 +5,13 @@ from cs_copilot.tools.prediction.applicability_domain import (
     AD_INVALID_FEATURES,
     AD_OUT_OF_DOMAIN,
     AD_SCHEMA_MISMATCH,
+    ISOLATION_FOREST_METHOD,
+    _combine_modern_scores,
     fit_bounding_box_domain,
+    fit_isolation_forest_domain,
+    fit_modern_applicability_domain,
     score_bounding_box_domain,
+    score_isolation_forest_domain,
 )
 from cs_copilot.tools.prediction.backend import PredictionTaskSpec
 from cs_copilot.tools.prediction.training_orchestration import (
@@ -90,6 +95,119 @@ def test_schema_mismatch_gives_explicit_unavailable_status(tmp_path):
 
     assert scored["scores"].loc[0, "ad_status"] == AD_SCHEMA_MISMATCH
     assert "Missing 1 feature" in scored["reason"]
+
+
+def test_isolation_forest_fit_persists_defaults_and_scores_outlier(tmp_path):
+    train = pd.DataFrame({"desc_a": [0.0] * 64 + [1.0] * 64, "desc_b": [0.0] * 128})
+    manifest = fit_modern_applicability_domain(
+        feature_frame=train,
+        feature_columns=["desc_a", "desc_b"],
+        output_dir=tmp_path / "ad",
+        model_id="model",
+        feature_space="rdkit_all",
+        methods=[ISOLATION_FOREST_METHOD],
+        random_state=13,
+    )
+
+    method = manifest["methods"][ISOLATION_FOREST_METHOD]
+    assert method["params"]["n_estimators"] == 100
+    assert method["params"]["max_samples"] == "auto"
+    assert method["params"]["contamination"] == "auto"
+    assert method["params"]["random_state"] == 13
+    assert (tmp_path / "ad" / "isolation_forest" / "model.joblib").exists()
+
+    scored = score_isolation_forest_domain(
+        feature_frame=pd.DataFrame({"desc_a": [0.0, 100.0], "desc_b": [0.0, 100.0]}),
+        applicability_domain=manifest,
+    )
+
+    scores = scored["scores"]
+    assert scores.loc[1, "ad_isolation_forest_decision"] < 0.0
+    assert scores.loc[1, "ad_isolation_forest_status"] == AD_OUT_OF_DOMAIN
+    assert (
+        scores.loc[1, "ad_isolation_forest_status"] == AD_OUT_OF_DOMAIN
+    ) == (scores.loc[1, "ad_isolation_forest_decision"] < 0.0)
+
+
+def test_isolation_forest_invalid_and_schema_mismatch_are_explicit(tmp_path):
+    manifest = fit_isolation_forest_domain(
+        feature_frame=pd.DataFrame({"desc_a": [0.0, 1.0], "desc_b": [5.0, 6.0]}),
+        feature_columns=["desc_a", "desc_b"],
+        output_dir=tmp_path / "ad",
+        model_id="model",
+        feature_space="rdkit_all",
+        random_state=0,
+    )
+    modern_manifest = {
+        "available": True,
+        "primary_method": ISOLATION_FOREST_METHOD,
+        "method": ISOLATION_FOREST_METHOD,
+        "feature_space": "rdkit_all",
+        "methods": {ISOLATION_FOREST_METHOD: manifest},
+    }
+
+    invalid = score_isolation_forest_domain(
+        feature_frame=pd.DataFrame({"desc_a": [float("nan")], "desc_b": [5.5]}),
+        applicability_domain=modern_manifest,
+    )
+    mismatch = score_isolation_forest_domain(
+        feature_frame=pd.DataFrame({"desc_a": [0.5]}),
+        applicability_domain=modern_manifest,
+    )
+
+    assert invalid["scores"].loc[0, "ad_isolation_forest_status"] == AD_INVALID_FEATURES
+    assert mismatch["scores"].loc[0, "ad_status"] == AD_SCHEMA_MISMATCH
+
+
+def test_modern_ad_aggregation_is_strict():
+    bounding = pd.DataFrame(
+        {
+            "ad_status": [AD_IN_DOMAIN, AD_OUT_OF_DOMAIN, AD_IN_DOMAIN, AD_IN_DOMAIN],
+            "ad_method": ["bounding_box"] * 4,
+            "ad_bounding_box_status": [
+                AD_IN_DOMAIN,
+                AD_OUT_OF_DOMAIN,
+                AD_IN_DOMAIN,
+                AD_IN_DOMAIN,
+            ],
+            "ad_bounding_box_violation_count": [0, 1, 0, 0],
+            "ad_bounding_box_violating_features": ["", "desc_a", "", ""],
+            "ad_bounding_box_max_excess": [0.0, 1.0, 0.0, 0.0],
+            "ad_feature_space": ["rdkit_all"] * 4,
+        }
+    )
+    isolation = pd.DataFrame(
+        {
+            "ad_status": [AD_IN_DOMAIN, AD_IN_DOMAIN, AD_OUT_OF_DOMAIN, AD_INVALID_FEATURES],
+            "ad_method": ["isolation_forest"] * 4,
+            "ad_isolation_forest_status": [
+                AD_IN_DOMAIN,
+                AD_IN_DOMAIN,
+                AD_OUT_OF_DOMAIN,
+                AD_INVALID_FEATURES,
+            ],
+            "ad_isolation_forest_score": [-0.4, -0.4, -0.6, float("nan")],
+            "ad_isolation_forest_decision": [0.1, 0.1, -0.1, float("nan")],
+            "ad_isolation_forest_threshold": [0.0] * 4,
+            "ad_feature_space": ["rdkit_all"] * 4,
+        }
+    )
+
+    combined = _combine_modern_scores(
+        {"bounding_box": bounding, "isolation_forest": isolation}
+    )
+
+    assert combined["ad_status"].tolist() == [
+        AD_IN_DOMAIN,
+        AD_OUT_OF_DOMAIN,
+        AD_OUT_OF_DOMAIN,
+        AD_INVALID_FEATURES,
+    ]
+    assert combined["ad_methods_out"].tolist()[:3] == [
+        "",
+        "bounding_box",
+        "isolation_forest",
+    ]
 
 
 def test_prediction_ad_metrics_are_split_by_status(tmp_path):
@@ -189,3 +307,4 @@ def test_training_ad_syncs_canonical_prediction_artifacts(tmp_path):
     assert "ad_status" in pd.read_csv(canonical_validation).columns
     assert "ad_status" in pd.read_csv(canonical_test).columns
     assert pd.read_csv(canonical_test)["ad_status"].tolist() == [AD_OUT_OF_DOMAIN]
+    assert (run_dir / "applicability_domain" / "isolation_forest" / "model.joblib").exists()

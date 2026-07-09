@@ -2,7 +2,11 @@
 # coding: utf-8
 """Tests for report-generation instruction requirements."""
 
-from cs_copilot.agents.prompts import QSAR_REPORT_INSTRUCTIONS, REPORT_GENERATOR_INSTRUCTIONS
+from cs_copilot.agents.prompts import (
+    MODEL_INFERENCE_INSTRUCTIONS,
+    QSAR_REPORT_INSTRUCTIONS,
+    REPORT_GENERATOR_INSTRUCTIONS,
+)
 
 
 def _report_instructions_text() -> str:
@@ -11,6 +15,10 @@ def _report_instructions_text() -> str:
 
 def _qsar_report_instructions_text() -> str:
     return "\n".join(QSAR_REPORT_INSTRUCTIONS)
+
+
+def _model_inference_instructions_text() -> str:
+    return "\n".join(MODEL_INFERENCE_INSTRUCTIONS)
 
 
 def test_report_instructions_require_named_captioned_inline_figures():
@@ -121,3 +129,10 @@ def test_qsar_report_instructions_require_canonical_reporting_handoffs():
     assert "artifacts_inventory" in instructions
     assert "non calculable" in instructions
     assert "out_of_domain" in instructions
+
+
+def test_model_inference_instructions_do_not_export_prediction_summary_after_external_eval():
+    instructions = _model_inference_instructions_text()
+
+    assert "After a successful `evaluate_model_on_dataset`" in instructions
+    assert "do not call `export_prediction_summary`" in instructions

@@ -21,7 +21,12 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
-from .applicability_domain import BOUNDING_BOX_METHOD, score_record_applicability_domain
+from .applicability_domain import (
+    AD_COLUMNS,
+    BOUNDING_BOX_METHOD,
+    has_modern_applicability_domain,
+    score_record_applicability_domain,
+)
 from .backend import PredictionModelRecord
 from .qsar_reporting import build_external_evaluation_reporting_handoff
 from .qsar_training_policy import project_now, safe_slug
@@ -391,16 +396,6 @@ def _write_report(
     path.write_text("\n".join(lines))
 
 
-def _has_modern_bounding_box_ad(record: PredictionModelRecord) -> bool:
-    ad = record.applicability_domain or {}
-    return bool(
-        ad.get("primary_method") == BOUNDING_BOX_METHOD
-        or ad.get("method") == BOUNDING_BOX_METHOD
-        or BOUNDING_BOX_METHOD in (ad.get("methods") or {})
-        or ad.get("manifest_path")
-    )
-
-
 def evaluate_model_on_external_dataset(
     *,
     record: PredictionModelRecord,
@@ -458,7 +453,7 @@ def evaluate_model_on_external_dataset(
         pd.read_csv(predictions_path), resolved_targets
     )
     ad_result: Dict[str, Any] = {}
-    if _has_modern_bounding_box_ad(record):
+    if has_modern_applicability_domain(record.applicability_domain or {}):
         ad_result = score_record_applicability_domain(
             record=record,
             input_csv=str(evaluation_input),
@@ -467,14 +462,7 @@ def evaluate_model_on_external_dataset(
             backend=backend,
         )
         if ad_result.get("scores") is not None:
-            for column in (
-                "ad_status",
-                "ad_method",
-                "ad_violation_count",
-                "ad_violating_features",
-                "ad_max_excess",
-                "ad_feature_space",
-            ):
+            for column in AD_COLUMNS:
                 if column in predictions_only.columns:
                     predictions_only = predictions_only.drop(columns=[column])
             predictions_only = pd.concat(
@@ -609,6 +597,8 @@ def evaluate_model_on_external_dataset(
         "evaluation_report": str(eval_dir / "evaluation_report.md"),
         "plots": plot_artifacts,
     }
+    if ad_result:
+        artifacts["applicability_domain"] = str(eval_dir / "applicability_domain")
     if len(resolved_targets) > 1:
         metrics_by_target_path = eval_dir / "metrics_by_target.csv"
         pd.DataFrame(metrics_by_target_rows).to_csv(metrics_by_target_path, index=False)

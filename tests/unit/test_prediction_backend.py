@@ -31,6 +31,7 @@ from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit, _agent_storage_path
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.prediction_inference_toolkit import PredictionInferenceToolkit
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.session_state import (
     bundle_artifacts,
@@ -1104,6 +1105,114 @@ def test_model_registry_persistence_copies_modern_applicability_domain(monkeypat
         persisted_manifest["methods"]["bounding_box"]["bounds_path"]
         == persisted_ad["bounds_path"]
     )
+
+
+def test_model_registry_persistence_does_not_add_bounding_box_to_iforest_only_ad(
+    monkeypatch, tmp_path
+):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    run_dir = tmp_path / "training_run"
+    model_dir = run_dir / "model_0"
+    if_dir = run_dir / "applicability_domain" / "isolation_forest"
+    if_dir.mkdir(parents=True)
+    model_path = model_dir / "best.pkl"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path.write_text("model")
+    if_model_path = if_dir / "model.joblib"
+    if_model_path.write_text("iforest")
+    manifest_path = run_dir / "applicability_domain" / "manifest.json"
+    ad_summary = {
+        "available": True,
+        "primary_method": "isolation_forest",
+        "method": "isolation_forest",
+        "feature_space": "rdkit_all",
+        "manifest_path": str(manifest_path),
+        "isolation_forest_model_path": str(if_model_path),
+        "methods": {
+            "isolation_forest": {
+                "model_path": str(if_model_path),
+                "feature_names": ["desc_a"],
+                "feature_kinds": ["rdkit_descriptor"],
+            }
+        },
+    }
+    manifest_path.write_text(json.dumps(ad_summary) + "\n")
+    (run_dir / "cs_copilot_training_summary.json").write_text(
+        json.dumps(
+            {
+                "train_csv": str(tmp_path / "train.csv"),
+                "trained_at": "2026-07-07T12:00:00+02:00",
+                "validation_protocol": "standard_qsar",
+                "representation_name": "rdkit_all",
+                "feature_columns": ["desc_a"],
+                "applicability_domain": ad_summary,
+            }
+        )
+        + "\n"
+    )
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="session_model",
+        model_path=str(model_path),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        status="experimental",
+        agent=agent,
+    )
+
+    result = toolkit.persist_registered_model(model_id="session_model", agent=agent)
+
+    persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    persisted_ad = persisted_metadata["applicability_domain"]
+    persisted_manifest = json.loads(
+        (Path(result["metadata_path"]).parent / persisted_ad["manifest_path"]).read_text()
+    )
+    assert persisted_ad["primary_method"] == "isolation_forest"
+    assert set(persisted_ad["methods"]) == {"isolation_forest"}
+    assert set(persisted_manifest["methods"]) == {"isolation_forest"}
+    assert "bounds_path" not in persisted_ad or persisted_ad["bounds_path"] is None
+
+
+def test_export_prediction_summary_skips_latest_external_evaluation_without_history():
+    toolkit = PredictionInferenceToolkit(
+        backends={},
+        registry_toolkit=SimpleNamespace(),
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    prediction_state = get_prediction_state(agent)
+    prediction_state["last_external_evaluation"] = {
+        "model_id": "pxr_model",
+        "evaluation_id": "test_phase_1",
+        "artifacts": {"predictions": "/tmp/predictions.csv"},
+    }
+
+    result = toolkit.export_prediction_summary(agent=agent)
+
+    assert result["status"] == "skipped_no_prediction_history"
+    assert result["summary_exported"] is False
+    assert result["latest_external_evaluation"]["evaluation_id"] == "test_phase_1"
 
 
 def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatch, tmp_path):

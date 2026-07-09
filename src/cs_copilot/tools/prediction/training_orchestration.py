@@ -22,13 +22,12 @@ from scipy.stats import kendalltau, spearmanr
 
 from .ad_builder import build_applicability_domain_from_training_data as build_legacy_similarity_ad
 from .applicability_domain import (
-    BOUNDING_BOX_METHOD,
     QSAR_ROW_ID_COLUMN,
     append_ad_scores_to_csv,
-    build_bounding_box_plots,
-    fit_bounding_box_domain,
+    build_modern_ad_plots,
+    fit_modern_applicability_domain,
     metrics_by_ad_status,
-    score_bounding_box_domain,
+    score_modern_applicability_domain,
 )
 from .backend import PredictionTaskSpec
 from .qsar_plots import build_qsar_training_plots
@@ -470,8 +469,9 @@ def build_applicability_domain_for_training(
     feature_space: Optional[str] = None,
     feature_metadata: Optional[Mapping[str, Any]] = None,
     prediction_artifact_paths: Optional[Mapping[str, Any]] = None,
+    applicability_domain_methods: Optional[Sequence[str] | str] = None,
 ) -> Dict[str, Any]:
-    """Build the modern bounding-box AD from the train split and keep legacy AD."""
+    """Build the modern AD from the train split and keep legacy AD."""
     splits_path = Path(str(primary_run.get("splits_path") or primary_output_dir / "splits.json"))
     if not splits_path.exists():
         return {}
@@ -526,7 +526,13 @@ def build_applicability_domain_for_training(
         resolved_feature_columns = []
 
     train_frame = modern_feature_frame.iloc[list(train_indices)].copy()
-    ad_summary = fit_bounding_box_domain(
+    ad_random_state = (
+        primary_run.get("random_state")
+        or primary_run.get("data_seed")
+        or primary_run.get("seed")
+        or 0
+    )
+    ad_summary = fit_modern_applicability_domain(
         feature_frame=train_frame,
         feature_columns=resolved_feature_columns,
         output_dir=ad_output_dir,
@@ -534,6 +540,8 @@ def build_applicability_domain_for_training(
         feature_space=str(resolved_feature_space),
         representation_name=str(resolved_feature_space),
         feature_metadata=feature_metadata,
+        methods=applicability_domain_methods,
+        random_state=int(ad_random_state),
     )
 
     if ad_summary.get("available"):
@@ -553,10 +561,10 @@ def build_applicability_domain_for_training(
                     break
             if not indices:
                 continue
-            scored = score_bounding_box_domain(
+            scored = score_modern_applicability_domain(
                 feature_frame=modern_feature_frame.iloc[indices].copy(),
                 applicability_domain=ad_summary,
-                output_dir=ad_output_dir / BOUNDING_BOX_METHOD,
+                output_dir=ad_output_dir,
                 score_label=label,
             )
             split_score_summaries[label] = scored.get("summary") or {}
@@ -592,7 +600,7 @@ def build_applicability_domain_for_training(
                         ] = str(exc)
             if label in {"validation", "test"} and scored.get("scores") is not None:
                 plot_dir = ad_output_dir / "plots" / label
-                plot_artifacts = build_bounding_box_plots(scored["scores"], plot_dir)
+                plot_artifacts = build_modern_ad_plots(scored["scores"], plot_dir)
                 if plot_artifacts:
                     split_score_summaries[label]["plots"] = plot_artifacts
         ad_summary["split_score_summaries"] = split_score_summaries
