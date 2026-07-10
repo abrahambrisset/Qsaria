@@ -170,6 +170,9 @@ class PredictionModelCatalog:
     @classmethod
     def load(cls, path: Optional[str] = None) -> "PredictionModelCatalog":
         source_path = Path(path).expanduser() if path else DEFAULT_MODEL_CATALOG_PATH
+        if not source_path.exists():
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(json.dumps({"schema_version": 2, "models": []}, indent=2) + "\n")
         raw = source_path.read_text()
         payload = json.loads(raw) if raw.strip() else {"schema_version": 1, "models": []}
         records = [

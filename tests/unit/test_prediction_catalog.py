@@ -1,5 +1,18 @@
+from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+
+
+def test_catalog_load_bootstraps_missing_local_catalog(monkeypatch, tmp_path):
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", tmp_path / "internal")
+    catalog_path = tmp_path / "local" / "model_catalog.json"
+
+    catalog = PredictionModelCatalog.load(str(catalog_path))
+
+    assert catalog.records == []
+    assert catalog.schema_version == 2
+    assert catalog_path.exists()
+    assert catalog_path.read_text() == '{\n  "schema_version": 2,\n  "models": []\n}\n'
 
 
 def test_prediction_model_record_roundtrip_with_catalog_metadata():
