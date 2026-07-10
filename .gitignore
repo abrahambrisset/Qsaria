@@ -45,6 +45,9 @@ models/**/refs/
 # Local raw dataset used for interactive training runs
 Lipophilicity_AstraZeneca.csv
 
+# Per-user model registry, enriched by local training runs
+src/cs_copilot/tools/prediction/model_catalog.json
+
 CLAUDE.md
 AGENTS.md
 

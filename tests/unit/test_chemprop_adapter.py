@@ -6,12 +6,20 @@ import subprocess
 import pandas as pd
 import pytest
 
-from cs_copilot.tools.prediction.backend import InvalidPredictionInputError, PredictionTaskSpec
-from cs_copilot.tools.prediction.chemprop_adapter import materialize_chemprop_inputs
+from cs_copilot.tools.prediction.backend import (
+    InvalidPredictionInputError,
+    PredictionModelRecord,
+    PredictionTaskSpec,
+)
+from cs_copilot.tools.prediction.chemprop_adapter import (
+    materialize_chemprop_inputs,
+    normalize_chemprop_classification_predictions,
+)
 from cs_copilot.tools.prediction.chemprop_backend import (
     DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX,
     ChempropBackend,
 )
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 
 
 def _task() -> PredictionTaskSpec:
@@ -138,6 +146,124 @@ def test_chemprop_adapter_rejects_missing_or_non_numeric_targets(tmp_path):
         )
 
 
+def test_chemprop_adapter_accepts_native_multiclass_labels(tmp_path):
+    source = tmp_path / "multiclass.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "profile": ["CYP2C9", "CYP2D6", "CYP3A4"],
+        }
+    ).to_csv(source, index=False)
+    task = PredictionTaskSpec(
+        task_type="multiclass_classification",
+        smiles_columns=["smiles"],
+        target_columns=["profile"],
+    )
+
+    result = materialize_chemprop_inputs(
+        source_csv=str(source),
+        output_dir=tmp_path / "inputs",
+        task=task,
+        split_payload=[{"train": [0], "val": [1], "test": [2]}],
+        split_label="random",
+        seed=7,
+    )
+
+    clean = pd.read_csv(result["chemprop_training_input_csv"])
+    assert clean["profile"].tolist() == [0, 1, 2]
+    metadata = result["classification_targets"]["profile"]
+    assert metadata["task_kind"] == "multiclass_classification"
+    assert metadata["class_count"] == 3
+    assert metadata["class_labels"] == ["CYP2C9", "CYP2D6", "CYP3A4"]
+    assert "positive_class_label" not in metadata
+
+
+def test_chemprop_adapter_rejects_multitarget_multiclass_with_different_class_counts(tmp_path):
+    source = tmp_path / "multitarget_multiclass.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "CCCl"],
+            "target_a": ["a", "b", "c", "a"],
+            "target_b": ["a", "b", "c", "d"],
+        }
+    ).to_csv(source, index=False)
+    task = PredictionTaskSpec(
+        task_type="multiclass_classification",
+        smiles_columns=["smiles"],
+        target_columns=["target_a", "target_b"],
+    )
+
+    with pytest.raises(InvalidPredictionInputError, match="same number of classes"):
+        materialize_chemprop_inputs(
+            source_csv=str(source),
+            output_dir=tmp_path / "inputs",
+            task=task,
+            split_payload=[{"train": [0, 1], "val": [2], "test": [3]}],
+            split_label="random",
+            seed=7,
+        )
+
+
+def test_chemprop_adapter_accepts_multitarget_multiclass_with_shared_class_count(tmp_path):
+    source = tmp_path / "multitarget_multiclass.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN"],
+            "target_a": ["a", "b", "c"],
+            "target_b": ["x", "y", "z"],
+        }
+    ).to_csv(source, index=False)
+
+    result = materialize_chemprop_inputs(
+        source_csv=str(source),
+        output_dir=tmp_path / "inputs",
+        task=PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["target_a", "target_b"],
+        ),
+        split_payload=[{"train": [0], "val": [1], "test": [2]}],
+        split_label="random",
+        seed=7,
+    )
+
+    assert {metadata["class_count"] for metadata in result["classification_targets"].values()} == {
+        3
+    }
+
+
+def test_chemprop_multiclass_predictions_use_canonical_probability_columns():
+    task = PredictionTaskSpec(
+        task_type="multiclass_classification",
+        smiles_columns=["smiles"],
+        target_columns=["profile"],
+    )
+    native = pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC"],
+            "profile": [2, 0],
+            "profile_prob": ["[0.1, 0.2, 0.7]", "[0.8, 0.1, 0.1]"],
+        }
+    )
+
+    normalized = normalize_chemprop_classification_predictions(
+        native,
+        task=task,
+        classification_targets={
+            "profile": {
+                "class_labels": ["CYP2C9", "CYP2D6", "CYP3A4"],
+                "class_count": 3,
+            }
+        },
+    )
+
+    assert normalized["prediction"].tolist() == ["CYP3A4", "CYP2C9"]
+    assert normalized["prediction_class_code"].tolist() == [2, 0]
+    assert normalized["probability_cyp2c9"].tolist() == [0.1, 0.8]
+    assert normalized["probability_cyp3a4"].tolist() == [0.7, 0.1]
+    assert "positive_probability" not in normalized.columns
+
+
 def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     train_csv = tmp_path / "chemprop_training_input.csv"
     train_csv.write_text("smiles,pEC50\nCCO,5.0\nCCC,6.0\nCCN,4.0\n")
@@ -174,6 +300,131 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     assert "--split-sizes" not in args
     assert "--data-seed" not in args
     assert "--validation-strategy" not in args
+
+
+def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):
+    train_csv = tmp_path / "multiclass.csv"
+    train_csv.write_text("smiles,profile\nCCO,0\nCCC,1\nCCN,2\n")
+    captured = {}
+    backend = ChempropBackend()
+    monkeypatch.setattr(backend, "is_available", lambda: True)
+
+    def fake_run_cli(args, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+    backend.train_model(
+        train_csv=str(train_csv),
+        output_dir=str(tmp_path / "out"),
+        task=PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["profile"],
+        ),
+        extra_args={"multiclass_num_classes": 3},
+    )
+
+    args = captured["args"]
+    assert args[args.index("--task-type") + 1] == "multiclass"
+    assert args[args.index("--multiclass-num-classes") + 1] == "3"
+
+
+def test_chemprop_backend_normalizes_multiclass_prediction_output(monkeypatch, tmp_path):
+    input_csv = tmp_path / "input.csv"
+    input_csv.write_text("smiles\nCCO\nCCC\n")
+    model_path = tmp_path / "best.pt"
+    model_path.write_text("mock")
+    preds_path = tmp_path / "predictions.csv"
+    backend = ChempropBackend()
+
+    def fake_run_cli(args, **kwargs):
+        preds_path.write_text(
+            'smiles,profile,profile_prob\nCCO,2,"[0.1, 0.2, 0.7]"\n' 'CCC,0,"[0.8, 0.1, 0.1]"\n'
+        )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+    record = PredictionModelRecord(
+        model_id="multiclass",
+        backend_name="chemprop",
+        model_path=str(model_path),
+        task=PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["profile"],
+        ),
+        inference_profile={
+            "classification_targets": {
+                "profile": {
+                    "class_labels": ["CYP2C9", "CYP2D6", "CYP3A4"],
+                    "class_count": 3,
+                }
+            }
+        },
+    )
+
+    result = backend.predict_from_csv(
+        input_csv=str(input_csv),
+        model_record=record,
+        preds_path=str(preds_path),
+    )
+
+    predictions = pd.read_csv(preds_path)
+    assert result["prediction_format"] == "qsaria_classification_canonical"
+    assert predictions["prediction"].tolist() == ["CYP3A4", "CYP2C9"]
+    assert predictions["probability_cyp2d6"].tolist() == [0.2, 0.1]
+
+
+def test_chemprop_multiclass_replicates_average_probabilities_before_argmax(tmp_path):
+    train_csv = tmp_path / "training.csv"
+    train_csv.write_text("smiles,profile\nCCO,0\nCCC,1\nCCN,2\n")
+    output_dir = tmp_path / "run"
+    inputs_dir = output_dir / "chemprop_inputs"
+    inputs_dir.mkdir(parents=True)
+    splits_file = inputs_dir / "chemprop_splits.json"
+    splits_file.write_text('[{"train":[0],"val":[1],"test":[2]}]\n')
+    (inputs_dir / "chemprop_input_manifest.json").write_text(
+        json.dumps(
+            {
+                "classification_targets": {
+                    "profile": {
+                        "class_labels": ["A", "B", "C"],
+                        "class_count": 3,
+                    }
+                }
+            }
+        )
+        + "\n"
+    )
+    replicate_predictions = (
+        (0, "[0.6, 0.3, 0.1]"),
+        (2, "[0.1, 0.2, 0.7]"),
+    )
+    for replicate_index, (predicted_class, probabilities) in enumerate(replicate_predictions):
+        replicate_dir = output_dir / f"replicate_{replicate_index}" / "model_0"
+        replicate_dir.mkdir(parents=True)
+        (replicate_dir / "test_predictions.csv").write_text(
+            f'smiles,profile,profile_prob\nCCN,{predicted_class},"{probabilities}"\n'
+        )
+
+    result = ChempropToolkit(register_tools=False)._write_normalized_test_predictions(
+        train_csv=str(train_csv),
+        output_dir=output_dir,
+        task=PredictionTaskSpec(
+            task_type="multiclass_classification",
+            smiles_columns=["smiles"],
+            target_columns=["profile"],
+        ),
+        splits_file=str(splits_file),
+    )
+
+    predictions = pd.read_csv(result["test_predictions_path"])
+    assert predictions["prediction"].tolist() == ["C"]
+    assert predictions["prediction_class_code"].tolist() == [2]
+    assert predictions["probability_a"].tolist() == pytest.approx([0.35])
+    assert predictions["probability_c"].tolist() == pytest.approx([0.4])
+    assert result["prediction_aggregation"] == "mean_aligned_replicates"
 
 
 def test_chemprop_fingerprint_uses_official_default_ffn_block(monkeypatch, tmp_path):

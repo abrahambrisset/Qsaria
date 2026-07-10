@@ -30,7 +30,7 @@ from .applicability_domain import (
 )
 from .backend import PredictionTaskSpec
 from .qsar_plots import build_qsar_training_plots
-from .qsar_training_policy import describe_compute_environment, resolve_training_profile
+from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 
 CLASSIFICATION_TASK_TYPES = {
     "classification",
@@ -157,6 +157,62 @@ def decode_classification_labels(codes: Sequence[Any], class_labels: Sequence[An
         return json_safe_label(labels[index]) if 0 <= index < len(labels) else None
 
     return pd.Series([_decode(code) for code in codes])
+
+
+def classification_probability_column(
+    class_label: Any,
+    class_index: int,
+    *,
+    target_column: Optional[str] = None,
+    primary_target: bool = True,
+) -> str:
+    """Return the canonical per-class probability column name."""
+    label_slug = safe_slug(str(json_safe_label(class_label))) or f"class_{class_index}"
+    prefix = "" if primary_target else f"{target_column}_"
+    return f"{prefix}probability_{label_slug}"
+
+
+def build_classification_prediction_frame(
+    *,
+    predicted_codes: Sequence[Any],
+    class_labels: Sequence[Any],
+    target_column: str,
+    probabilities: Optional[pd.DataFrame] = None,
+    primary_target: bool = True,
+) -> pd.DataFrame:
+    """Build the shared canonical prediction columns for a classification target."""
+    codes = pd.to_numeric(pd.Series(predicted_codes), errors="coerce").astype("Int64")
+    predicted_labels = decode_classification_labels(codes.tolist(), class_labels)
+    output = pd.DataFrame(
+        {
+            f"{target_column}_prediction": predicted_labels,
+            f"{target_column}_prediction_class_code": codes,
+        }
+    )
+    if primary_target:
+        output["prediction"] = predicted_labels
+        output[target_column] = predicted_labels
+        output["prediction_class_code"] = codes
+
+    if probabilities is not None:
+        probability_frame = probabilities.reset_index(drop=True)
+        for index, class_label in enumerate(list(class_labels)[: probability_frame.shape[1]]):
+            output[
+                classification_probability_column(
+                    class_label,
+                    index,
+                    target_column=target_column,
+                    primary_target=primary_target,
+                )
+            ] = pd.to_numeric(probability_frame.iloc[:, index], errors="coerce")
+        if len(class_labels) == 2 and probability_frame.shape[1] >= 2:
+            positive_column = (
+                "positive_probability"
+                if primary_target
+                else f"{target_column}_positive_probability"
+            )
+            output[positive_column] = pd.to_numeric(probability_frame.iloc[:, 1], errors="coerce")
+    return output
 
 
 def normalize_json_list_argument(
@@ -513,7 +569,8 @@ def build_applicability_domain_for_training(
         resolved_feature_columns = [
             column
             for column in modern_feature_frame.columns
-            if column not in excluded and pd.api.types.is_numeric_dtype(modern_feature_frame[column])
+            if column not in excluded
+            and pd.api.types.is_numeric_dtype(modern_feature_frame[column])
         ]
 
     resolved_feature_space = (
@@ -531,10 +588,7 @@ def build_applicability_domain_for_training(
     split_indices = {
         "train": list(split_item.get("train") or []),
         "validation": list(
-            split_item.get("validation")
-            or split_item.get("val")
-            or split_item.get("valid")
-            or []
+            split_item.get("validation") or split_item.get("val") or split_item.get("valid") or []
         ),
         "test": list(split_item.get("test") or []),
     }
@@ -601,20 +655,18 @@ def build_applicability_domain_for_training(
                 if ad_metrics:
                     split_score_summaries[label].update(ad_metrics)
                 elif label in {"validation", "test"}:
-                    split_score_summaries[label]["metrics_unavailable_reason"] = (
-                        f"No {label}_predictions_path artifact was available."
-                    )
+                    split_score_summaries[label][
+                        "metrics_unavailable_reason"
+                    ] = f"No {label}_predictions_path artifact was available."
                 canonical_path = (prediction_artifact_paths or {}).get(label)
                 if canonical_path and str(canonical_path) != str(predictions_path or ""):
                     try:
                         append_ad_scores_to_csv(str(canonical_path), scored["scores"])
-                        split_score_summaries[label][
-                            "ad_enriched_canonical_predictions_path"
-                        ] = str(canonical_path)
+                        split_score_summaries[label]["ad_enriched_canonical_predictions_path"] = (
+                            str(canonical_path)
+                        )
                     except Exception as exc:
-                        split_score_summaries[label][
-                            "ad_canonical_sync_warning"
-                        ] = str(exc)
+                        split_score_summaries[label]["ad_canonical_sync_warning"] = str(exc)
             if label in {"validation", "test"} and scored.get("scores") is not None:
                 plot_dir = ad_output_dir / "plots" / label
                 plot_artifacts = build_modern_ad_plots(scored["scores"], plot_dir)
@@ -699,8 +751,7 @@ def _positive_score_column(frame: pd.DataFrame) -> Optional[str]:
         (
             column
             for column in frame.columns
-            if str(column).endswith("_positive_probability")
-            or str(column).endswith("_probability")
+            if str(column).endswith("_positive_probability") or str(column).endswith("_probability")
         ),
         None,
     )
@@ -729,9 +780,12 @@ def attach_ad_scores_and_metrics_to_predictions(
         metric_frame = frame.copy()
         metric_frame["__ad_true"] = metric_frame[true_col]
         metric_frame["__ad_pred"] = metric_frame[pred_col]
-        score_col = _positive_score_column(metric_frame) if is_classification_task(task.task_type) else None
+        score_col = (
+            _positive_score_column(metric_frame) if is_classification_task(task.task_type) else None
+        )
 
         if is_classification_task(task.task_type):
+
             def metric_func(
                 y_true: pd.Series,
                 y_pred: pd.Series,
@@ -925,7 +979,7 @@ def collect_training_bundle_files(
     ):
         if ad_summary.get(key):
             files.append(Path(str(ad_summary[key])).expanduser())
-    for nested in ((ad_summary.get("methods") or {}).values()):
+    for nested in (ad_summary.get("methods") or {}).values():
         if isinstance(nested, Mapping):
             for key in ("manifest_path", "bounds_path"):
                 if nested.get(key):

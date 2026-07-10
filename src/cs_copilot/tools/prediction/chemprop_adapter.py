@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,8 @@ import pandas as pd
 
 from .backend import InvalidPredictionInputError, PredictionTaskSpec
 from .training_orchestration import (
+    build_classification_prediction_frame,
+    classification_task_kind,
     encode_classification_labels,
     is_classification_task,
     is_multiclass_task,
@@ -20,6 +23,92 @@ from .training_orchestration import (
     resolve_class_labels,
     strip_unnamed_columns,
 )
+
+
+def parse_chemprop_multiclass_probabilities(
+    values: pd.Series,
+    *,
+    class_count: int | None = None,
+) -> pd.DataFrame:
+    """Parse Chemprop's ``<target>_prob`` vector strings into numeric columns."""
+    rows = []
+    expected = int(class_count) if class_count is not None else None
+    for row_index, value in values.items():
+        try:
+            parsed = value if isinstance(value, (list, tuple)) else ast.literal_eval(str(value))
+        except (SyntaxError, ValueError) as exc:
+            raise InvalidPredictionInputError(
+                f"Chemprop multiclass probabilities are invalid at row {row_index}: {value!r}."
+            ) from exc
+        if not isinstance(parsed, (list, tuple)):
+            raise InvalidPredictionInputError(
+                f"Chemprop multiclass probabilities must be a vector at row {row_index}."
+            )
+        if expected is None:
+            expected = len(parsed)
+        if len(parsed) != expected:
+            raise InvalidPredictionInputError(
+                "Chemprop multiclass probability vector length does not match the model's "
+                f"class count ({len(parsed)} != {expected}) at row {row_index}."
+            )
+        numeric = pd.to_numeric(pd.Series(list(parsed)), errors="coerce")
+        if numeric.isna().any():
+            raise InvalidPredictionInputError(
+                f"Chemprop multiclass probabilities contain non-numeric values at row {row_index}."
+            )
+        rows.append(numeric.tolist())
+    return pd.DataFrame(rows, index=values.index, dtype=float).reset_index(drop=True)
+
+
+def normalize_chemprop_classification_predictions(
+    predictions: pd.DataFrame,
+    *,
+    task: PredictionTaskSpec,
+    classification_targets: Mapping[str, Mapping[str, Any]] | None = None,
+) -> pd.DataFrame:
+    """Convert native Chemprop classification output to Qsaria's shared column contract."""
+    targets = list(task.target_columns or [])
+    metadata = dict(classification_targets or {})
+    source_columns = [
+        column
+        for column in predictions.columns
+        if column not in set(targets + [f"{target}_prob" for target in targets])
+    ]
+    output = predictions[source_columns].reset_index(drop=True).copy()
+    for target_index, target in enumerate(targets):
+        if target not in predictions.columns:
+            raise InvalidPredictionInputError(
+                f"Chemprop prediction output is missing target column `{target}`."
+            )
+        target_metadata = dict(metadata.get(target) or {})
+        class_labels = list(target_metadata.get("class_labels") or [])
+        if is_multiclass_task(task.task_type):
+            probability_column = f"{target}_prob"
+            if probability_column not in predictions.columns:
+                raise InvalidPredictionInputError(
+                    f"Chemprop multiclass output is missing `{probability_column}`."
+                )
+            probabilities = parse_chemprop_multiclass_probabilities(
+                predictions[probability_column],
+                class_count=target_metadata.get("class_count") or None,
+            )
+            if not class_labels:
+                class_labels = list(range(probabilities.shape[1]))
+            predicted_codes = pd.to_numeric(predictions[target], errors="coerce")
+        else:
+            class_labels = class_labels or [0, 1]
+            positive_probability = pd.to_numeric(predictions[target], errors="coerce").clip(0, 1)
+            probabilities = pd.DataFrame({0: 1.0 - positive_probability, 1: positive_probability})
+            predicted_codes = (positive_probability >= 0.5).astype(int)
+        canonical = build_classification_prediction_frame(
+            predicted_codes=predicted_codes,
+            class_labels=class_labels,
+            target_column=target,
+            probabilities=probabilities,
+            primary_target=target_index == 0,
+        )
+        output = pd.concat([output, canonical], axis=1)
+    return output
 
 
 def _file_fingerprint(path: Path) -> Dict[str, Any]:
@@ -129,15 +218,16 @@ def materialize_chemprop_inputs(
                 )
             clean[column] = numeric
     elif is_classification_task(task.task_type):
-        if is_multiclass_task(task.task_type):
-            raise InvalidPredictionInputError(
-                "Chemprop multiclass classification is not enabled in this QSARIA version."
-            )
         for column in target_columns:
             labels = resolve_class_labels(clean[column])
-            if len(labels) != 2:
+            minimum_classes = 3 if is_multiclass_task(task.task_type) else 2
+            if len(labels) < minimum_classes or (
+                not is_multiclass_task(task.task_type) and len(labels) != 2
+            ):
+                expected = "at least three" if is_multiclass_task(task.task_type) else "exactly two"
                 raise InvalidPredictionInputError(
-                    f"Chemprop classification target `{column}` requires exactly two classes; found {len(labels)}."
+                    f"Chemprop {classification_task_kind(task.task_type, len(labels))} target "
+                    f"`{column}` requires {expected} classes; found {len(labels)}."
                 )
             encoded, mapping = encode_classification_labels(clean[column], labels)
             missing_target = encoded.isna()
@@ -151,8 +241,18 @@ def materialize_chemprop_inputs(
                 "class_labels": [json_safe_label(label) for label in labels],
                 "class_count": len(labels),
                 "label_mapping": mapping,
-                "positive_class_label": json_safe_label(labels[1]),
+                "task_kind": classification_task_kind(task.task_type, len(labels)),
+                **(
+                    {"positive_class_label": json_safe_label(labels[1])} if len(labels) == 2 else {}
+                ),
             }
+        if is_multiclass_task(task.task_type):
+            class_counts = {item["class_count"] for item in class_metadata.values()}
+            if len(class_counts) > 1:
+                raise InvalidPredictionInputError(
+                    "Chemprop multi-target multiclass classification requires every target "
+                    "to use the same number of classes."
+                )
 
     split_counts = _validate_split_payload(split_payload, len(clean))
     split_map = split_payload[0]

@@ -17,13 +17,17 @@ from agno.tools.toolkit import Toolkit
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import get_backend_capabilities
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
+from .qsar_reporting import build_registry_reporting_handoff
 from .qsar_response_compaction import (
     compact_applicability_domain_for_response,
-    compact_inference_profile_for_response as _shared_compact_inference_profile,
-    compact_model_payload_for_response as _shared_compact_model_payload,
     compact_training_data_summary_for_response,
 )
-from .qsar_reporting import build_registry_reporting_handoff
+from .qsar_response_compaction import (
+    compact_inference_profile_for_response as _shared_compact_inference_profile,
+)
+from .qsar_response_compaction import (
+    compact_model_payload_for_response as _shared_compact_model_payload,
+)
 from .qsar_training_policy import (
     coerce_project_timezone,
     project_now,
@@ -38,6 +42,8 @@ from .session_state import (
 )
 
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+
+
 def _relative_posix(path: Path, start: Path) -> str:
     return path.relative_to(start).as_posix()
 
@@ -143,6 +149,7 @@ def _hydrate_inference_profile_from_summary(
         "class_count",
         "label_mapping",
         "positive_class_label",
+        "classification_targets",
     ):
         if profile.get(key) is None and summary_payload.get(key) is not None:
             profile[key] = summary_payload.get(key)
@@ -158,6 +165,7 @@ def _classification_metadata(record: PredictionModelRecord) -> Dict[str, Any]:
         "class_count",
         "label_mapping",
         "positive_class_label",
+        "classification_targets",
     ):
         for source in sources:
             if source.get(key) is not None:
@@ -679,21 +687,14 @@ class ModelRegistryToolkit(Toolkit):
             / "chemprop_inputs"
             / "chemprop_input_manifest.json",
             "ad_manifest_path": run_dir / "applicability_domain" / "manifest.json",
-            "ad_bounds_path": run_dir
-            / "applicability_domain"
-            / "bounding_box"
-            / "bounds.npz",
+            "ad_bounds_path": run_dir / "applicability_domain" / "bounding_box" / "bounds.npz",
             "ad_isolation_forest_model_path": run_dir
             / "applicability_domain"
             / "isolation_forest"
             / "model.joblib",
-            "ad_similarity_matrix_dir": run_dir
-            / "applicability_domain"
-            / "similarity_matrix",
+            "ad_similarity_matrix_dir": run_dir / "applicability_domain" / "similarity_matrix",
             "ad_scores_train_path": run_dir / "applicability_domain" / "scores_train.csv",
-            "ad_scores_validation_path": run_dir
-            / "applicability_domain"
-            / "scores_validation.csv",
+            "ad_scores_validation_path": run_dir / "applicability_domain" / "scores_validation.csv",
             "ad_scores_test_path": run_dir / "applicability_domain" / "scores_test.csv",
         }
         plot_sources: Dict[str, Path] = {}
@@ -704,6 +705,7 @@ class ModelRegistryToolkit(Toolkit):
         curation_sources: Dict[str, Path] = {}
         curation_payload: Dict[str, Any] = {}
         feature_preparation_payload: Dict[str, Any] = {}
+        ad_plots_source: Optional[Path] = None
 
         for key in (
             "config_path",
@@ -735,6 +737,9 @@ class ModelRegistryToolkit(Toolkit):
                 continue
             if raw_path:
                 plot_sources[plot_name] = Path(str(raw_path)).expanduser()
+        raw_ad_plots_dir = source_artifacts.get("ad_plots_dir")
+        if raw_ad_plots_dir:
+            ad_plots_source = Path(str(raw_ad_plots_dir)).expanduser()
         for split_result in source_artifacts.get("split_results") or []:
             raw_path = split_result.get("test_predictions_path")
             if not raw_path:
@@ -839,10 +844,7 @@ class ModelRegistryToolkit(Toolkit):
                     )
                 elif key == "ad_isolation_forest_model_path":
                     target_path = (
-                        artifacts_dir
-                        / "applicability_domain"
-                        / "isolation_forest"
-                        / "model.joblib"
+                        artifacts_dir / "applicability_domain" / "isolation_forest" / "model.joblib"
                     )
                 elif key == "ad_similarity_matrix_dir":
                     target_path = artifacts_dir / "applicability_domain" / "similarity_matrix"
@@ -871,6 +873,13 @@ class ModelRegistryToolkit(Toolkit):
                 copied_plot_artifacts[plot_name] = _relative_posix(target_path, model_root)
         if copied_plot_artifacts:
             copied_files["plot_artifacts"] = copied_plot_artifacts
+
+        if ad_plots_source and ad_plots_source.is_dir():
+            target_path = artifacts_dir / "applicability_domain" / "plots"
+            if target_path.exists():
+                shutil.rmtree(target_path)
+            shutil.copytree(ad_plots_source, target_path)
+            copied_files["ad_plots_dir"] = _relative_posix(target_path, model_root)
 
         copied_split_predictions: Dict[str, str] = {}
         if split_prediction_sources:
@@ -1030,9 +1039,7 @@ class ModelRegistryToolkit(Toolkit):
                     ]
                     methods = dict(manifest_payload.get("methods") or {})
                     isolation_forest = dict(methods.get("isolation_forest") or {})
-                    isolation_forest["model_path"] = copied_files[
-                        "ad_isolation_forest_model_path"
-                    ]
+                    isolation_forest["model_path"] = copied_files["ad_isolation_forest_model_path"]
                     methods["isolation_forest"] = isolation_forest
                     manifest_payload["methods"] = methods
                 if copied_files.get("ad_similarity_matrix_dir"):
@@ -1134,6 +1141,7 @@ class ModelRegistryToolkit(Toolkit):
                         "ad_isolation_forest_model_path"
                     )
                     or metadata_ad.get("isolation_forest_model_path"),
+                    "plots_dir": copied_files.get("ad_plots_dir") or metadata_ad.get("plots_dir"),
                     "similarity_matrix_manifest_path": (
                         f"{copied_files.get('ad_similarity_matrix_dir')}/manifest.json"
                         if copied_files.get("ad_similarity_matrix_dir")
@@ -1159,8 +1167,8 @@ class ModelRegistryToolkit(Toolkit):
                 similarity_dir = copied_files["ad_similarity_matrix_dir"]
                 similarity["manifest_path"] = f"{similarity_dir}/manifest.json"
                 subspaces = dict(similarity.get("subspaces") or {})
-                for subspace, payload in list(subspaces.items()):
-                    subspace_payload = dict(payload or {})
+                for subspace, subspace_payload_raw in list(subspaces.items()):
+                    subspace_payload = dict(subspace_payload_raw or {})
                     subspace_payload["matrix_all_path"] = (
                         f"{similarity_dir}/{subspace}/matrix_all.npy"
                     )
@@ -1319,10 +1327,9 @@ class ModelRegistryToolkit(Toolkit):
                     or metadata_ad.get("manifest_path"),
                     "bounds_path": artifacts.get("ad_bounds_path")
                     or metadata_ad.get("bounds_path"),
-                    "isolation_forest_model_path": artifacts.get(
-                        "ad_isolation_forest_model_path"
-                    )
+                    "isolation_forest_model_path": artifacts.get("ad_isolation_forest_model_path")
                     or metadata_ad.get("isolation_forest_model_path"),
+                    "plots_dir": artifacts.get("ad_plots_dir") or metadata_ad.get("plots_dir"),
                     "similarity_matrix_manifest_path": (
                         f"{artifacts.get('ad_similarity_matrix_dir')}/manifest.json"
                         if artifacts.get("ad_similarity_matrix_dir")
@@ -1340,9 +1347,7 @@ class ModelRegistryToolkit(Toolkit):
                 methods["bounding_box"] = bounding_box
             isolation_forest = dict(methods.get("isolation_forest") or {})
             if artifacts.get("ad_isolation_forest_model_path"):
-                isolation_forest["model_path"] = artifacts.get(
-                    "ad_isolation_forest_model_path"
-                )
+                isolation_forest["model_path"] = artifacts.get("ad_isolation_forest_model_path")
             if isolation_forest:
                 methods["isolation_forest"] = isolation_forest
             similarity = dict(methods.get("similarity_matrix") or {})
@@ -1350,8 +1355,8 @@ class ModelRegistryToolkit(Toolkit):
                 similarity_dir = artifacts["ad_similarity_matrix_dir"]
                 similarity["manifest_path"] = f"{similarity_dir}/manifest.json"
                 subspaces = dict(similarity.get("subspaces") or {})
-                for subspace, payload in list(subspaces.items()):
-                    subspace_payload = dict(payload or {})
+                for subspace, subspace_payload_raw in list(subspaces.items()):
+                    subspace_payload = dict(subspace_payload_raw or {})
                     subspace_payload["matrix_all_path"] = (
                         f"{similarity_dir}/{subspace}/matrix_all.npy"
                     )
@@ -1560,6 +1565,7 @@ class ModelRegistryToolkit(Toolkit):
                 "scores_validation_path"
             ),
             "ad_scores_test_path": resolved_applicability_domain.get("scores_test_path"),
+            "ad_plots_dir": resolved_applicability_domain.get("plots_dir"),
             "plot_artifacts": summary_payload.get("plot_artifacts") or {},
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": merged_curation,

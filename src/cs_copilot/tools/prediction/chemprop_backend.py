@@ -14,7 +14,6 @@ from __future__ import annotations
 import csv
 import importlib.metadata
 import importlib.util
-import json
 import logging
 import os
 import queue
@@ -39,7 +38,8 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
-from .training_orchestration import normalize_task_type
+from .chemprop_adapter import normalize_chemprop_classification_predictions
+from .training_orchestration import is_classification_task, normalize_task_type
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,40 @@ class ChempropBackend(PredictionBackend):
 
     backend_name = "chemprop"
     MODEL_EXTENSIONS = (".ckpt", ".pt")
+
+    @staticmethod
+    def _classification_targets_from_record(
+        model_record: PredictionModelRecord,
+    ) -> Dict[str, Dict[str, Any]]:
+        targets: Dict[str, Dict[str, Any]] = {}
+        for source in (
+            model_record.inference_profile or {},
+            model_record.training_data_summary or {},
+        ):
+            stored = source.get("classification_targets")
+            if isinstance(stored, dict):
+                targets.update(
+                    {
+                        str(target): dict(metadata)
+                        for target, metadata in stored.items()
+                        if isinstance(metadata, dict)
+                    }
+                )
+        primary_target = (model_record.task.target_columns or [None])[0]
+        if primary_target and primary_target not in targets:
+            for source in (
+                model_record.inference_profile or {},
+                model_record.training_data_summary or {},
+            ):
+                labels = source.get("class_labels")
+                if labels:
+                    targets[primary_target] = {
+                        "class_labels": list(labels),
+                        "class_count": int(source.get("class_count") or len(labels)),
+                        "label_mapping": source.get("label_mapping") or {},
+                    }
+                    break
+        return targets
 
     def _find_cli_path(self) -> Optional[str]:
         cli_path = shutil.which("chemprop")
@@ -551,10 +585,21 @@ class ChempropBackend(PredictionBackend):
                 args.extend([flag, str(value)])
 
         completed = self._run_cli(args)
+        prediction_format = "chemprop_native"
+        if is_classification_task(model_record.task.task_type):
+            native_predictions = pd.read_csv(output_path)
+            normalized_predictions = normalize_chemprop_classification_predictions(
+                native_predictions,
+                task=model_record.task,
+                classification_targets=self._classification_targets_from_record(model_record),
+            )
+            normalized_predictions.to_csv(output_path, index=False)
+            prediction_format = "qsaria_classification_canonical"
         return {
             "backend": self.backend_name,
             "command": args,
             "preds_path": str(output_path),
+            "prediction_format": prediction_format,
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
         }
@@ -607,7 +652,9 @@ class ChempropBackend(PredictionBackend):
 
         frame = pd.read_csv(source_path)
         rename = {
-            column: f"chemprop_{column}" for column in frame.columns if str(column).startswith("fp_")
+            column: f"chemprop_{column}"
+            for column in frame.columns
+            if str(column).startswith("fp_")
         }
         frame = frame.rename(columns=rename)
         feature_columns = [str(column) for column in frame.columns]
@@ -639,13 +686,12 @@ class ChempropBackend(PredictionBackend):
         output_path.mkdir(parents=True, exist_ok=True)
         started_at = datetime.now().astimezone()
 
-        chemprop_task_type = normalize_task_type(task.task_type)
-        if chemprop_task_type in {
-            "binary_classification",
-            "multiclass",
-            "multiclass_classification",
-        }:
-            chemprop_task_type = "classification"
+        normalized_task_type = normalize_task_type(task.task_type)
+        chemprop_task_type = (
+            "multiclass"
+            if normalized_task_type == "multiclass_classification"
+            else normalized_task_type
+        )
 
         args = [
             "chemprop",

@@ -77,12 +77,14 @@ def test_backend_capabilities_registry_core_contracts():
     assert lightgbm.supports_activity_cliff_feedback_loops is True
     assert chemprop.supports_activity_cliff_feedback_loops is False
     assert "classification" in chemprop.supported_task_types
+    assert "multiclass_classification" in chemprop.supported_task_types
     assert "classification" in lightgbm.supported_task_types
     assert "multiclass_classification" in lightgbm.supported_task_types
     assert "classification" in tabicl.supported_task_types
     assert "multiclass_classification" in tabicl.supported_task_types
     assert "classification" in ensemble.supported_task_types
     assert "classification" in chemprop.multi_target_task_types
+    assert "multiclass_classification" in chemprop.multi_target_task_types
     assert tabicl.multi_target_task_types == ()
     assert chemprop.gpu_support == "runtime_dependent"
     assert lightgbm.gpu_support == "supported_when_available"
@@ -711,7 +713,9 @@ def test_chemprop_toolkit_writes_validation_predictions_from_checkpoint(tmp_path
     class FakeChempropBackend:
         backend_name = "chemprop"
 
-        def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False):
+        def predict_from_csv(
+            self, input_csv, model_record, preds_path, *, return_uncertainty=False
+        ):
             frame = pd.read_csv(input_csv)
             pd.DataFrame({"smiles": frame["smiles"], "pEC50": [5.5, 4.5]}).to_csv(
                 preds_path,
@@ -1103,8 +1107,7 @@ def test_model_registry_persistence_copies_modern_applicability_domain(monkeypat
     persisted_manifest = json.loads(manifest_path.read_text())
     assert persisted_manifest["bounds_path"] == persisted_ad["bounds_path"]
     assert (
-        persisted_manifest["methods"]["bounding_box"]["bounds_path"]
-        == persisted_ad["bounds_path"]
+        persisted_manifest["methods"]["bounding_box"]["bounds_path"] == persisted_ad["bounds_path"]
     )
 
 
@@ -1221,6 +1224,10 @@ def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp
         train_indices=[0, 1],
         similarity_top_k_neighbors=1,
     )
+    ad_plots_dir = run_dir / "applicability_domain" / "plots" / "test"
+    ad_plots_dir.mkdir(parents=True)
+    (ad_plots_dir / "ad_method_concordance.png").write_bytes(b"plot")
+    ad_summary["plots_dir"] = str(ad_plots_dir.parent)
     (run_dir / "cs_copilot_training_summary.json").write_text(
         json.dumps(
             {
@@ -1263,6 +1270,9 @@ def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp
     result = toolkit.persist_registered_model(model_id="session_model", agent=agent)
 
     persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
+    assert persisted_metadata["model_id"] == result["model_id"]
+    assert persisted_metadata["backend_name"] == "lightgbm"
+    assert persisted_metadata["task"]["target_columns"] == ["pEC50"]
     persisted_ad = persisted_metadata["applicability_domain"]
     similarity = persisted_ad["methods"]["similarity_matrix"]
     assert persisted_ad["primary_method"] == "similarity_matrix"
@@ -1273,6 +1283,8 @@ def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp
     model_root = Path(result["metadata_path"]).parent
     assert (model_root / subspace["matrix_all_path"]).exists()
     assert (model_root / subspace["reference_features_path"]).exists()
+    assert persisted_ad["plots_dir"] == "artifacts/applicability_domain/plots"
+    assert (model_root / persisted_ad["plots_dir"] / "test" / "ad_method_concordance.png").exists()
 
 
 def test_export_prediction_summary_skips_latest_external_evaluation_without_history():
@@ -1528,6 +1540,13 @@ def test_model_registry_persistence_exposes_classification_metadata(monkeypatch,
                 "class_count": 2,
                 "label_mapping": {"0": 0, "1": 1},
                 "positive_class_label": 1,
+                "classification_targets": {
+                    "Y": {
+                        "class_labels": [0, 1],
+                        "class_count": 2,
+                        "label_mapping": {"0": 0, "1": 1},
+                    }
+                },
             }
         )
         + "\n"
@@ -1572,6 +1591,9 @@ def test_model_registry_persistence_exposes_classification_metadata(monkeypatch,
     assert persisted_metadata["label_mapping"] == {"0": 0, "1": 1}
     assert persisted_metadata["positive_class_label"] == 1
     assert persisted_metadata["inference_profile"]["class_labels"] == [0, 1]
+    assert persisted_metadata["inference_profile"]["classification_targets"]["Y"][
+        "class_labels"
+    ] == [0, 1]
 
 
 def test_training_plots_build_classification_artifacts(tmp_path):
@@ -1707,9 +1729,9 @@ def test_chemprop_embedding_ad_scores_via_backend_fingerprints(tmp_path):
         def fingerprint_from_csv(self, **kwargs):
             output_path = Path(kwargs["output_csv"])
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(
-                {"chemprop_fp_0": [0.5, 2.0], "chemprop_fp_1": [2.5, 2.5]}
-            ).to_csv(output_path, index=False)
+            pd.DataFrame({"chemprop_fp_0": [0.5, 2.0], "chemprop_fp_1": [2.5, 2.5]}).to_csv(
+                output_path, index=False
+            )
             return {"fingerprints_path": str(output_path)}
 
     record = PredictionModelRecord(

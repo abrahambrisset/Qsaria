@@ -36,6 +36,7 @@ from .qsar_splitters import build_full_train_split_payload, build_qsar_split_pay
 from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
 from .tabular_representations import get_tabular_representation
 from .training_orchestration import (
+    build_classification_prediction_frame,
     classification_task_kind,
     compute_classification_metrics,
     compute_regression_metrics,
@@ -451,21 +452,13 @@ class LightGBMBackend(PredictionBackend):
         target_column: str,
         source: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
-        predicted_labels = decode_classification_labels(predictions, class_labels)
-        output = pd.DataFrame(
-            {
-                "prediction": predicted_labels,
-                target_column: predicted_labels,
-                "prediction_class_code": pd.Series(predictions).astype(int),
-            }
+        output = build_classification_prediction_frame(
+            predicted_codes=predictions,
+            class_labels=class_labels,
+            target_column=target_column,
+            probabilities=pd.DataFrame(probabilities) if probabilities is not None else None,
+            primary_target=True,
         )
-        if probabilities is not None:
-            proba = pd.DataFrame(probabilities)
-            for index, class_label in enumerate(class_labels[: proba.shape[1]]):
-                column = f"probability_{safe_slug(str(json_safe_label(class_label))) or f'class_{index}'}"
-                output[column] = pd.to_numeric(proba.iloc[:, index], errors="coerce")
-            if len(class_labels) == 2 and proba.shape[1] >= 2:
-                output["positive_probability"] = pd.to_numeric(proba.iloc[:, 1], errors="coerce")
         if source is not None:
             for column in ("smiles", "Drug_ID"):
                 if column in source.columns:
@@ -865,9 +858,7 @@ class LightGBMBackend(PredictionBackend):
                     )
             else:
                 if X_val is not None and y_val is not None:
-                    y_val_pred = pd.Series(
-                        regressor.predict(X_val), index=X_val.index, dtype=float
-                    )
+                    y_val_pred = pd.Series(regressor.predict(X_val), index=X_val.index, dtype=float)
                 if X_test is not None and y_test is not None:
                     y_pred = pd.Series(regressor.predict(X_test), index=X_test.index, dtype=float)
         except Exception as exc:

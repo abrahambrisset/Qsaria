@@ -25,7 +25,10 @@ from cs_copilot.tools.activity_cliffs import (
 )
 
 from .backend import PredictionModelRecord, PredictionTaskSpec
-from .chemprop_adapter import materialize_chemprop_inputs
+from .chemprop_adapter import (
+    materialize_chemprop_inputs,
+    normalize_chemprop_classification_predictions,
+)
 from .chemprop_backend import DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX, ChempropBackend
 from .qsar_splitters import (
     build_full_train_split_payload,
@@ -51,6 +54,7 @@ from .session_state import (
 from .training_orchestration import (
     apply_training_profile,
     build_applicability_domain_for_training,
+    build_classification_prediction_frame,
     build_cross_validation_artifacts,
     build_training_plots_if_possible,
     collect_training_bundle_files,
@@ -58,6 +62,7 @@ from .training_orchestration import (
     compute_regression_metrics,
     decode_classification_labels,
     is_classification_task,
+    is_multiclass_task,
     normalize_json_list_argument,
     strip_unnamed_columns,
     write_training_summary,
@@ -263,7 +268,22 @@ class ChempropToolkit(Toolkit):
             if smiles_column in actual.columns
             else None
         )
+        is_classification = is_classification_task(task.task_type)
+        is_multiclass = is_multiclass_task(task.task_type)
+        classification_targets: Dict[str, Any] = {}
+        if is_classification:
+            manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
+            if manifest_path.exists():
+                try:
+                    classification_targets = (
+                        json.loads(manifest_path.read_text()).get("classification_targets") or {}
+                    )
+                except Exception:
+                    classification_targets = {}
         prediction_series_by_target: Dict[str, List[pd.Series]] = {
+            column: [] for column in target_columns
+        }
+        probability_frames_by_target: Dict[str, List[pd.DataFrame]] = {
             column: [] for column in target_columns
         }
         prediction_source_paths: List[str] = []
@@ -304,16 +324,58 @@ class ChempropToolkit(Toolkit):
                 artifact["exclusion_reason"] = exclusion_reason
                 normalized_replicate_artifacts.append(artifact)
                 continue
+            if is_classification:
+                try:
+                    predictions = normalize_chemprop_classification_predictions(
+                        predictions,
+                        task=task,
+                        classification_targets=classification_targets,
+                    )
+                except Exception as exc:
+                    artifact["aligned_for_validation"] = False
+                    artifact["exclusion_reason"] = f"invalid_classification_predictions: {exc}"
+                    normalized_replicate_artifacts.append(artifact)
+                    continue
             replicate_index = item.get("replicate_index")
             if not isinstance(replicate_index, int):
                 replicate_index = len(included_replicate_indices)
             artifact["aligned_for_validation"] = True
             artifact["exclusion_reason"] = None
             normalized_replicate_artifacts.append(artifact)
-            for column in target_columns:
-                prediction_series_by_target[column].append(
-                    pd.to_numeric(predictions[column], errors="coerce")
-                )
+            for column_index, column in enumerate(target_columns):
+                if is_multiclass:
+                    prefix = "probability_" if column_index == 0 else f"{column}_probability_"
+                    probability_columns = [
+                        name for name in predictions.columns if str(name).startswith(prefix)
+                    ]
+                    probability_frames_by_target[column].append(
+                        predictions[probability_columns].apply(pd.to_numeric, errors="coerce")
+                    )
+                    prediction_series_by_target[column].append(
+                        pd.to_numeric(
+                            predictions[
+                                (
+                                    "prediction_class_code"
+                                    if column_index == 0
+                                    else f"{column}_prediction_class_code"
+                                )
+                            ],
+                            errors="coerce",
+                        )
+                    )
+                elif is_classification:
+                    probability_column = (
+                        "positive_probability"
+                        if column_index == 0
+                        else f"{column}_positive_probability"
+                    )
+                    prediction_series_by_target[column].append(
+                        pd.to_numeric(predictions[probability_column], errors="coerce")
+                    )
+                else:
+                    prediction_series_by_target[column].append(
+                        pd.to_numeric(predictions[column], errors="coerce")
+                    )
             prediction_source_paths.append(str(prediction_path))
             included_replicate_indices.append(replicate_index)
 
@@ -325,7 +387,6 @@ class ChempropToolkit(Toolkit):
         prediction_frame.columns = [
             f"prediction_replicate_{idx}" for idx in included_replicate_indices
         ]
-        is_classification = is_classification_task(task.task_type)
         y_true_numeric = pd.to_numeric(actual[target_column], errors="coerce")
         y_pred_numeric = prediction_frame.mean(axis=1, skipna=True)
         prediction_std = (
@@ -339,48 +400,81 @@ class ChempropToolkit(Toolkit):
             else pd.Series([None] * len(actual))
         )
         if is_classification:
-            manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
-            classification_targets: Dict[str, Any] = {}
-            if manifest_path.exists():
-                try:
-                    manifest = json.loads(manifest_path.read_text())
-                    classification_targets = manifest.get("classification_targets") or {}
-                except Exception:
-                    classification_targets = {}
             class_info: Dict[str, Any] = classification_targets.get(target_column) or {}
             class_labels = list(class_info.get("class_labels") or [0, 1])
-            positive_probability = y_pred_numeric.clip(lower=0.0, upper=1.0)
-            predicted_codes = (positive_probability >= 0.5).astype(int)
+            if is_multiclass:
+                probability_frames = probability_frames_by_target[target_column]
+                mean_probabilities = sum(probability_frames[1:], probability_frames[0].copy())
+                mean_probabilities = mean_probabilities / float(len(probability_frames))
+                predicted_codes = pd.Series(mean_probabilities.to_numpy().argmax(axis=1), dtype=int)
+                selected_probabilities = pd.DataFrame(
+                    {
+                        replicate_index: [
+                            frame.iloc[row_index, int(code)]
+                            for row_index, code in enumerate(predicted_codes)
+                        ]
+                        for replicate_index, frame in enumerate(probability_frames)
+                    }
+                )
+                prediction_std = selected_probabilities.std(axis=1, ddof=0).fillna(0.0)
+                probabilities = mean_probabilities
+            else:
+                positive_probability = y_pred_numeric.clip(lower=0.0, upper=1.0)
+                predicted_codes = (positive_probability >= 0.5).astype(int)
+                probabilities = pd.DataFrame(
+                    {0: 1.0 - positive_probability, 1: positive_probability}
+                )
             true_labels = decode_classification_labels(
                 y_true_numeric.fillna(-1).astype(int).tolist(), class_labels
             )
-            predicted_labels = decode_classification_labels(predicted_codes.tolist(), class_labels)
             normalized = pd.DataFrame(
                 {
                     "source_row_index": test_indices,
                     "smiles": smiles_values,
                     f"{target_column}_true": true_labels,
-                    f"{target_column}_prediction": predicted_labels,
-                    "prediction": predicted_labels,
-                    target_column: predicted_labels,
-                    "positive_probability": positive_probability,
-                    "prediction_class_code": predicted_codes,
                     "true_class_code": y_true_numeric,
                     "prediction_std": prediction_std,
                     "replicate_count": len(prediction_series),
                     "detected_replicate_count": len(replicate_artifacts),
                 }
             )
+            normalized = pd.concat(
+                [
+                    normalized,
+                    build_classification_prediction_frame(
+                        predicted_codes=predicted_codes,
+                        class_labels=class_labels,
+                        target_column=target_column,
+                        probabilities=probabilities,
+                        primary_target=True,
+                    ),
+                ],
+                axis=1,
+            )
             for extra_target in target_columns[1:]:
                 extra_series = prediction_series_by_target.get(extra_target) or []
                 if not extra_series:
                     continue
                 extra_frame = pd.concat(extra_series, axis=1)
-                extra_pred = extra_frame.mean(axis=1, skipna=True).clip(lower=0.0, upper=1.0)
-                extra_codes = (extra_pred >= 0.5).astype(int)
                 extra_labels = list(
                     (classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1]
                 )
+                if is_multiclass:
+                    extra_probability_frames = probability_frames_by_target[extra_target]
+                    extra_probabilities = sum(
+                        extra_probability_frames[1:], extra_probability_frames[0].copy()
+                    ) / float(len(extra_probability_frames))
+                    extra_codes = pd.Series(
+                        extra_probabilities.to_numpy().argmax(axis=1), dtype=int
+                    )
+                else:
+                    extra_positive_probability = extra_frame.mean(axis=1, skipna=True).clip(
+                        lower=0.0, upper=1.0
+                    )
+                    extra_probabilities = pd.DataFrame(
+                        {0: 1.0 - extra_positive_probability, 1: extra_positive_probability}
+                    )
+                    extra_codes = (extra_positive_probability >= 0.5).astype(int)
                 normalized[f"{extra_target}_true"] = decode_classification_labels(
                     pd.to_numeric(actual[extra_target], errors="coerce")
                     .fillna(-1)
@@ -388,10 +482,19 @@ class ChempropToolkit(Toolkit):
                     .tolist(),
                     extra_labels,
                 )
-                normalized[f"{extra_target}_prediction"] = decode_classification_labels(
-                    extra_codes.tolist(), extra_labels
+                normalized = pd.concat(
+                    [
+                        normalized,
+                        build_classification_prediction_frame(
+                            predicted_codes=extra_codes,
+                            class_labels=extra_labels,
+                            target_column=extra_target,
+                            probabilities=extra_probabilities,
+                            primary_target=False,
+                        ),
+                    ],
+                    axis=1,
                 )
-                normalized[f"{extra_target}_positive_probability"] = extra_pred
         else:
             normalized = pd.DataFrame(
                 {
@@ -490,11 +593,23 @@ class ChempropToolkit(Toolkit):
             validation_input_path, index=False
         )
 
+        is_classification = is_classification_task(task.task_type)
+        classification_targets: Dict[str, Any] = {}
+        manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
+        if is_classification and manifest_path.exists():
+            try:
+                classification_targets = (
+                    json.loads(manifest_path.read_text()).get("classification_targets") or {}
+                )
+            except Exception:
+                classification_targets = {}
+
         record = PredictionModelRecord(
             model_id=f"{output_path.name}_validation",
             backend_name=self.backend.backend_name,
             model_path=str(model_artifact),
             task=task,
+            inference_profile={"classification_targets": classification_targets},
         )
         self.backend.predict_from_csv(
             input_csv=str(validation_input_path),
@@ -512,16 +627,6 @@ class ChempropToolkit(Toolkit):
                 candidates.append("prediction")
             return next((column for column in candidates if column in predictions.columns), None)
 
-        is_classification = is_classification_task(task.task_type)
-        manifest_path = output_path / "chemprop_inputs" / "chemprop_input_manifest.json"
-        classification_targets: Dict[str, Any] = {}
-        if is_classification and manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                classification_targets = manifest.get("classification_targets") or {}
-            except Exception:
-                classification_targets = {}
-
         smiles_values = (
             actual[smiles_column].reset_index(drop=True)
             if smiles_column in actual.columns
@@ -535,10 +640,22 @@ class ChempropToolkit(Toolkit):
             class_labels = list(
                 (classification_targets.get(target_column) or {}).get("class_labels") or [0, 1]
             )
-            positive_probability = pd.to_numeric(
-                predictions[primary_prediction_column], errors="coerce"
-            ).clip(lower=0.0, upper=1.0)
-            predicted_codes = (positive_probability >= 0.5).astype(int)
+            predicted_codes = pd.to_numeric(predictions["prediction_class_code"], errors="coerce")
+            if is_multiclass_task(task.task_type):
+                probability_columns = [
+                    column
+                    for column in predictions.columns
+                    if str(column).startswith("probability_")
+                ]
+                probabilities = predictions[probability_columns]
+                positive_probability = None
+            else:
+                positive_probability = pd.to_numeric(
+                    predictions["positive_probability"], errors="coerce"
+                ).clip(lower=0.0, upper=1.0)
+                probabilities = pd.DataFrame(
+                    {0: 1.0 - positive_probability, 1: positive_probability}
+                )
             true_codes = pd.to_numeric(actual[target_column], errors="coerce")
             y_true = decode_classification_labels(
                 true_codes.fillna(-1).astype(int).tolist(), class_labels
@@ -549,15 +666,23 @@ class ChempropToolkit(Toolkit):
                     "source_row_index": validation_indices,
                     "smiles": smiles_values,
                     f"{target_column}_true": y_true,
-                    f"{target_column}_prediction": y_pred,
-                    "prediction": y_pred,
-                    target_column: y_pred,
-                    "positive_probability": positive_probability,
-                    "prediction_class_code": predicted_codes,
                     "true_class_code": true_codes,
                     "replicate_count": 1,
                     "detected_replicate_count": 1,
                 }
+            )
+            normalized = pd.concat(
+                [
+                    normalized,
+                    build_classification_prediction_frame(
+                        predicted_codes=predicted_codes,
+                        class_labels=class_labels,
+                        target_column=target_column,
+                        probabilities=probabilities,
+                        primary_target=True,
+                    ),
+                ],
+                axis=1,
             )
             metric_values = compute_classification_metrics(
                 pd.Series(y_true),
@@ -598,18 +723,43 @@ class ChempropToolkit(Toolkit):
                 extra_labels = list(
                     (classification_targets.get(extra_target) or {}).get("class_labels") or [0, 1]
                 )
-                extra_probability = pd.to_numeric(
-                    predictions[extra_prediction_column], errors="coerce"
-                ).clip(lower=0.0, upper=1.0)
-                extra_codes = (extra_probability >= 0.5).astype(int)
+                extra_codes = pd.to_numeric(
+                    predictions[f"{extra_target}_prediction_class_code"], errors="coerce"
+                )
+                if is_multiclass_task(task.task_type):
+                    extra_probability_columns = [
+                        column
+                        for column in predictions.columns
+                        if str(column).startswith(f"{extra_target}_probability_")
+                    ]
+                    extra_probabilities = predictions[extra_probability_columns]
+                    extra_probability = None
+                else:
+                    extra_probability = pd.to_numeric(
+                        predictions[f"{extra_target}_positive_probability"], errors="coerce"
+                    ).clip(lower=0.0, upper=1.0)
+                    extra_probabilities = pd.DataFrame(
+                        {0: 1.0 - extra_probability, 1: extra_probability}
+                    )
                 extra_true_codes = pd.to_numeric(actual[extra_target], errors="coerce")
                 extra_true = decode_classification_labels(
                     extra_true_codes.fillna(-1).astype(int).tolist(), extra_labels
                 )
                 extra_pred = decode_classification_labels(extra_codes.tolist(), extra_labels)
                 normalized[f"{extra_target}_true"] = extra_true
-                normalized[f"{extra_target}_prediction"] = extra_pred
-                normalized[f"{extra_target}_positive_probability"] = extra_probability
+                normalized = pd.concat(
+                    [
+                        normalized,
+                        build_classification_prediction_frame(
+                            predicted_codes=extra_codes,
+                            class_labels=extra_labels,
+                            target_column=extra_target,
+                            probabilities=extra_probabilities,
+                            primary_target=False,
+                        ),
+                    ],
+                    axis=1,
+                )
                 target_metrics[extra_target] = compute_classification_metrics(
                     pd.Series(extra_true),
                     pd.Series(extra_pred),
@@ -846,6 +996,17 @@ class ChempropToolkit(Toolkit):
             }
         }
         backend_train_args["splits_file"] = chemprop_input["chemprop_splits_file"]
+        classification_targets = chemprop_input.get("classification_targets") or {}
+        if is_multiclass_task(task.task_type):
+            class_counts = {
+                int(metadata.get("class_count") or 0)
+                for metadata in classification_targets.values()
+            }
+            if len(class_counts) != 1 or 0 in class_counts:
+                raise ValueError(
+                    "Chemprop multiclass training requires one shared positive class count."
+                )
+            backend_train_args["multiclass_num_classes"] = class_counts.pop()
         result = self.backend.train_model(
             train_csv=chemprop_input["chemprop_training_input_csv"],
             output_dir=output_dir,
@@ -904,6 +1065,19 @@ class ChempropToolkit(Toolkit):
         result["chemprop_training_input_csv"] = chemprop_input["chemprop_training_input_csv"]
         result["chemprop_splits_file"] = chemprop_input["chemprop_splits_file"]
         result["chemprop_input_manifest_path"] = chemprop_input["manifest_path"]
+        if classification_targets:
+            result["classification_targets"] = classification_targets
+            primary_target = task.target_columns[0]
+            primary_metadata = classification_targets.get(primary_target) or {}
+            for key in (
+                "task_kind",
+                "class_labels",
+                "class_count",
+                "label_mapping",
+                "positive_class_label",
+            ):
+                if primary_metadata.get(key) is not None:
+                    result[key] = primary_metadata[key]
         result["split_payload"] = split_payload
         return result
 
@@ -1425,6 +1599,11 @@ class ChempropToolkit(Toolkit):
             target_columns=target_columns or [],
             reaction_columns=reaction_columns or [],
         )
+        if (
+            is_classification_task(task.task_type)
+            and training_policy["extra_args"].get("metric") == "rmse"
+        ):
+            training_policy["extra_args"].pop("metric")
         activity_cliffs: Dict[str, Any] = {}
         if task.task_type == "regression" and len(task.target_columns) == 1:
             try:
@@ -1655,12 +1834,12 @@ class ChempropToolkit(Toolkit):
                 task=task,
                 prediction_artifact_paths={
                     "validation": root_artifacts.get("validation_predictions_path"),
-                "test": root_artifacts.get("test_predictions_path"),
-            },
-            applicability_domain_methods=requested_ad_methods,
-            similarity_top_k_neighbors=requested_similarity_top_k,
-            similarity_threshold_percentile=requested_similarity_percentile,
-        )
+                    "test": root_artifacts.get("test_predictions_path"),
+                },
+                applicability_domain_methods=requested_ad_methods,
+                similarity_top_k_neighbors=requested_similarity_top_k,
+                similarity_threshold_percentile=requested_similarity_percentile,
+            )
             plot_artifacts: Dict[str, str] = {}
             target_column = task.target_columns[0] if task.target_columns else None
             if protocol_policy.get("validation_strategy_type") != "full_train":
