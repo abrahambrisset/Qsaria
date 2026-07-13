@@ -15,7 +15,10 @@ from cs_copilot.tools.prediction.hyperparameter_tuning import (
     _running_mean,
     build_tuning_progress_plot,
     describe_backend_hyperparameters,
+    describe_tuning_engines,
     normalize_tuning_config,
+    tuning_metadata_for_catalog,
+    tuning_sampler_metadata,
 )
 from cs_copilot.tools.prediction.lightgbm_toolkit import _ad_status_series
 from cs_copilot.tools.prediction.qsar_training_policy import resolve_validation_protocol
@@ -38,6 +41,7 @@ def test_backend_hyperparameter_contracts_expose_supported_engines_and_parameter
     tabicl = describe_backend_hyperparameters("tabicl")
 
     assert lightgbm["default_engine"] == "optuna_tpe"
+    assert lightgbm["supported_engines"] == ["optuna_tpe", "optuna_tpe_multivariate"]
     assert {
         item["name"] for item in lightgbm["parameters"] if item["default_tuning"]
     } == {"n_estimators", "learning_rate", "max_depth", "num_leaves"}
@@ -52,6 +56,46 @@ def test_backend_hyperparameter_contracts_expose_supported_engines_and_parameter
         "dropout",
     }
     assert tabicl["supports_hyperparameter_tuning"] is False
+
+
+def test_global_tuning_engine_registry_reports_real_backend_availability():
+    engines = describe_tuning_engines()
+    multivariate = engines["optuna_tpe_multivariate"]
+
+    assert set(engines) == {
+        "optuna_tpe",
+        "optuna_tpe_multivariate",
+        "chemprop_hpopt_hyperopt",
+    }
+    assert multivariate["sampler"] == {
+        "name": "TPESampler",
+        "multivariate": True,
+        "group": False,
+    }
+    assert multivariate["backend_availability"]["lightgbm"]["status"] == "supported"
+    assert multivariate["backend_availability"]["chemprop"]["status"] == "not_connected"
+    assert multivariate["backend_availability"]["tabicl"]["status"] == "unsupported"
+    assert multivariate["stability"] == "experimental"
+    assert multivariate["contract_version"] == "1.1"
+
+
+def test_sampler_metadata_and_catalog_provenance_keep_multivariate_settings():
+    sampler = tuning_sampler_metadata("optuna_tpe_multivariate", n_startup_trials=10)
+    catalog = tuning_metadata_for_catalog(
+        {
+            "engine": "optuna_tpe_multivariate",
+            "sampler": sampler,
+        }
+    )
+
+    assert sampler == {
+        "name": "TPESampler",
+        "multivariate": True,
+        "group": False,
+        "n_startup_trials": 10,
+    }
+    assert catalog["engine"] == "optuna_tpe_multivariate"
+    assert catalog["sampler"] == sampler
 
 
 def test_standard_protocol_is_one_fixed_random_holdout_and_rdkit_is_tabular_default():
@@ -81,6 +125,41 @@ def test_lightgbm_direct_value_is_excluded_from_the_search():
     assert config.parameters == ("n_estimators", "max_depth")
     assert config.objective.metric == "rmse"
     assert config.objective.subset == "in_domain"
+
+
+def test_multivariate_tpe_is_lightgbm_only_and_standard_tpe_remains_default():
+    default = normalize_tuning_config(
+        {},
+        backend_name="lightgbm",
+        task_type="regression",
+        eligible=True,
+    )
+    multivariate = normalize_tuning_config(
+        {"engine": "optuna_tpe_multivariate"},
+        backend_name="lightgbm",
+        task_type="regression",
+        eligible=True,
+    )
+
+    assert default is not None
+    assert default.engine == "optuna_tpe"
+    assert multivariate is not None
+    assert multivariate.engine == "optuna_tpe_multivariate"
+    assert multivariate.parameters == default.parameters
+    with pytest.raises(HyperparameterTuningError, match="Unsupported tuning engine"):
+        normalize_tuning_config(
+            {"engine": "optuna_tpe_multivariate"},
+            backend_name="chemprop",
+            task_type="regression",
+            eligible=True,
+        )
+    with pytest.raises(HyperparameterTuningError, match="does not support"):
+        normalize_tuning_config(
+            {"engine": "optuna_tpe_multivariate"},
+            backend_name="tabicl",
+            task_type="regression",
+            eligible=True,
+        )
 
 
 def test_lightgbm_tuning_extracts_ad_status_from_dataframe_without_boolean_coercion():
@@ -188,6 +267,56 @@ def test_optuna_adapter_uses_full_trials_and_respects_depth_leaf_constraint():
     assert summary.failed_trials == 0
     assert len(observed) == 4
     assert all(item["num_leaves"] <= 2 ** item["max_depth"] for item in observed)
+
+
+@pytest.mark.parametrize(
+    ("engine_name", "expected_sampler"),
+    [
+        ("optuna_tpe", {"multivariate": False}),
+        ("optuna_tpe_multivariate", {"multivariate": True, "group": False}),
+    ],
+)
+def test_optuna_adapter_builds_the_expected_sampler(
+    monkeypatch,
+    engine_name,
+    expected_sampler,
+):
+    import optuna
+
+    captured = []
+    original_sampler = optuna.samplers.TPESampler
+
+    def record_sampler(*args, **kwargs):
+        captured.append(dict(kwargs))
+        return original_sampler(*args, **kwargs)
+
+    monkeypatch.setattr(optuna.samplers, "TPESampler", record_sampler)
+    config = normalize_tuning_config(
+        {"engine": engine_name, "n_trials": 1, "seed": 29},
+        backend_name="lightgbm",
+        task_type="regression",
+        eligible=True,
+    )
+    assert config is not None
+
+    summary = LightGBMOptunaAdapter().run(
+        config=config,
+        fixed_parameters={},
+        evaluate=lambda _: {
+            "objective": 0.5,
+            "metrics": {"in_domain": {"rmse": 0.5}},
+            "diagnostics": {},
+        },
+    )
+
+    assert summary.engine == engine_name
+    assert captured == [
+        {
+            "seed": 29,
+            "n_startup_trials": 1,
+            **expected_sampler,
+        }
+    ]
 
 
 def test_chemprop_tuning_materialization_has_no_test_rows(tmp_path):

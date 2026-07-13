@@ -14,11 +14,28 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Protocol
 
-HYPERPARAMETER_CONTRACT_VERSION = "1.0"
+HYPERPARAMETER_CONTRACT_VERSION = "1.1"
 
 
 class HyperparameterTuningError(ValueError):
     """Raised when a tuning request is invalid for a backend or protocol."""
+
+
+@dataclass(frozen=True)
+class TuningEngineSpec:
+    """Versioned description of one reusable hyperparameter-search engine."""
+
+    name: str
+    display_name: str
+    description: str
+    family: str
+    sampler: Dict[str, Any] = field(default_factory=dict)
+    backend_availability: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    stability: str = "stable"
+    contract_version: str = HYPERPARAMETER_CONTRACT_VERSION
+
+    def as_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -275,6 +292,49 @@ def build_tuning_progress_plot(
     return str(plot_path)
 
 
+TUNING_ENGINE_CATALOG: Dict[str, TuningEngineSpec] = {
+    "optuna_tpe": TuningEngineSpec(
+        name="optuna_tpe",
+        display_name="Optuna TPE",
+        description="Independent Tree-structured Parzen Estimator sampler.",
+        family="optuna",
+        sampler={"name": "TPESampler", "multivariate": False},
+        backend_availability={
+            "lightgbm": {"status": "supported", "detail": "LightGBM Optuna adapter."},
+            "chemprop": {"status": "not_connected", "detail": "Chemprop uses native HyperOpt."},
+            "tabicl": {"status": "unsupported", "detail": "TabICL has no tuning adapter."},
+        },
+    ),
+    "optuna_tpe_multivariate": TuningEngineSpec(
+        name="optuna_tpe_multivariate",
+        display_name="Optuna TPE multivariate",
+        description="Joint TPE sampler that models compatible hyperparameter combinations.",
+        family="optuna",
+        sampler={"name": "TPESampler", "multivariate": True, "group": False},
+        backend_availability={
+            "lightgbm": {"status": "supported", "detail": "LightGBM Optuna adapter."},
+            "chemprop": {
+                "status": "not_connected",
+                "detail": "Reserved for a future Chemprop Optuna adapter; native HyperOpt remains active.",
+            },
+            "tabicl": {"status": "unsupported", "detail": "TabICL has no tuning adapter."},
+        },
+        stability="experimental",
+    ),
+    "chemprop_hpopt_hyperopt": TuningEngineSpec(
+        name="chemprop_hpopt_hyperopt",
+        display_name="Chemprop native HyperOpt",
+        description="Chemprop native hpopt workflow using Ray Tune and HyperOpt.",
+        family="chemprop",
+        backend_availability={
+            "lightgbm": {"status": "unsupported", "detail": "LightGBM uses Optuna adapters."},
+            "chemprop": {"status": "native", "detail": "Chemprop native HPO adapter."},
+            "tabicl": {"status": "unsupported", "detail": "TabICL has no tuning adapter."},
+        },
+    ),
+}
+
+
 LIGHTGBM_SPECS = (
     HyperparameterSpec(
         "n_estimators",
@@ -284,7 +344,7 @@ LIGHTGBM_SPECS = (
         tuning_supported=True,
         default_tuning=True,
         search_space={"type": "int", "low": 200, "high": 1200},
-        engines=("optuna_tpe",),
+        engines=("optuna_tpe", "optuna_tpe_multivariate"),
     ),
     HyperparameterSpec(
         "learning_rate",
@@ -294,7 +354,7 @@ LIGHTGBM_SPECS = (
         tuning_supported=True,
         default_tuning=True,
         search_space={"type": "float", "low": 0.01, "high": 0.15, "log": True},
-        engines=("optuna_tpe",),
+        engines=("optuna_tpe", "optuna_tpe_multivariate"),
     ),
     HyperparameterSpec(
         "max_depth",
@@ -304,7 +364,7 @@ LIGHTGBM_SPECS = (
         tuning_supported=True,
         default_tuning=True,
         search_space={"type": "int", "low": 3, "high": 12},
-        engines=("optuna_tpe",),
+        engines=("optuna_tpe", "optuna_tpe_multivariate"),
     ),
     HyperparameterSpec(
         "num_leaves",
@@ -314,7 +374,7 @@ LIGHTGBM_SPECS = (
         tuning_supported=True,
         default_tuning=True,
         search_space={"type": "int", "low": 15, "high": 127},
-        engines=("optuna_tpe",),
+        engines=("optuna_tpe", "optuna_tpe_multivariate"),
     ),
     HyperparameterSpec("subsample", "Row subsampling fraction.", "float", 0.8),
     HyperparameterSpec("colsample_bytree", "Feature subsampling fraction.", "float", 0.8),
@@ -411,7 +471,7 @@ BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
         "backend_name": "lightgbm",
         "supports_hyperparameter_tuning": True,
         "default_engine": "optuna_tpe",
-        "supported_engines": ["optuna_tpe"],
+        "supported_engines": ["optuna_tpe", "optuna_tpe_multivariate"],
         "default_trials": 50,
         "default_objectives": {
             "regression": {"metric": "rmse", "direction": "minimize", "subset": "in_domain"},
@@ -469,6 +529,30 @@ def describe_backend_hyperparameters(backend_name: Optional[str] = None) -> Dict
     return dict(BACKEND_TUNING_CATALOG[normalized])
 
 
+def describe_tuning_engines(engine_name: Optional[str] = None) -> Dict[str, Any]:
+    """Return the reusable tuning-engine registry and per-backend availability."""
+    if engine_name is None:
+        return {name: spec.as_dict() for name, spec in TUNING_ENGINE_CATALOG.items()}
+    normalized = str(engine_name).strip().lower()
+    try:
+        return TUNING_ENGINE_CATALOG[normalized].as_dict()
+    except KeyError as exc:
+        raise HyperparameterTuningError(f"Unknown tuning engine `{engine_name}`.") from exc
+
+
+def tuning_sampler_metadata(engine_name: str, *, n_startup_trials: int) -> Dict[str, Any]:
+    """Return the persisted sampler settings for an Optuna TPE engine."""
+    engine = describe_tuning_engines(engine_name)
+    sampler = dict(engine.get("sampler") or {})
+    if sampler.get("name") != "TPESampler":
+        return {}
+    return {
+        **sampler,
+        "group": bool(sampler.get("group", False)),
+        "n_startup_trials": int(n_startup_trials),
+    }
+
+
 def _specs(backend_name: str) -> Dict[str, Dict[str, Any]]:
     return {
         str(item["name"]): item
@@ -476,8 +560,15 @@ def _specs(backend_name: str) -> Dict[str, Dict[str, Any]]:
     }
 
 
-def default_tuning_parameter_names(backend_name: str) -> tuple[str, ...]:
-    return tuple(item["name"] for item in _specs(backend_name).values() if item["default_tuning"])
+def default_tuning_parameter_names(
+    backend_name: str,
+    engine_name: Optional[str] = None,
+) -> tuple[str, ...]:
+    return tuple(
+        item["name"]
+        for item in _specs(backend_name).values()
+        if item["default_tuning"] and (engine_name is None or engine_name in item["engines"])
+    )
 
 
 def default_tuning_objective(backend_name: str, task_type: str) -> TuningObjective:
@@ -536,7 +627,7 @@ def normalize_tuning_config(
     specs = _specs(backend_name)
     requested_parameters = raw_config.get("parameters")
     if requested_parameters is None:
-        parameters = list(default_tuning_parameter_names(backend_name))
+        parameters = list(default_tuning_parameter_names(backend_name, engine))
     elif not isinstance(requested_parameters, (list, tuple)):
         raise HyperparameterTuningError("hyperparameter_tuning.parameters must be a list.")
     else:
@@ -550,6 +641,10 @@ def normalize_tuning_config(
         if not spec["tuning_supported"]:
             raise HyperparameterTuningError(
                 f"Hyperparameter `{name}` is direct-settable but not tunable by {engine} in V1."
+            )
+        if engine not in spec["engines"]:
+            raise HyperparameterTuningError(
+                f"Hyperparameter `{name}` is not tunable by {engine} for {backend_name}."
             )
 
     fixed = {str(item) for item in fixed_parameters}
@@ -631,15 +726,34 @@ def _suggest_lightgbm_parameter(trial: Any, name: str, space: Mapping[str, Any])
 
 
 class LightGBMOptunaAdapter:
-    """Optuna/TPE adapter with pruning explicitly disabled for V1."""
+    """LightGBM bridge for the shared Optuna/TPE engine family."""
 
     engine_name = "optuna_tpe"
+    supported_engine_names = ("optuna_tpe", "optuna_tpe_multivariate")
 
     def validate(self, config: TuningConfig) -> None:
-        if config.engine != self.engine_name:
-            raise HyperparameterTuningError(f"Expected {self.engine_name}, got {config.engine}.")
+        if config.engine not in self.supported_engine_names:
+            raise HyperparameterTuningError(
+                f"Expected one of {self.supported_engine_names}, got {config.engine}."
+            )
         if config.objective is None:
             raise HyperparameterTuningError("LightGBM tuning requires an objective.")
+
+    @staticmethod
+    def _build_sampler(optuna: Any, config: TuningConfig) -> Any:
+        """Build the configured Optuna sampler from the global engine registry."""
+        engine = describe_tuning_engines(str(config.engine))
+        sampler = dict(engine.get("sampler") or {})
+        sampler_name = sampler.pop("name", None)
+        if sampler_name != "TPESampler":
+            raise HyperparameterTuningError(
+                f"Engine `{config.engine}` is not backed by an Optuna TPESampler."
+            )
+        return optuna.samplers.TPESampler(
+            seed=config.seed,
+            n_startup_trials=min(10, config.n_trials),
+            **sampler,
+        )
 
     def run(
         self,
@@ -662,7 +776,7 @@ class LightGBMOptunaAdapter:
         if not config.parameters:
             return TuningStudySummary(
                 backend_name="lightgbm",
-                engine=self.engine_name,
+                engine=str(config.engine),
                 status="skipped",
                 objective=config.objective.as_dict(),
                 requested_trials=config.n_trials,
@@ -676,10 +790,7 @@ class LightGBMOptunaAdapter:
             raise HyperparameterTuningError("Optuna is required for LightGBM tuning.") from exc
 
         specs = _specs("lightgbm")
-        sampler = optuna.samplers.TPESampler(
-            seed=config.seed,
-            n_startup_trials=min(10, config.n_trials),
-        )
+        sampler = self._build_sampler(optuna, config)
         study = optuna.create_study(
             direction=config.objective.direction,
             sampler=sampler,
@@ -731,7 +842,7 @@ class LightGBMOptunaAdapter:
         if not completed:
             return TuningStudySummary(
                 backend_name="lightgbm",
-                engine=self.engine_name,
+                engine=str(config.engine),
                 status="failed",
                 objective=config.objective.as_dict(),
                 requested_trials=config.n_trials,
@@ -745,7 +856,7 @@ class LightGBMOptunaAdapter:
         best_row["params"] = {**fixed_parameters, **best_row["params"]}
         return TuningStudySummary(
             backend_name="lightgbm",
-            engine=self.engine_name,
+            engine=str(config.engine),
             status="completed",
             objective=config.objective.as_dict(),
             requested_trials=config.n_trials,
@@ -787,6 +898,7 @@ def tuning_metadata_for_catalog(summary: Optional[Mapping[str, Any]]) -> Dict[st
         "status": summary.get("status"),
         "engine": summary.get("engine"),
         "engine_version": summary.get("engine_version"),
+        "sampler": summary.get("sampler"),
         "seed": summary.get("seed"),
         "objective": summary.get("objective"),
         "requested_trials": summary.get("requested_trials"),

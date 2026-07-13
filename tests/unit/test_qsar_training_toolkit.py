@@ -48,6 +48,17 @@ def _fake_train_result(
     }
 
 
+def test_qsar_training_toolkit_exposes_shared_tuning_engine_registry():
+    toolkit = QSARTrainingToolkit()
+
+    engine = toolkit.describe_tuning_engines("optuna_tpe_multivariate")
+    environment = toolkit.describe_qsar_training_environment()
+
+    assert engine["name"] == "optuna_tpe_multivariate"
+    assert engine["backend_availability"]["lightgbm"]["status"] == "supported"
+    assert "optuna_tpe_multivariate" in environment["tuning_engines"]
+
+
 def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     original_prefix = S3.current_prefix()

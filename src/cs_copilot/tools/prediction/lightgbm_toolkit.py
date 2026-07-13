@@ -33,6 +33,7 @@ from .hyperparameter_tuning import (
     build_tuning_progress_plot,
     normalize_tuning_config,
     tuning_metadata_for_catalog,
+    tuning_sampler_metadata,
 )
 from .lightgbm_backend import LightGBMBackend
 from .qsar_splitters import (
@@ -899,7 +900,10 @@ class LightGBMToolkit(Toolkit):
             summary["engine_version"] = importlib.metadata.version("optuna")
         except importlib.metadata.PackageNotFoundError:  # pragma: no cover - guarded by adapter
             summary["engine_version"] = None
-        summary["sampler"] = {"name": "TPESampler", "n_startup_trials": min(10, tuning_config.n_trials)}
+        summary["sampler"] = tuning_sampler_metadata(
+            str(tuning_config.engine),
+            n_startup_trials=min(10, tuning_config.n_trials),
+        )
         summary["pruner"] = {"name": "NopPruner", "enabled": False}
 
         summary_path = root_output_path / "hyperparameter_tuning_summary.json"

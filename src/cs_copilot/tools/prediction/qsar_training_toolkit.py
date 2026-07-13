@@ -22,7 +22,7 @@ from cs_copilot.tools.chemistry.standardize import (
 from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 from .chemprop_toolkit import ChempropToolkit
-from .hyperparameter_tuning import describe_backend_hyperparameters
+from .hyperparameter_tuning import describe_backend_hyperparameters, describe_tuning_engines
 from .lightgbm_toolkit import LightGBMToolkit
 from .qsar_reporting import build_training_reporting_handoff
 from .qsar_response_compaction import (
@@ -467,6 +467,7 @@ class QSARTrainingToolkit(Toolkit):
 
         self.register(self.describe_qsar_training_environment)
         self.register(self.describe_backend_hyperparameters)
+        self.register(self.describe_tuning_engines)
         self.register(self.prepare_training_dataset)
         self.register(self.train_qsar_model)
         self.register(self.train_chemprop_model)
@@ -485,12 +486,17 @@ class QSARTrainingToolkit(Toolkit):
             "tabular_representations": describe_tabular_representations(),
             "automatic_tabular_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             "backend_hyperparameters": describe_backend_hyperparameters(),
+            "tuning_engines": describe_tuning_engines(),
             "toolkit": "QSARTrainingToolkit",
         }
 
     def describe_backend_hyperparameters(self, backend_name: Optional[str] = None) -> Dict[str, Any]:
         """Describe Qsaria-supported direct and tunable backend hyperparameters."""
         return describe_backend_hyperparameters(backend_name)
+
+    def describe_tuning_engines(self, engine_name: Optional[str] = None) -> Dict[str, Any]:
+        """Describe shared tuning engines and their real backend availability."""
+        return describe_tuning_engines(engine_name)
 
     def backend_mapping(self) -> Dict[str, Any]:
         """Return the backend instances used by the training facade."""
