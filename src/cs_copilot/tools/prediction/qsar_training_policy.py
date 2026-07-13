@@ -94,13 +94,7 @@ def _split_templates(protocol: str) -> List[Dict[str, Any]]:
                 "backend_split_type": "random",
                 "primary": True,
                 "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "label": "scaffold",
-                "backend_split_type": "scaffold_balanced",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
+            }
         ]
     if protocol == "robust_qsar":
         return [
@@ -488,10 +482,7 @@ def resolve_validation_protocol(
 ) -> Dict[str, Any]:
     protocol = (requested_protocol or "").strip().lower()
     if not protocol:
-        if training_profile == "local_light":
-            protocol = "fast_local"
-        else:
-            protocol = "standard_qsar"
+        protocol = "standard_qsar"
 
     if protocol == "fast_local":
         resolved_seed_policy = resolve_seed_policy(
@@ -516,7 +507,7 @@ def resolve_validation_protocol(
         )
         return {
             "protocol": "standard_qsar",
-            "reason": "Trustworthy QSAR default: compare a conventional random split against a scaffold-aware split.",
+            "reason": "Standard QSAR default: one fixed random 80/10/10 train/validation/test split.",
             "split_runs": resolved_seed_policy["split_runs"],
             "seed_policy": resolved_seed_policy,
         }
@@ -552,7 +543,9 @@ def resolve_validation_protocol(
             "seed_policy": resolved_seed_policy,
         }
 
-    fallback_protocol = "fast_local" if training_profile == "local_light" else "standard_qsar"
+    # The profile may alter compute resources, never the scientific default.
+    # A plain training request always receives the fixed 80/10/10 protocol.
+    fallback_protocol = "standard_qsar"
     resolved_seed_policy = resolve_seed_policy(
         protocol=fallback_protocol,
         mode=seed_policy_mode,

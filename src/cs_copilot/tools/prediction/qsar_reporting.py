@@ -133,6 +133,34 @@ def _training_metric_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
     target = next(iter(result.get("target_columns") or []), None)
     ad_splits = ((result.get("applicability_domain") or {}).get("split_score_summaries") or {})
     rows: List[Dict[str, Any]] = []
+    selection = result.get("selection_validation") or {}
+    selection_metrics = selection.get("metrics") if isinstance(selection, Mapping) else None
+    if isinstance(selection_metrics, Mapping):
+        if any(
+            subset in selection_metrics for subset in ("all", "in_domain", "out_of_domain")
+        ):
+            for subset in ("all", "in_domain", "out_of_domain"):
+                metrics = selection_metrics.get(subset)
+                if isinstance(metrics, Mapping) and metrics:
+                    rows.append(
+                        {
+                            "source": "validation de sélection",
+                            "target": target,
+                            "ad_subset": subset,
+                            "n": metrics.get("n"),
+                            "metrics": metrics,
+                        }
+                    )
+        elif selection_metrics:
+            rows.append(
+                {
+                    "source": "validation de sélection",
+                    "target": target,
+                    "ad_subset": "all",
+                    "n": selection_metrics.get("n"),
+                    "metrics": selection_metrics,
+                }
+            )
     for split_name, source in (
         ("validation", "validation interne"),
         ("test", "test interne"),
@@ -376,6 +404,24 @@ def build_training_reporting_handoff(result: Mapping[str, Any]) -> Dict[str, Any
             f"validation={result.get('validation_count')}, "
             f"test={result.get('test_count')}"
         )
+    tuning = result.get("hyperparameter_tuning") or {}
+    if isinstance(tuning, Mapping):
+        objective = tuning.get("objective") or {}
+        protocol_lines.extend(
+            [
+                "- Tuning: "
+                f"moteur=`{tuning.get('engine') or 'non specifie'}`, "
+                f"trials={tuning.get('completed_trials')}/{tuning.get('requested_trials')}, "
+                f"objectif=`{objective.get('metric') or 'non specifie'}` "
+                f"sur `{objective.get('subset') or 'all'}`.",
+                "- Sélection: validation de sélection; test final réservé au refit train + validation.",
+            ]
+        )
+        selection_protocol = tuning.get("selection_protocol") or {}
+        if selection_protocol.get("applicability_domain_used_for_selection") is False:
+            protocol_lines.append(
+                "- Note Chemprop: la sélection utilise `val_loss` globale native; l'AD n'influence pas le classement."
+            )
     curation = result.get("curation") or {}
     curation_summary = (
         "### Dataset et curation\n\n"

@@ -127,7 +127,10 @@ def _file_fingerprint(path: Path) -> Dict[str, Any]:
 
 
 def _validate_split_payload(
-    split_payload: Sequence[Mapping[str, Sequence[int]]], row_count: int
+    split_payload: Sequence[Mapping[str, Sequence[int]]],
+    row_count: int,
+    *,
+    allow_empty_test: bool = False,
 ) -> Dict[str, int]:
     if not split_payload or not isinstance(split_payload[0], Mapping):
         raise InvalidPredictionInputError(
@@ -153,7 +156,7 @@ def _validate_split_payload(
                 f"Chemprop split payload is missing `{split_name}` indices."
             )
         indices = [int(index) for index in raw_indices]
-        if not indices:
+        if not indices and not (allow_empty_test and split_name == "test"):
             raise InvalidPredictionInputError(
                 f"Chemprop split payload has an empty `{split_name}` split."
             )
@@ -185,6 +188,7 @@ def materialize_chemprop_inputs(
     split_payload: Sequence[Mapping[str, Sequence[int]]],
     split_label: str,
     seed: int | None,
+    allow_empty_test: bool = False,
 ) -> Dict[str, Any]:
     """Write Chemprop-clean CSV and native splits-file aligned to that CSV."""
     source_path = Path(source_csv).expanduser()
@@ -254,7 +258,11 @@ def materialize_chemprop_inputs(
                     "to use the same number of classes."
                 )
 
-    split_counts = _validate_split_payload(split_payload, len(clean))
+    split_counts = _validate_split_payload(
+        split_payload,
+        len(clean),
+        allow_empty_test=allow_empty_test,
+    )
     split_map = split_payload[0]
     canonical_split = [
         {

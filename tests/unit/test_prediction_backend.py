@@ -1093,7 +1093,11 @@ def test_model_registry_persistence_copies_modern_applicability_domain(monkeypat
         agent=agent,
     )
 
-    result = toolkit.persist_registered_model(model_id="session_model", agent=agent)
+    result = toolkit.persist_registered_model(
+        model_id="session_model",
+        applicability_domain={"methods": ["bounding_box"]},
+        agent=agent,
+    )
 
     persisted_metadata = json.loads(Path(result["metadata_path"]).read_text())
     persisted_ad = persisted_metadata["applicability_domain"]
@@ -1628,6 +1632,46 @@ def test_training_plots_build_classification_artifacts(tmp_path):
     assert "calibration_curve_random" in artifacts
     assert "positive_probability_distribution_random" in artifacts
     assert not any(key.startswith(("parity_plot", "residuals_plot")) for key in artifacts)
+    assert all(Path(path).exists() for path in artifacts.values())
+
+
+def test_training_plots_build_regression_artifacts_for_tuned_refit(tmp_path):
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("smiles,Y\nCCO,1.0\nCCN,2.0\nCCC,3.0\nCCCl,4.0\n")
+    predictions_path = tmp_path / "predictions.csv"
+    predictions_path.write_text(
+        "Y,prediction\n1.1,1.1\n1.9,1.9\n3.2,3.2\n3.8,3.8\n"
+    )
+    splits_path = tmp_path / "splits.json"
+    splits_path.write_text(json.dumps([{"train": [], "test": [0, 1, 2, 3]}]))
+    primary_run = {
+        "strategy_label": "tuned_refit",
+        "strategy": "tuned_refit",
+        "backend_split_type": "random",
+        "splits_path": str(splits_path),
+        "test_predictions_path": str(predictions_path),
+    }
+
+    artifacts = build_training_plots_if_possible(
+        train_csv=str(train_csv),
+        split_results=[primary_run],
+        primary_run=primary_run,
+        root_artifacts={
+            "splits_path": str(splits_path),
+            "test_predictions_path": str(predictions_path),
+        },
+        root_output_dir=tmp_path,
+        target_column="Y",
+        task_type="regression",
+    )
+
+    assert {
+        "target_distribution",
+        "target_distribution_by_split",
+        "parity_plot_random",
+        "parity_plot_random_rmse",
+        "residuals_plot_random",
+    } <= set(artifacts)
     assert all(Path(path).exists() for path in artifacts.values())
 
 

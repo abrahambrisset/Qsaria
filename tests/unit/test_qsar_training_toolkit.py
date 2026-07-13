@@ -231,7 +231,7 @@ def _fake_cv_train_result(tmp_path: Path, *, backend_name: str, representation_n
     }
 
 
-def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_path, monkeypatch):
+def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     called_representations: list[str] = []
 
@@ -270,31 +270,16 @@ def test_standard_qsar_tabular_training_runs_modern_representation_campaign(tmp_
         validation_protocol="standard_qsar",
     )
 
-    assert result["campaign_started"] is True
-    assert result["representations"] == [
-        "rdkit_all",
-        "morgan_only",
-        "morgan_count_only",
-    ]
-    assert called_representations == result["representations"]
-    assert len(result["recommended_registry_payloads"]) == 3
-    assert result["persistence_plan"]["persist_all_candidates"] is True
-    assert result["persistence_plan"]["candidate_count"] == 3
-    assert len(result["candidate_registry_payloads"]) == 3
-    assert all(
-        item["registry_payload"].get("model_id") for item in result["candidate_registry_payloads"]
-    )
-    assert result["campaign_duration_seconds"] >= 0
+    assert called_representations == ["rdkit_all"]
+    assert result["representation_name"] == "rdkit_all"
+    assert "campaign_started" not in result
+    assert "candidate_registry_payloads" not in result
     assert "feature_columns" not in result
     assert result["feature_columns_count"] == 64
     assert result["feature_columns_omitted_count"] == 44
-    assert "feature_columns" not in result["candidate_results"][0]
-    assert result["candidate_results"][0]["feature_columns_count"] == 64
-    assert "feature_preparation_duration_seconds" in result["candidate_results"][0]
-    assert "training_duration_seconds" in result["candidate_results"][0]
-    first_payload_profile = result["recommended_registry_payloads"][0]["inference_profile"]
-    assert "feature_columns" not in first_payload_profile
-    assert first_payload_profile["feature_columns_count"] == 64
+    inference_profile = result["recommended_registry_payload"]["inference_profile"]
+    assert "feature_columns" not in inference_profile
+    assert inference_profile["feature_columns_count"] == 64
 
 
 def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monkeypatch):

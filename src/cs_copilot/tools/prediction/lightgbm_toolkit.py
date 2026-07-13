@@ -6,8 +6,10 @@ Toolkit exposing LightGBM-backed tabular QSAR workflows.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,7 +24,16 @@ from cs_copilot.tools.activity_cliffs import (
     split_activity_cliff_args,
 )
 
+from .applicability_domain import fit_modern_applicability_domain, score_modern_applicability_domain
 from .backend import PredictionTaskSpec
+from .hyperparameter_tuning import (
+    HYPERPARAMETER_CONTRACT_VERSION,
+    HyperparameterTuningError,
+    LightGBMOptunaAdapter,
+    build_tuning_progress_plot,
+    normalize_tuning_config,
+    tuning_metadata_for_catalog,
+)
 from .lightgbm_backend import LightGBMBackend
 from .qsar_splitters import (
     build_full_train_split_payload,
@@ -58,6 +69,8 @@ from .training_orchestration import (
     build_cross_validation_artifacts,
     build_training_plots_if_possible,
     collect_training_bundle_files,
+    compute_classification_metrics,
+    compute_regression_metrics,
     materialize_primary_protocol_artifacts,
     normalize_json_list_argument,
     strip_unnamed_columns,
@@ -65,6 +78,14 @@ from .training_orchestration import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ad_status_series(applicability_domain_result: Dict[str, Any]) -> Optional[pd.Series]:
+    """Return AD statuses without evaluating a pandas DataFrame as a boolean."""
+    scores = applicability_domain_result.get("scores")
+    if not isinstance(scores, pd.DataFrame):
+        return None
+    return scores.get("ad_status")
 
 
 class LightGBMToolkit(Toolkit):
@@ -124,20 +145,20 @@ class LightGBMToolkit(Toolkit):
             return {
                 **base,
                 "n_estimators": 1000,
-                "early_stopping_rounds": 50,
+                "early_stopping_rounds": 0,
                 "n_jobs": 8,
             }
         if profile == "local_standard":
             return {
                 **base,
                 "n_estimators": 500,
-                "early_stopping_rounds": 50,
+                "early_stopping_rounds": 0,
                 "n_jobs": 4,
             }
         return {
             **base,
             "n_estimators": 300,
-            "early_stopping_rounds": 30,
+            "early_stopping_rounds": 0,
             "n_jobs": 1,
         }
 
@@ -153,11 +174,6 @@ class LightGBMToolkit(Toolkit):
         ) -> Dict[str, Any]:
             if allow_heavy_compute:
                 if profile == "heavy_validation":
-                    merged["n_estimators"] = max(int(merged.get("n_estimators", 1000)), 1000)
-                    merged["early_stopping_rounds"] = max(
-                        int(merged.get("early_stopping_rounds", 50)),
-                        50,
-                    )
                     merged["n_jobs"] = resolve_backend_n_jobs(
                         compute_env,
                         backend_name="lightgbm",
@@ -165,18 +181,6 @@ class LightGBMToolkit(Toolkit):
                         requested_n_jobs=requested_n_jobs,
                     )
                 return merged
-            if profile == "local_light":
-                merged["n_estimators"] = min(int(merged.get("n_estimators", 300)), 300)
-                merged["early_stopping_rounds"] = min(
-                    int(merged.get("early_stopping_rounds", 30)),
-                    30,
-                )
-            elif profile == "local_standard":
-                merged["n_estimators"] = min(int(merged.get("n_estimators", 500)), 500)
-                merged["early_stopping_rounds"] = min(
-                    int(merged.get("early_stopping_rounds", 50)),
-                    50,
-                )
             merged["n_jobs"] = resolve_backend_n_jobs(
                 compute_env,
                 backend_name="lightgbm",
@@ -684,6 +688,371 @@ class LightGBMToolkit(Toolkit):
             coerce_numbers=argument_name == "split_sizes",
         )
 
+    def _train_tuned_holdout(
+        self,
+        *,
+        train_csv: str,
+        resolved_output_dir: str,
+        task: PredictionTaskSpec,
+        protocol_policy: Dict[str, Any],
+        training_policy: Dict[str, Any],
+        split_source_df: pd.DataFrame,
+        split_run: Dict[str, Any],
+        feature_columns: List[str],
+        categorical_feature_columns: List[str],
+        representation_name: Optional[str],
+        direct_model_args: Dict[str, Any],
+        raw_tuning_config: Optional[Dict[str, Any]],
+        applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
+    ) -> Dict[str, Any]:
+        """Tune one fixed train/validation/test holdout, then refit on train+validation."""
+        total_started_at = project_now()
+        root_output_path = Path(resolved_output_dir)
+        effective_feature_columns = list(feature_columns) or [
+            str(column)
+            for column in split_source_df.columns
+            if column not in set(task.target_columns + task.smiles_columns)
+            and pd.api.types.is_numeric_dtype(split_source_df[column])
+        ]
+        if not effective_feature_columns:
+            raise HyperparameterTuningError(
+                "LightGBM tuning requires numeric feature columns or a prepared tabular representation."
+            )
+        split_sizes = split_run.get("split_sizes") or training_policy["extra_args"].get(
+            "split_sizes"
+        )
+        split_payload = split_run.get("split_payload") or build_qsar_split_payload(
+            df=split_source_df,
+            split_type=split_run["backend_split_type"],
+            split_sizes=split_sizes,
+            random_state=int(split_run["seed"]),
+            smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+            feature_columns=effective_feature_columns,
+        )
+        split_indices = split_payload[0]
+        train_indices = [int(item) for item in split_indices.get("train") or []]
+        validation_indices = [int(item) for item in split_indices.get("val") or []]
+        test_indices = [int(item) for item in split_indices.get("test") or []]
+        if not train_indices or not validation_indices or not test_indices:
+            raise HyperparameterTuningError(
+                "Hyperparameter tuning V1 requires non-empty train, validation, and test splits."
+            )
+
+        model_parameter_names = {
+            "n_estimators",
+            "learning_rate",
+            "num_leaves",
+            "max_depth",
+            "subsample",
+            "colsample_bytree",
+            "min_child_samples",
+            "reg_alpha",
+            "reg_lambda",
+            "min_split_gain",
+            "boosting_type",
+        }
+        fixed_model_args = {
+            key: value for key, value in direct_model_args.items() if key in model_parameter_names
+        }
+        effective_tuning_request = dict(raw_tuning_config or {})
+        effective_tuning_request.setdefault("seed", protocol_policy["seed_policy"]["model_seed"])
+        tuning_config = normalize_tuning_config(
+            effective_tuning_request,
+            backend_name="lightgbm",
+            task_type=task.task_type,
+            eligible=True,
+            fixed_parameters=fixed_model_args,
+        )
+        if tuning_config is None:
+            raise HyperparameterTuningError("Internal error: tuned holdout requires an enabled config.")
+        if (
+            int(direct_model_args.get("early_stopping_rounds") or 0) > 0
+            and "n_estimators" in tuning_config.parameters
+        ):
+            raise HyperparameterTuningError(
+                "early_stopping_rounds cannot be used while n_estimators is optimized."
+            )
+        requested_early_stopping_rounds = int(
+            direct_model_args.get("early_stopping_rounds") or 0
+        )
+
+        feature_frame = split_source_df[effective_feature_columns].copy().reset_index(drop=True)
+        base_args = {
+            **{
+                key: value
+                for key, value in training_policy["extra_args"].items()
+                if key not in {"seed_policy", "split_payload", "validation_strategy"}
+            },
+            "feature_columns": effective_feature_columns,
+            "categorical_feature_columns": categorical_feature_columns,
+            "split_sizes": split_sizes,
+            "split_type": split_run["backend_split_type"],
+            "random_state": int(protocol_policy["seed_policy"]["model_seed"]),
+            "validation_protocol": protocol_policy["protocol"],
+            "early_stopping_rounds": requested_early_stopping_rounds,
+            "deterministic": True,
+        }
+        temporary_payload = [{"train": train_indices, "val": validation_indices}]
+        with tempfile.TemporaryDirectory(prefix="qsaria_lightgbm_tuning_") as temporary_dir:
+            temporary_ad = fit_modern_applicability_domain(
+                feature_frame=feature_frame.iloc[train_indices].reset_index(drop=True),
+                feature_columns=effective_feature_columns,
+                output_dir=Path(temporary_dir) / "applicability_domain",
+                model_id="lightgbm_tuning",
+                feature_space=representation_name or "tabular",
+                representation_name=representation_name,
+                methods=applicability_domain_methods,
+                random_state=int(protocol_policy["seed_policy"]["model_seed"]),
+                all_feature_frame=feature_frame,
+                train_indices=train_indices,
+                split_indices=split_indices,
+                similarity_top_k_neighbors=similarity_top_k_neighbors,
+                similarity_threshold_percentile=similarity_threshold_percentile,
+            )
+            validation_ad = score_modern_applicability_domain(
+                feature_frame=feature_frame.iloc[validation_indices].reset_index(drop=True),
+                applicability_domain=temporary_ad,
+                row_indices=validation_indices,
+            )
+            validation_status = _ad_status_series(validation_ad)
+            if validation_status is None:
+                raise HyperparameterTuningError("Could not score the validation applicability domain.")
+            if (
+                tuning_config.objective.subset == "in_domain"
+                and not bool(validation_status.eq("in_domain").any())
+            ):
+                raise HyperparameterTuningError(
+                    "The validation split contains no in-domain molecule; choose objective.subset='all' "
+                    "or revise the applicability-domain configuration."
+                )
+
+            def evaluate(candidate_parameters: Dict[str, Any]) -> Dict[str, Any]:
+                candidate = self.backend.train_model(
+                    train_csv=train_csv,
+                    output_dir=temporary_dir,
+                    task=task,
+                    extra_args={
+                        **base_args,
+                        **candidate_parameters,
+                        "split_payload": temporary_payload,
+                        "persist_artifacts": False,
+                        "return_prediction_frames": True,
+                    },
+                )
+                prediction_frame = candidate.get("validation_prediction_frame")
+                if not isinstance(prediction_frame, pd.DataFrame) or prediction_frame.empty:
+                    raise RuntimeError("LightGBM candidate did not return validation predictions.")
+                status = validation_status.reset_index(drop=True)
+                metrics_by_subset: Dict[str, Dict[str, Any]] = {
+                    "all": dict((candidate.get("metrics") or {}).get("validation") or {})
+                }
+                for subset, mask in {
+                    "in_domain": status.eq("in_domain"),
+                    "out_of_domain": status.ne("in_domain"),
+                }.items():
+                    selected = prediction_frame.loc[mask.to_numpy()].reset_index(drop=True)
+                    if selected.empty:
+                        metrics_by_subset[subset] = {}
+                    elif task.task_type == "regression":
+                        metrics_by_subset[subset] = compute_regression_metrics(
+                            selected["y_true"],
+                            selected["y_pred"],
+                            target_column=task.target_columns[0],
+                        )
+                    else:
+                        metrics_by_subset[subset] = compute_classification_metrics(
+                            selected["y_true"],
+                            selected["y_pred"],
+                            class_labels=candidate.get("class_labels") or None,
+                            target_column=task.target_columns[0],
+                        )
+                selected_metrics = metrics_by_subset.get(tuning_config.objective.subset) or {}
+                score = selected_metrics.get(tuning_config.objective.metric)
+                if score is None:
+                    raise RuntimeError(
+                        f"Objective {tuning_config.objective.metric} is unavailable on "
+                        f"{tuning_config.objective.subset}."
+                    )
+                return {
+                    "objective": float(score),
+                    "metrics": metrics_by_subset,
+                    "diagnostics": {
+                        "validation_count": len(validation_indices),
+                        "in_domain_count": int(status.eq("in_domain").sum()),
+                        "out_of_domain_count": int(status.ne("in_domain").sum()),
+                        "in_domain_coverage": float(status.eq("in_domain").mean()),
+                        "applicability_domain": validation_ad.get("summary") or {},
+                    },
+                }
+
+            summary = LightGBMOptunaAdapter().run(
+                config=tuning_config,
+                fixed_parameters=fixed_model_args,
+                evaluate=evaluate,
+            ).as_dict()
+
+        summary["seed"] = tuning_config.seed
+        summary["contract_version"] = HYPERPARAMETER_CONTRACT_VERSION
+        try:
+            summary["engine_version"] = importlib.metadata.version("optuna")
+        except importlib.metadata.PackageNotFoundError:  # pragma: no cover - guarded by adapter
+            summary["engine_version"] = None
+        summary["sampler"] = {"name": "TPESampler", "n_startup_trials": min(10, tuning_config.n_trials)}
+        summary["pruner"] = {"name": "NopPruner", "enabled": False}
+
+        summary_path = root_output_path / "hyperparameter_tuning_summary.json"
+        summary["summary_path"] = str(summary_path)
+        tuning_plot_path = build_tuning_progress_plot(
+            summary,
+            output_dir=root_output_path / "artifacts" / "plots",
+        )
+        tuning_plot_artifacts = (
+            {"hyperparameter_tuning_progress": tuning_plot_path}
+            if tuning_plot_path
+            else {}
+        )
+        if tuning_plot_artifacts:
+            summary["plot_artifacts"] = tuning_plot_artifacts
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+        if summary.get("status") == "failed":
+            raise HyperparameterTuningError(summary.get("reason") or "LightGBM tuning failed.")
+        best_trial = summary.get("best_trial") or {}
+        selected_parameters = dict(best_trial.get("params") or fixed_model_args)
+        final_split_payload = [
+            {
+                "train": [*train_indices, *validation_indices],
+                "test": test_indices,
+                "metadata": {
+                    **dict(split_indices.get("metadata") or {}),
+                    "refit_on_train_validation": True,
+                },
+            }
+        ]
+        final_run = self.backend.train_model(
+            train_csv=train_csv,
+            output_dir=resolved_output_dir,
+            task=task,
+            extra_args={
+                **base_args,
+                **selected_parameters,
+                "split_payload": final_split_payload,
+                "early_stopping_rounds": 0,
+                "refit_on_train_validation": True,
+            },
+        )
+        final_run.update(
+            {
+                "strategy": "tuned_refit",
+                "strategy_family": "tuned_refit",
+                "strategy_label": "tuned_refit",
+                "backend_split_type": split_run["backend_split_type"],
+                "seed": split_run["seed"],
+                "validation_protocol": protocol_policy["protocol"],
+                "output_dir": resolved_output_dir,
+                "split_payload": final_split_payload,
+            }
+        )
+        root_artifacts = self._materialize_primary_protocol_artifacts(
+            root_output_dir=root_output_path,
+            primary_run=final_run,
+        )
+        ad_summary = self._build_applicability_domain(
+            train_csv=train_csv,
+            primary_run=final_run,
+            primary_output_dir=root_output_path,
+            task=task,
+            feature_columns=effective_feature_columns,
+            feature_space=representation_name,
+            prediction_artifact_paths={"test": root_artifacts.get("test_predictions_path")},
+            applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
+        )
+        standard_plot_artifacts = build_training_plots_if_possible(
+            train_csv=train_csv,
+            split_results=[final_run],
+            primary_run=final_run,
+            root_artifacts=root_artifacts,
+            root_output_dir=root_output_path,
+            target_column=task.target_columns[0] if task.target_columns else None,
+            task_type=task.task_type,
+        )
+        plot_artifacts = {**standard_plot_artifacts, **tuning_plot_artifacts}
+        selection_metrics = (best_trial.get("metrics") or {}).get("all") or {}
+        final_metrics = dict(final_run.get("metrics") or {})
+        final_metrics["validation"] = selection_metrics
+        total_completed_at = project_now()
+        training_durations = summarize_training_durations(
+            split_results=[final_run],
+            total_started_at=total_started_at,
+            total_completed_at=total_completed_at,
+        )
+        trial_duration_seconds = round(
+            sum(
+                float(trial["duration_seconds"])
+                for trial in summary.get("trials") or []
+                if trial.get("duration_seconds") is not None
+            ),
+            3,
+        )
+        training_durations["hyperparameter_tuning"] = {
+            "engine": summary.get("engine"),
+            "requested_trials": summary.get("requested_trials"),
+            "completed_trials": summary.get("completed_trials"),
+            "failed_trials": summary.get("failed_trials"),
+            "trial_duration_seconds": trial_duration_seconds,
+        }
+        result = dict(final_run)
+        result.update(
+            {
+                "model_path": root_artifacts.get("best_model_path") or final_run.get("model_path"),
+                "best_model_path": root_artifacts.get("best_model_path") or final_run.get("model_path"),
+                "validation_predictions_path": None,
+                "test_predictions_path": root_artifacts.get("test_predictions_path"),
+                "config_path": root_artifacts.get("config_path") or final_run.get("config_path"),
+                "splits_path": root_artifacts.get("splits_path") or final_run.get("splits_path"),
+                "metrics": final_metrics,
+                "selection_validation": {
+                    "metrics": best_trial.get("metrics") or {},
+                    "diagnostics": best_trial.get("diagnostics") or {},
+                },
+                "early_stopping_final_refit_note": (
+                    "Disabled only for the final 90% refit because that fit has no validation split."
+                    if requested_early_stopping_rounds > 0
+                    else None
+                ),
+                "hyperparameter_tuning": summary,
+                "hyperparameter_tuning_summary_path": str(summary_path),
+                "catalog_hyperparameter_tuning": tuning_metadata_for_catalog(summary),
+                "plot_artifacts": plot_artifacts,
+                "applicability_domain": ad_summary,
+                "validation_protocol": protocol_policy["protocol"],
+                "validation_protocol_reason": protocol_policy["reason"],
+                "validation_strategy": protocol_policy.get("validation_strategy"),
+                "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
+                "seed_policy": protocol_policy["seed_policy"],
+                "reproducibility": seed_policy_reproducibility_metadata(protocol_policy["seed_policy"]),
+                "training_profile": training_policy["training_profile"],
+                "compute_environment": training_policy["compute_environment"],
+                "effective_train_args": final_run.get("effective_train_args") or {},
+                "split_results": [final_run],
+                "baseline_split_results": [final_run],
+                "validation_assessment": assess_protocol_results([final_run]),
+                "training_durations": training_durations,
+                "catalog_model_policy": "tuned_final_refit_only",
+                "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                "canonical_summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                "train_csv": train_csv,
+                "target_columns": list(task.target_columns),
+                "feature_columns": effective_feature_columns,
+                "categorical_feature_columns": categorical_feature_columns,
+            }
+        )
+        write_training_summary(Path(result["summary_path"]), result)
+        return result
+
     def train_lightgbm_model(
         self,
         train_csv: str,
@@ -707,6 +1076,7 @@ class LightGBMToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -736,6 +1106,11 @@ class LightGBMToolkit(Toolkit):
         root_output_path.mkdir(parents=True, exist_ok=True)
 
         requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_hyperparameter_tuning = (
+            hyperparameter_tuning
+            if hyperparameter_tuning is not None
+            else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
@@ -775,6 +1150,7 @@ class LightGBMToolkit(Toolkit):
             requested_extra_args.setdefault("random_state", random_state)
         requested_extra_args.setdefault("split_type", split_type)
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
+        direct_model_args = dict(requested_extra_args)
 
         target_column = normalized_target_columns[0] if normalized_target_columns else None
         activity_cliffs: Dict[str, Any] = {}
@@ -846,6 +1222,58 @@ class LightGBMToolkit(Toolkit):
                 random_state=int(
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
+            )
+        split_runs = list(protocol_policy.get("split_runs") or [])
+        single_holdout = (
+            len(split_runs) == 1
+            and not is_cv_protocol
+            and len(split_runs[0].get("split_sizes") or normalized_split_sizes or []) == 3
+        )
+        tuning_config = normalize_tuning_config(
+            requested_hyperparameter_tuning,
+            backend_name="lightgbm",
+            task_type=task_type,
+            eligible=single_holdout,
+            fixed_parameters={
+                key
+                for key in direct_model_args
+                if key
+                in {
+                    "n_estimators",
+                    "learning_rate",
+                    "num_leaves",
+                    "max_depth",
+                    "subsample",
+                    "colsample_bytree",
+                    "min_child_samples",
+                    "reg_alpha",
+                    "reg_lambda",
+                    "min_split_gain",
+                    "boosting_type",
+                }
+            },
+        )
+        if tuning_config is not None:
+            if activity_args.get("activity_cliff_feedback"):
+                raise HyperparameterTuningError(
+                    "Activity-cliff feedback loops cannot be combined with hyperparameter tuning in V1."
+                )
+            return self._train_tuned_holdout(
+                train_csv=train_csv,
+                resolved_output_dir=resolved_output_dir,
+                task=task,
+                protocol_policy=protocol_policy,
+                training_policy=training_policy,
+                split_source_df=split_source_df,
+                split_run=split_runs[0],
+                feature_columns=list(normalized_feature_columns or []),
+                categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+                representation_name=representation_name,
+                direct_model_args=direct_model_args,
+                raw_tuning_config=requested_hyperparameter_tuning,
+                applicability_domain_methods=requested_ad_methods,
+                similarity_top_k_neighbors=requested_similarity_top_k,
+                similarity_threshold_percentile=requested_similarity_percentile,
             )
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None

@@ -22,13 +22,16 @@ from cs_copilot.tools.chemistry.standardize import (
 from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 from .chemprop_toolkit import ChempropToolkit
+from .hyperparameter_tuning import describe_backend_hyperparameters
 from .lightgbm_toolkit import LightGBMToolkit
+from .qsar_reporting import build_training_reporting_handoff
 from .qsar_response_compaction import (
     compact_applicability_domain_for_response as _compact_applicability_domain_for_response,
+)
+from .qsar_response_compaction import (
     compact_registry_payload_for_response,
     feature_columns_summary_for_response,
 )
-from .qsar_reporting import build_training_reporting_handoff
 from .qsar_training_policy import describe_compute_environment
 from .session_state import (
     bundle_artifacts,
@@ -463,6 +466,7 @@ class QSARTrainingToolkit(Toolkit):
         self.block_prepare_training_dataset = block_prepare_training_dataset
 
         self.register(self.describe_qsar_training_environment)
+        self.register(self.describe_backend_hyperparameters)
         self.register(self.prepare_training_dataset)
         self.register(self.train_qsar_model)
         self.register(self.train_chemprop_model)
@@ -480,8 +484,13 @@ class QSARTrainingToolkit(Toolkit):
             },
             "tabular_representations": describe_tabular_representations(),
             "automatic_tabular_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
+            "backend_hyperparameters": describe_backend_hyperparameters(),
             "toolkit": "QSARTrainingToolkit",
         }
+
+    def describe_backend_hyperparameters(self, backend_name: Optional[str] = None) -> Dict[str, Any]:
+        """Describe Qsaria-supported direct and tunable backend hyperparameters."""
+        return describe_backend_hyperparameters(backend_name)
 
     def backend_mapping(self) -> Dict[str, Any]:
         """Return the backend instances used by the training facade."""
@@ -961,6 +970,13 @@ class QSARTrainingToolkit(Toolkit):
                     result.get("feature_preparation") or {}
                 ),
                 "training_summary_path": summary_path,
+                "hyperparameter_tuning": result.get("catalog_hyperparameter_tuning")
+                or result.get("hyperparameter_tuning_metadata")
+                or {},
+                "hyperparameter_tuning_summary_path": result.get(
+                    "hyperparameter_tuning_summary_path"
+                )
+                or (result.get("hyperparameter_tuning") or {}).get("summary_path"),
                 "cross_validation": cross_validation,
                 "catalog_model_policy": result.get("catalog_model_policy"),
             },
@@ -1259,6 +1275,7 @@ class QSARTrainingToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1281,6 +1298,11 @@ class QSARTrainingToolkit(Toolkit):
             argument_name="categorical_feature_columns",
         )
         requested_extra_args = dict(extra_args or {})
+        requested_hyperparameter_tuning = (
+            hyperparameter_tuning
+            if hyperparameter_tuning is not None
+            else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
@@ -1323,6 +1345,7 @@ class QSARTrainingToolkit(Toolkit):
                 similarity_top_k_neighbors=requested_similarity_top_k,
                 similarity_threshold_percentile=requested_similarity_percentile,
                 extra_args=requested_extra_args,
+                hyperparameter_tuning=requested_hyperparameter_tuning,
                 agent=agent,
             )
             result["backend_name"] = "chemprop"
@@ -1330,12 +1353,9 @@ class QSARTrainingToolkit(Toolkit):
             result["candidate_train_csv"] = train_csv
         elif normalized_backend in {"lightgbm", "tabicl"}:
             if (
-                not representation_name
+                bool(requested_extra_args.pop("representation_campaign", False))
+                and not representation_name
                 and not normalized_feature_columns
-                and (
-                    requested_validation_strategy is not None
-                    or validation_protocol in {"standard_qsar", "robust_qsar"}
-                )
             ):
                 return self._train_tabular_representation_campaign(
                     train_csv=train_csv,
@@ -1413,6 +1433,7 @@ class QSARTrainingToolkit(Toolkit):
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
+                    hyperparameter_tuning=requested_hyperparameter_tuning,
                     agent=agent,
                 )
             else:
@@ -1435,6 +1456,7 @@ class QSARTrainingToolkit(Toolkit):
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
+                    hyperparameter_tuning=requested_hyperparameter_tuning,
                     agent=agent,
                 )
             result["backend_name"] = normalized_backend
@@ -1522,6 +1544,7 @@ class QSARTrainingToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1544,6 +1567,7 @@ class QSARTrainingToolkit(Toolkit):
             applicability_domain_methods=applicability_domain_methods,
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
+            hyperparameter_tuning=hyperparameter_tuning,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1569,6 +1593,7 @@ class QSARTrainingToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1594,6 +1619,7 @@ class QSARTrainingToolkit(Toolkit):
             applicability_domain_methods=applicability_domain_methods,
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
+            hyperparameter_tuning=hyperparameter_tuning,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1618,6 +1644,7 @@ class QSARTrainingToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1642,6 +1669,7 @@ class QSARTrainingToolkit(Toolkit):
             applicability_domain_methods=applicability_domain_methods,
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
+            hyperparameter_tuning=hyperparameter_tuning,
             extra_args=extra_args,
             agent=agent,
         )

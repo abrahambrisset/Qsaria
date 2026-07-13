@@ -10,6 +10,8 @@ import json
 import math
 import os
 import shutil
+import tempfile
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,6 +19,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
+from rdkit import Chem
+from rdkit.Chem import Descriptors, Lipinski
 
 from cs_copilot.storage.client import S3
 from cs_copilot.tools.activity_cliffs import (
@@ -30,6 +34,13 @@ from .chemprop_adapter import (
     normalize_chemprop_classification_predictions,
 )
 from .chemprop_backend import DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX, ChempropBackend
+from .hyperparameter_tuning import (
+    HYPERPARAMETER_CONTRACT_VERSION,
+    ChempropHpoptAdapter,
+    HyperparameterTuningError,
+    normalize_tuning_config,
+    tuning_metadata_for_catalog,
+)
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
@@ -1102,16 +1113,40 @@ class ChempropToolkit(Toolkit):
             raise ValueError(
                 "Chemprop split_sizes must contain [train, test] or [train, validation, test]."
             )
-        if split_type == "kmeans":
-            raise ValueError(
-                "Chemprop graph training does not support cluster holdout without an explicit "
-                "graph-compatible cluster plan. Use random/scaffold holdout or a tabular backend."
-            )
         feature_columns = [
             column
             for column in dataset.columns
             if column not in set((task.smiles_columns or []) + (task.target_columns or []))
+            and pd.api.types.is_numeric_dtype(dataset[column])
         ]
+        if split_type == "kmeans" and not feature_columns:
+            smiles_column = (task.smiles_columns or ["smiles"])[0]
+            if smiles_column not in dataset.columns:
+                raise ValueError("Chemprop cluster holdout requires a valid SMILES column.")
+
+            def _cluster_descriptors(smiles: Any) -> List[float]:
+                molecule = Chem.MolFromSmiles(str(smiles)) if pd.notna(smiles) else None
+                if molecule is None:
+                    return [0.0] * 8
+                return [
+                    float(Descriptors.MolWt(molecule)),
+                    float(Descriptors.MolLogP(molecule)),
+                    float(Descriptors.TPSA(molecule)),
+                    float(Lipinski.NumHDonors(molecule)),
+                    float(Lipinski.NumHAcceptors(molecule)),
+                    float(Lipinski.RingCount(molecule)),
+                    float(Lipinski.NumRotatableBonds(molecule)),
+                    float(Descriptors.FractionCSP3(molecule)),
+                ]
+
+            cluster_columns = [f"__qsaria_cluster_descriptor_{index}" for index in range(8)]
+            descriptor_frame = pd.DataFrame(
+                [_cluster_descriptors(value) for value in dataset[smiles_column]],
+                columns=cluster_columns,
+                index=dataset.index,
+            )
+            dataset = pd.concat([dataset, descriptor_frame], axis=1)
+            feature_columns = cluster_columns
         return build_qsar_split_payload(
             df=dataset,
             split_type=split_type,
@@ -1120,6 +1155,206 @@ class ChempropToolkit(Toolkit):
             smiles_column=(task.smiles_columns or ["smiles"])[0],
             feature_columns=feature_columns,
         )
+
+    @staticmethod
+    def _hpo_development_payload(
+        split_payload: List[Dict[str, List[int]]],
+    ) -> tuple[List[int], List[Dict[str, List[int]]]]:
+        """Return an isolated train/validation data set for Chemprop HPO.
+
+        The returned source-row indices deliberately contain no test index.
+        Keeping this transformation here makes the test exclusion auditable in
+        both the transient manifest and the final tuning summary.
+        """
+        if not split_payload:
+            raise HyperparameterTuningError("Chemprop tuning requires a holdout split payload.")
+        split_map = split_payload[0]
+        train_indices = [int(index) for index in split_map.get("train") or []]
+        validation_indices = [
+            int(index) for index in (split_map.get("val") or split_map.get("validation") or [])
+        ]
+        test_indices = [int(index) for index in split_map.get("test") or []]
+        if not train_indices or not validation_indices or not test_indices:
+            raise HyperparameterTuningError(
+                "Chemprop tuning V1 requires non-empty train, validation, and test holdout sets."
+            )
+        development_indices = [*train_indices, *validation_indices]
+        return development_indices, [
+            {
+                "train": list(range(len(train_indices))),
+                "val": list(range(len(train_indices), len(development_indices))),
+                "test": [],
+            }
+        ]
+
+    @staticmethod
+    def _extract_hpopt_parameters(
+        hpopt_output_dir: Path,
+        requested_parameters: List[str],
+        backend_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Read the winning native Chemprop configuration without retaining it.
+
+        Chemprop has used both TOML and JSON names across releases.  We accept
+        the documented forms and then keep only Qsaria's declared architecture
+        parameters.  No candidate checkpoint or Ray state crosses this method.
+        """
+        for key in ("best_params", "best_parameters", "best_hyperparameters"):
+            value = backend_result.get(key)
+            if isinstance(value, dict):
+                selected = {name: value[name] for name in requested_parameters if name in value}
+                if selected:
+                    return selected
+
+        candidates = sorted(
+            [
+                *hpopt_output_dir.rglob("*best*.toml"),
+                *hpopt_output_dir.rglob("*best*.json"),
+                *hpopt_output_dir.rglob("*hyperparameter*.toml"),
+                *hpopt_output_dir.rglob("*hyperparameter*.json"),
+            ],
+            key=lambda path: (len(path.parts), path.name),
+        )
+        for path in candidates:
+            try:
+                with path.open("rb") as fh:
+                    payload = tomllib.load(fh) if path.suffix == ".toml" else json.load(fh)
+            except (OSError, ValueError, tomllib.TOMLDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            containers = [payload]
+            for key in ("best_config", "best_params", "best_hyperparameters", "config"):
+                nested = payload.get(key)
+                if isinstance(nested, dict):
+                    containers.append(nested)
+            for item in containers:
+                selected = {name: item[name] for name in requested_parameters if name in item}
+                if selected:
+                    return selected
+        raise HyperparameterTuningError(
+            "Chemprop hpopt completed but did not expose a readable winning architecture. "
+            "No final model was trained, so the test set remains untouched."
+        )
+
+    def _run_chemprop_hpopt(
+        self,
+        *,
+        source_df: pd.DataFrame,
+        task: PredictionTaskSpec,
+        split_payload: List[Dict[str, List[int]]],
+        config: Any,
+        fixed_parameters: Dict[str, Any],
+        train_args: Dict[str, Any],
+        output_dir: Path,
+        seed: int,
+    ) -> Dict[str, Any]:
+        """Execute native Chemprop HPO on train/validation only and clean it up."""
+        ChempropHpoptAdapter().validate(config)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if config.search_space:
+            raise HyperparameterTuningError(
+                "Chemprop native hpopt V1 owns its `basic` search space; custom search_space "
+                "is not yet supported."
+            )
+        development_indices, development_split = self._hpo_development_payload(split_payload)
+        with tempfile.TemporaryDirectory(prefix="qsaria-chemprop-hpopt-") as temporary_dir:
+            temporary_path = Path(temporary_dir)
+            development_source = temporary_path / "development_source.csv"
+            source_df.iloc[development_indices].reset_index(drop=True).to_csv(
+                development_source,
+                index=False,
+            )
+            chemprop_input = materialize_chemprop_inputs(
+                source_csv=str(development_source),
+                output_dir=temporary_path / "inputs",
+                task=task,
+                split_payload=development_split,
+                split_label="hyperparameter_selection",
+                seed=seed,
+                allow_empty_test=True,
+            )
+            hpopt_args = {
+                key: value
+                for key, value in train_args.items()
+                if key
+                not in {
+                    "split_type",
+                    "split",
+                    "split_sizes",
+                    "data_seed",
+                    "validation_protocol",
+                    "validation_strategy",
+                    "seed_policy",
+                    "final_refit",
+                }
+            }
+            hpopt_args.update(
+                {
+                    "splits_file": chemprop_input["chemprop_splits_file"],
+                    "raytune_num_samples": config.n_trials,
+                    "raytune_search_algorithm": "hyperopt",
+                    "raytune_trial_scheduler": "FIFO",
+                    "raytune_num_workers": 1,
+                    "raytune_max_concurrent_trials": 1,
+                    "hyperopt_random_state_seed": seed,
+                    "tracking_metric": "val_loss",
+                    # Chemprop accepts every member of `basic` as an individual
+                    # keyword.  Passing only the non-fixed names makes a direct
+                    # user value genuinely fixed throughout the HPO campaign.
+                    "search_parameter_keywords": list(config.parameters),
+                    "data_seed": seed,
+                }
+            )
+            backend_result = self.backend.hpopt_model(
+                train_csv=chemprop_input["chemprop_training_input_csv"],
+                output_dir=str(temporary_path / "ray_output"),
+                task=task,
+                extra_args=hpopt_args,
+            )
+            best_parameters = self._extract_hpopt_parameters(
+                temporary_path,
+                list(config.parameters),
+                backend_result,
+            )
+            best_parameters = {**fixed_parameters, **best_parameters}
+
+        summary = {
+            "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+            "backend_name": "chemprop",
+            "engine": "chemprop_hpopt_hyperopt",
+            "engine_version": getattr(self.backend, "_package_version", lambda: None)(),
+            "status": "completed",
+            "seed": seed,
+            "objective": config.objective.as_dict(),
+            "requested_trials": config.n_trials,
+            "completed_trials": config.n_trials,
+            "failed_trials": 0,
+            "best_trial": {
+                "params": best_parameters,
+                "objective": "val_loss",
+            },
+            "selection_protocol": {
+                "tracking_metric": "val_loss",
+                "search_parameter_keywords": list(config.parameters),
+                "basic_architecture_space": True,
+                "raytune_search_algorithm": "hyperopt",
+                "raytune_trial_scheduler": "FIFO",
+                "raytune_num_workers": 1,
+                "raytune_max_concurrent_trials": 1,
+                "hyperopt_random_state_seed": seed,
+                "test_rows_provided_to_hpopt": 0,
+                "applicability_domain_used_for_selection": False,
+            },
+            "note": (
+                "Chemprop selection used its global native val_loss. Applicability-domain diagnostics "
+                "are computed only for the final refit and never rank a Chemprop HPO trial."
+            ),
+        }
+        summary_path = output_dir / "hyperparameter_tuning_summary.json"
+        summary["summary_path"] = str(summary_path)
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+        return summary
 
     def _summarize_training_resources(
         self,
@@ -1526,6 +1761,7 @@ class ChempropToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1550,6 +1786,11 @@ class ChempropToolkit(Toolkit):
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
         cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_hyperparameter_tuning = (
+            hyperparameter_tuning
+            if hyperparameter_tuning is not None
+            else cleaned_extra_args.pop("hyperparameter_tuning", None)
+        )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
@@ -1665,6 +1906,34 @@ class ChempropToolkit(Toolkit):
                 ),
             )
 
+        tunable_architecture_parameters = {
+            "depth",
+            "message_hidden_dim",
+            "ffn_hidden_dim",
+            "ffn_num_layers",
+            "dropout",
+        }
+        direct_architecture_parameters = {
+            key: value
+            for key, value in cleaned_extra_args.items()
+            if key in tunable_architecture_parameters
+        }
+        hpo_eligible = (
+            len(protocol_policy["split_runs"]) == 1
+            and not is_cv_protocol
+            and len(protocol_policy["split_runs"][0].get("split_sizes") or []) == 3
+            and protocol_policy["split_runs"][0].get("backend_split_type")
+            not in {"final_refit", "full_train"}
+        )
+        tuning_config = normalize_tuning_config(
+            requested_hyperparameter_tuning,
+            backend_name="chemprop",
+            task_type=task.task_type,
+            eligible=hpo_eligible,
+            fixed_parameters=direct_architecture_parameters,
+        )
+        tuning_summary: Optional[Dict[str, Any]] = None
+
         try:
             for split_run in protocol_policy["split_runs"]:
                 label = split_run["label"]
@@ -1698,6 +1967,65 @@ class ChempropToolkit(Toolkit):
                         split_sizes=run_args["split_sizes"],
                         seed=int(split_run["seed"]),
                     )
+
+                if tuning_config is not None:
+                    if tuning_config.parameters:
+                        tuning_summary = self._run_chemprop_hpopt(
+                            source_df=split_source_df,
+                            task=task,
+                            split_payload=split_payload,
+                            config=tuning_config,
+                            fixed_parameters=direct_architecture_parameters,
+                            train_args=run_args,
+                            output_dir=root_output_path,
+                            seed=int(tuning_config.seed or split_run["seed"]),
+                        )
+                        selected_parameters = dict(
+                            (tuning_summary.get("best_trial") or {}).get("params") or {}
+                        )
+                    else:
+                        tuning_summary = {
+                            "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+                            "backend_name": "chemprop",
+                            "engine": "chemprop_hpopt_hyperopt",
+                            "status": "skipped",
+                            "objective": tuning_config.objective.as_dict(),
+                            "requested_trials": tuning_config.n_trials,
+                            "completed_trials": 0,
+                            "failed_trials": 0,
+                            "reason": "All selected Chemprop tuning parameters were fixed directly.",
+                            "selection_protocol": {
+                                "tracking_metric": "val_loss",
+                                "applicability_domain_used_for_selection": False,
+                                "test_rows_provided_to_hpopt": 0,
+                            },
+                        }
+                        summary_path = root_output_path / "hyperparameter_tuning_summary.json"
+                        tuning_summary["summary_path"] = str(summary_path)
+                        summary_path.write_text(json.dumps(tuning_summary, indent=2) + "\n")
+                        selected_parameters = {}
+
+                    base_split = split_payload[0]
+                    split_payload = [
+                        {
+                            "train": [
+                                *[int(index) for index in base_split.get("train") or []],
+                                *[
+                                    int(index)
+                                    for index in (
+                                        base_split.get("val")
+                                        or base_split.get("validation")
+                                        or []
+                                    )
+                                ],
+                            ],
+                            "test": [int(index) for index in base_split.get("test") or []],
+                        }
+                    ]
+                    run_args.update(selected_parameters)
+                    run_args["split_sizes"] = [0.9, 0.1]
+                    run_args["final_refit"] = True
+                    label = "hyperparameter_final_refit"
 
                 active_run_record["current_split_label"] = label
                 if prediction_state is not None:
@@ -1939,6 +2267,21 @@ class ChempropToolkit(Toolkit):
                 total_completed_at=total_completed_at,
             )
             result["applicability_domain"] = ad_summary
+            if tuning_summary is not None:
+                result["hyperparameter_tuning"] = tuning_summary
+                result["hyperparameter_tuning_metadata"] = tuning_metadata_for_catalog(
+                    tuning_summary
+                )
+                result["selection_validation"] = {
+                    "label": "best Chemprop native hpopt trial",
+                    "objective": tuning_summary.get("objective"),
+                    "best_trial": tuning_summary.get("best_trial"),
+                    "applicability_domain_used": False,
+                }
+                result["test_final"] = {
+                    "label": "single refit on train + validation",
+                    "metrics": result.get("metrics") or {},
+                }
             result["activity_cliffs"] = activity_cliffs
             result["plot_artifacts"] = plot_artifacts
             result["trained_at"] = trained_at.isoformat()

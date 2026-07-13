@@ -1203,8 +1203,11 @@ def fit_similarity_matrix_domain(
         "row_count": row_count,
         "train_indices": resolved_train_indices,
         "split_indices": {
-            str(key): [int(item) for item in (value or [])]
+            str(key): [int(item) for item in value]
             for key, value in dict(split_indices or {}).items()
+            # QSAR split payloads also contain a mapping under ``metadata``.
+            # Only split-index sequences belong in the AD manifest.
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
         },
         "subspaces": subspaces,
         "errors": errors,

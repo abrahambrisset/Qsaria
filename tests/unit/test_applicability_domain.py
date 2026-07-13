@@ -1,5 +1,5 @@
-import pytest
 import pandas as pd
+import pytest
 
 from cs_copilot.tools.prediction.applicability_domain import (
     AD_IN_DOMAIN,
@@ -11,8 +11,8 @@ from cs_copilot.tools.prediction.applicability_domain import (
     _combine_modern_scores,
     fit_bounding_box_domain,
     fit_isolation_forest_domain,
-    fit_similarity_matrix_domain,
     fit_modern_applicability_domain,
+    fit_similarity_matrix_domain,
     score_bounding_box_domain,
     score_isolation_forest_domain,
     score_similarity_matrix_domain,
@@ -231,6 +231,37 @@ def test_similarity_matrix_rdkit_standardizes_and_ignores_zero_variance(tmp_path
     assert subspace["feature_names"] == ["desc_big"]
     assert subspace["standardization"]["mean"] == [50.0]
     assert subspace["standardization"]["std"] == [50.0]
+
+
+def test_similarity_matrix_ignores_split_metadata(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "desc_a": [0.0, 1.0, 2.0, 3.0],
+            "desc_b": [0.0, 1.0, 2.0, 3.0],
+        }
+    )
+
+    manifest = fit_similarity_matrix_domain(
+        feature_frame=frame,
+        feature_columns=["desc_a", "desc_b"],
+        output_dir=tmp_path / "ad",
+        model_id="model",
+        feature_space="rdkit_all",
+        train_indices=[0, 1],
+        split_indices={
+            "train": [0, 1],
+            "val": [2],
+            "test": [3],
+            "metadata": {"split_type": "random", "random_state": 42},
+        },
+        top_k_neighbors=1,
+    )
+
+    assert manifest["split_indices"] == {
+        "train": [0, 1],
+        "val": [2],
+        "test": [3],
+    }
 
 
 def test_similarity_matrix_rejects_unsupported_top_k(tmp_path):

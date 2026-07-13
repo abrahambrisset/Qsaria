@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Mapping, Tuple
 
+from .hyperparameter_tuning import BACKEND_TUNING_CATALOG
 from .tabular_representations import SUPPORTED_TABULAR_REPRESENTATION_NAMES
 
 
@@ -33,6 +34,7 @@ class BackendCapabilities:
         "model_0/test_predictions.csv",
         "test_predictions.csv",
     )
+    hyperparameter_tuning: Dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, object]:
         """Return a JSON-serializable representation."""
@@ -52,6 +54,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supports_applicability_domain=True,
         supports_uncertainty="none",
         gpu_support="runtime_dependent",
+        hyperparameter_tuning=BACKEND_TUNING_CATALOG["chemprop"],
     ),
     "lightgbm": BackendCapabilities(
         backend_name="lightgbm",
@@ -66,6 +69,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         supports_activity_cliff_feedback_loops=True,
         gpu_support="supported_when_available",
         test_prediction_relative_paths=("test_predictions.csv",),
+        hyperparameter_tuning=BACKEND_TUNING_CATALOG["lightgbm"],
     ),
     "tabicl": BackendCapabilities(
         backend_name="tabicl",
@@ -84,6 +88,7 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
             "tabicl_training_summary.json",
         ),
         test_prediction_relative_paths=("test_predictions.csv",),
+        hyperparameter_tuning=BACKEND_TUNING_CATALOG["tabicl"],
     ),
     "ensemble": BackendCapabilities(
         backend_name="ensemble",

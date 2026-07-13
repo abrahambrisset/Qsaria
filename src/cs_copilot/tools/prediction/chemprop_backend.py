@@ -204,12 +204,6 @@ class ChempropBackend(PredictionBackend):
             "split_type_mixed",
             "model_type",
             "hidden_size",
-            "depth",
-            "dropout",
-            "init_lr",
-            "max_lr",
-            "final_lr",
-            "warmup_epochs",
             "primary_split",
             "split_strategies",
             "random_seed",
@@ -224,14 +218,75 @@ class ChempropBackend(PredictionBackend):
             "seed_policy",
             "training_profile",
         }
+        officially_supported_direct_args = {
+            "depth",
+            "message_hidden_dim",
+            "ffn_hidden_dim",
+            "ffn_num_layers",
+            "dropout",
+            "epochs",
+            "batch_size",
+            "num_replicates",
+            "ensemble_size",
+            "num_workers",
+            "metric",
+            "multiclass_num_classes",
+            "accelerator",
+            "devices",
+            "init_lr",
+            "max_lr",
+            "final_lr",
+            "warmup_epochs",
+            "patience",
+            "tracking_metric",
+        }
+        backend_runtime_args = {
+            "splits_file",
+            "split_type",
+            "split",
+            "split_sizes",
+            "data_seed",
+            "raytune_num_samples",
+            "raytune_search_algorithm",
+            "raytune_trial_scheduler",
+            "raytune_num_workers",
+            "raytune_max_concurrent_trials",
+            "hyperopt_random_state_seed",
+            "search_parameter_keywords",
+            "hpopt_save_dir",
+        }
+        orchestration_only_args = {
+            "primary_split",
+            "split_strategies",
+            "validation_protocol",
+            "validation_strategy",
+            "seed_policy",
+            "training_profile",
+        }
+        unknown_args = sorted(
+            set(sanitized).difference(
+                officially_supported_direct_args,
+                backend_runtime_args,
+                unsupported_args,
+                orchestration_only_args,
+            )
+        )
+        if unknown_args:
+            raise InvalidPredictionInputError(
+                "Unknown Chemprop train arguments: "
+                + ", ".join(unknown_args)
+                + ". Use describe_backend_hyperparameters('chemprop') for the supported contract."
+            )
         dropped_args = sorted(arg for arg in unsupported_args if arg in sanitized)
         for arg in dropped_args:
             sanitized.pop(arg, None)
 
-        if dropped_args:
-            logger.warning(
-                "Dropping unsupported Chemprop train args for this CLI/runtime: %s",
-                ", ".join(dropped_args),
+        rejected_args = sorted(set(dropped_args).difference(orchestration_only_args))
+        if rejected_args:
+            raise InvalidPredictionInputError(
+                "Unsupported Chemprop train arguments: "
+                + ", ".join(rejected_args)
+                + ". Use describe_backend_hyperparameters('chemprop') for the supported contract."
             )
         return sanitized
 
@@ -744,6 +799,95 @@ class ChempropBackend(PredictionBackend):
                 if sanitized_extra_args.get("ensemble_size") is not None
                 else None
             ),
+        )
+        completed_at = datetime.now().astimezone()
+        return {
+            "backend": self.backend_name,
+            "command": args,
+            "output_dir": str(output_path),
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
+        }
+
+    def hpopt_model(
+        self,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        *,
+        extra_args: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run Chemprop's native Ray Tune/HyperOpt entry point.
+
+        The caller is responsible for materialising a development CSV whose
+        split file has no test rows.  This boundary is intentional: the HPO
+        command must never receive Qsaria's held-out test molecules.
+        """
+        input_path = Path(train_csv).expanduser()
+        if not input_path.exists():
+            raise InvalidPredictionInputError(f"Training CSV does not exist: {train_csv}")
+
+        output_path = Path(output_dir).expanduser()
+        output_path.mkdir(parents=True, exist_ok=True)
+        started_at = datetime.now().astimezone()
+        normalized_task_type = normalize_task_type(task.task_type)
+        chemprop_task_type = (
+            "multiclass"
+            if normalized_task_type == "multiclass_classification"
+            else normalized_task_type
+        )
+        args = [
+            "chemprop",
+            "hpopt",
+            "--data-path",
+            str(input_path),
+            "--task-type",
+            chemprop_task_type,
+            "--hpopt-save-dir",
+            str(output_path),
+        ]
+        if task.smiles_columns:
+            args.extend(["--smiles-columns", *task.smiles_columns])
+        if task.target_columns:
+            args.extend(["--target-columns", *task.target_columns])
+        if task.reaction_columns:
+            args.extend(["--reaction-columns", *task.reaction_columns])
+
+        sanitized_extra_args = self._sanitize_train_extra_args(extra_args)
+        # HPO must always use the native fixed split, HyperOpt search and FIFO
+        # scheduler.  Silently overriding those switches would be misleading.
+        required = {
+            "raytune_search_algorithm": "hyperopt",
+            "raytune_trial_scheduler": "FIFO",
+            "tracking_metric": "val_loss",
+        }
+        for name, expected in required.items():
+            supplied = sanitized_extra_args.get(name)
+            if supplied is not None and str(supplied).lower() != str(expected).lower():
+                raise InvalidPredictionInputError(
+                    f"Chemprop HPO V1 requires `{name}={expected}`, got `{supplied}`."
+                )
+            sanitized_extra_args[name] = expected
+        sanitized_extra_args.setdefault("raytune_num_samples", 50)
+        sanitized_extra_args.setdefault("search_parameter_keywords", ["basic"])
+
+        for key, value in sanitized_extra_args.items():
+            flag = f"--{key.replace('_', '-')}"
+            if isinstance(value, bool):
+                if value:
+                    args.append(flag)
+            elif isinstance(value, (list, tuple)):
+                args.extend([flag, *[str(item) for item in value]])
+            elif value is not None:
+                args.extend([flag, str(value)])
+
+        completed = self._run_cli(
+            args,
+            progress_label=f"{output_path.name}_hpopt",
+            output_dir=output_path,
         )
         completed_at = datetime.now().astimezone()
         return {

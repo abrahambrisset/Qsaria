@@ -49,7 +49,7 @@ def test_protocol_defaults_keep_compute_profile_separate_from_validation_scope()
             requested_protocol=None,
             training_profile="local_light",
         )["protocol"]
-        == "fast_local"
+        == "standard_qsar"
     )
     assert (
         resolve_validation_protocol(
@@ -108,11 +108,8 @@ def test_generated_seed_policy_changes_between_runs():
     assert first["reporting_text"] == "Politique de seeds : générées automatiquement et persistées"
     assert first["split_runs"] != second["split_runs"]
     assert first["model_seed"] != second["model_seed"]
-    assert len({item["seed"] for item in first["split_runs"]} | {first["model_seed"]}) == 3
-    assert [item["split_sizes"] for item in first["split_runs"]] == [
-        [0.8, 0.1, 0.1],
-        [0.8, 0.1, 0.1],
-    ]
+    assert len({item["seed"] for item in first["split_runs"]} | {first["model_seed"]}) == 2
+    assert [item["split_sizes"] for item in first["split_runs"]] == [[0.8, 0.1, 0.1]]
 
 
 def test_user_provided_seed_policy_is_replayable():

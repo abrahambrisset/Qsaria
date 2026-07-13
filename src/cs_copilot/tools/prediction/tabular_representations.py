@@ -113,7 +113,7 @@ def default_tabular_representation_for_protocol(
 ) -> str:
     """Return the single representation used when a protocol is not comparative."""
     normalized = str(protocol or "").strip().lower()
-    if normalized == "fast_local":
+    if normalized in {"fast_local", "standard_qsar"}:
         return "rdkit_all"
     # Keep the historical strong default for explicit single-model tabular training.
     if training_profile == "heavy_validation":

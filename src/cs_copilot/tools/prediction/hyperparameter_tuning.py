@@ -1,0 +1,796 @@
+#!/usr/bin/env python
+# coding: utf-8
+"""Shared hyperparameter-tuning contracts and lightweight study helpers.
+
+The module deliberately owns *configuration* rather than model training.  Each
+backend adapter receives a fixed development split and returns only compact
+metrics; candidate models are never part of the persisted study contract.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Protocol
+
+HYPERPARAMETER_CONTRACT_VERSION = "1.0"
+
+
+class HyperparameterTuningError(ValueError):
+    """Raised when a tuning request is invalid for a backend or protocol."""
+
+
+@dataclass(frozen=True)
+class HyperparameterSpec:
+    """A Qsaria-supported, user-facing model or training hyperparameter."""
+
+    name: str
+    description: str
+    value_type: str
+    default: Any = None
+    direct_settable: bool = True
+    tuning_supported: bool = False
+    default_tuning: bool = False
+    search_space: Optional[Dict[str, Any]] = None
+    engines: tuple[str, ...] = ()
+
+    def as_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TuningObjective:
+    metric: str
+    direction: str
+    subset: str = "in_domain"
+
+    def as_dict(self) -> Dict[str, str]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class TuningConfig:
+    enabled: bool = True
+    engine: Optional[str] = None
+    n_trials: int = 50
+    parameters: tuple[str, ...] = ()
+    search_space: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    objective: Optional[TuningObjective] = None
+    seed: Optional[int] = None
+
+    def as_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["parameters"] = list(self.parameters)
+        return payload
+
+
+@dataclass(frozen=True)
+class TuningStudySummary:
+    """Compact, JSON-safe result kept with the final training run."""
+
+    backend_name: str
+    engine: str
+    status: str
+    objective: Dict[str, Any]
+    requested_trials: int
+    completed_trials: int
+    failed_trials: int
+    best_trial: Optional[Dict[str, Any]] = None
+    trials: tuple[Dict[str, Any], ...] = ()
+    reason: Optional[str] = None
+    contract_version: str = HYPERPARAMETER_CONTRACT_VERSION
+    engine_version: Optional[str] = None
+
+    def as_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["trials"] = list(self.trials)
+        return payload
+
+
+class TuningAdapter(Protocol):
+    """Backend-specific bridge used by the common tuning registry."""
+
+    engine_name: str
+
+    def validate(self, config: TuningConfig) -> None:
+        """Validate a normalized request before any training work starts."""
+
+    def run(self, *args: Any, **kwargs: Any) -> TuningStudySummary | Dict[str, Any]:
+        """Execute the engine and return a compact, serializable result."""
+
+
+_REGRESSION_TUNING_METRICS = ("r2", "rmse", "mae")
+_CLASSIFICATION_TUNING_METRICS = ("balanced_accuracy", "roc_auc", "f1_macro", "accuracy")
+_MINIMIZE_TUNING_METRICS = {"mae", "mape", "mse", "rmse", "val_loss", "loss"}
+
+
+def _trial_metric_value(
+    trial: Mapping[str, Any],
+    *,
+    metric: str,
+    subset: str,
+) -> Optional[float]:
+    """Return one finite trial metric from its compact persisted record."""
+    if metric == "val_loss" and isinstance(trial.get("objective"), (int, float)):
+        return float(trial["objective"])
+    metrics = trial.get("metrics") or {}
+    subset_metrics = metrics.get(subset) if isinstance(metrics, Mapping) else None
+    value = subset_metrics.get(metric) if isinstance(subset_metrics, Mapping) else None
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def _best_so_far(values: Iterable[Optional[float]], *, direction: str) -> list[Optional[float]]:
+    """Build a monotonic incumbent curve while preserving missing trials."""
+    best: Optional[float] = None
+    progression: list[Optional[float]] = []
+    for value in values:
+        if value is not None and (
+            best is None
+            or (direction == "minimize" and value < best)
+            or (direction != "minimize" and value > best)
+        ):
+            best = value
+        progression.append(best)
+    return progression
+
+
+def _running_mean(values: Iterable[Optional[float]]) -> list[Optional[float]]:
+    """Build the cumulative mean curve while preserving missing trials."""
+    total = 0.0
+    count = 0
+    progression: list[Optional[float]] = []
+    for value in values:
+        if value is not None:
+            total += value
+            count += 1
+        progression.append(total / count if count else None)
+    return progression
+
+
+def build_tuning_progress_plot(
+    summary: Mapping[str, Any],
+    *,
+    output_dir: str | Path,
+) -> Optional[str]:
+    """Persist trial metrics and their incumbent progression as one compact plot.
+
+    Candidate scores are deliberately shown as non-monotonic points: TPE explores
+    configurations that can be worse than the incumbent. Each panel also shows
+    the cumulative trial mean and the best score reached so far, which is the
+    useful convergence signal.
+    """
+    trials = [
+        trial
+        for trial in (summary.get("trials") or [])
+        if isinstance(trial, Mapping) and trial.get("state") == "complete"
+    ]
+    if not trials:
+        return None
+
+    objective = summary.get("objective") or {}
+    objective_metric = str(objective.get("metric") or "objective")
+    objective_subset = str(objective.get("subset") or "all")
+    objective_direction = str(objective.get("direction") or "maximize")
+    metric_names = {
+        metric
+        for trial in trials
+        for metrics in [trial.get("metrics") or {}]
+        if isinstance(metrics, Mapping)
+        for all_metrics in [metrics.get("all") or {}]
+        if isinstance(all_metrics, Mapping)
+        for metric, value in all_metrics.items()
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    }
+    canonical_metrics = (
+        _REGRESSION_TUNING_METRICS
+        if metric_names.intersection(_REGRESSION_TUNING_METRICS)
+        else _CLASSIFICATION_TUNING_METRICS
+    )
+    panels: list[tuple[str, str, str]] = [(objective_metric, objective_subset, objective_direction)]
+    for metric in canonical_metrics:
+        if metric == objective_metric and objective_subset == "all":
+            continue
+        if metric in metric_names:
+            direction = "minimize" if metric in _MINIMIZE_TUNING_METRICS else "maximize"
+            panels.append((metric, "all", direction))
+    if not panels:
+        return None
+
+    # Import lazily so the hyperparameter contract remains lightweight in callers
+    # that only inspect schemas.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    columns = 2 if len(panels) > 1 else 1
+    rows = math.ceil(len(panels) / columns)
+    figure, axes = plt.subplots(rows, columns, figsize=(6.6 * columns, 4.2 * rows), squeeze=False)
+    trial_numbers = [int(trial.get("number", index)) + 1 for index, trial in enumerate(trials)]
+
+    for axis, (metric, subset, direction) in zip(axes.flat, panels, strict=True):
+        values = [
+            _trial_metric_value(trial, metric=metric, subset=subset)
+            for trial in trials
+        ]
+        if not any(value is not None for value in values):
+            axis.set_visible(False)
+            continue
+        incumbent = _best_so_far(values, direction=direction)
+        running_mean = _running_mean(values)
+        raw_x = [
+            trial for trial, value in zip(trial_numbers, values, strict=True) if value is not None
+        ]
+        raw_y = [value for value in values if value is not None]
+        axis.plot(raw_x, raw_y, "o", color="#4C78A8", alpha=0.7, label="trial")
+        mean_x = [
+            trial
+            for trial, value in zip(trial_numbers, running_mean, strict=True)
+            if value is not None
+        ]
+        mean_y = [value for value in running_mean if value is not None]
+        axis.plot(
+            mean_x,
+            mean_y,
+            color="#54A24B",
+            linewidth=2.0,
+            label="moyenne cumulative des trials",
+        )
+        incumbent_x = [
+            trial
+            for trial, value in zip(trial_numbers, incumbent, strict=True)
+            if value is not None
+        ]
+        incumbent_y = [value for value in incumbent if value is not None]
+        axis.step(
+            incumbent_x,
+            incumbent_y,
+            where="post",
+            color="#F58518",
+            linewidth=2.2,
+            label="meilleur score cumule",
+        )
+        suffix = " — objectif" if (metric, subset) == (objective_metric, objective_subset) else ""
+        axis.set_title(f"{metric} ({subset}){suffix}")
+        axis.set_xlabel("trial")
+        axis.set_ylabel("valeur")
+        axis.grid(alpha=0.2)
+        axis.legend(loc="best")
+
+    for axis in list(axes.flat)[len(panels) :]:
+        axis.set_visible(False)
+    figure.suptitle(
+        "Progression du tuning d'hyperparametres "
+        f"({len(trials)} trials complets, {summary.get('engine') or 'moteur inconnu'})",
+        fontsize=14,
+    )
+    figure.tight_layout(rect=(0, 0, 1, 0.95))
+    plot_path = Path(output_dir) / "hyperparameter_tuning_progress.png"
+    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(plot_path, dpi=160, bbox_inches="tight")
+    plt.close(figure)
+    return str(plot_path)
+
+
+LIGHTGBM_SPECS = (
+    HyperparameterSpec(
+        "n_estimators",
+        "Number of boosting trees.",
+        "int",
+        500,
+        tuning_supported=True,
+        default_tuning=True,
+        search_space={"type": "int", "low": 200, "high": 1200},
+        engines=("optuna_tpe",),
+    ),
+    HyperparameterSpec(
+        "learning_rate",
+        "Shrinkage applied to each boosting step.",
+        "float",
+        0.05,
+        tuning_supported=True,
+        default_tuning=True,
+        search_space={"type": "float", "low": 0.01, "high": 0.15, "log": True},
+        engines=("optuna_tpe",),
+    ),
+    HyperparameterSpec(
+        "max_depth",
+        "Maximum tree depth; constrains the legal number of leaves.",
+        "int",
+        None,
+        tuning_supported=True,
+        default_tuning=True,
+        search_space={"type": "int", "low": 3, "high": 12},
+        engines=("optuna_tpe",),
+    ),
+    HyperparameterSpec(
+        "num_leaves",
+        "Maximum number of leaves per tree.",
+        "int",
+        63,
+        tuning_supported=True,
+        default_tuning=True,
+        search_space={"type": "int", "low": 15, "high": 127},
+        engines=("optuna_tpe",),
+    ),
+    HyperparameterSpec("subsample", "Row subsampling fraction.", "float", 0.8),
+    HyperparameterSpec("colsample_bytree", "Feature subsampling fraction.", "float", 0.8),
+    HyperparameterSpec("min_child_samples", "Minimum rows per leaf.", "int", 20),
+    HyperparameterSpec("reg_alpha", "L1 regularization coefficient.", "float", 0.0),
+    HyperparameterSpec("reg_lambda", "L2 regularization coefficient.", "float", 0.0),
+    HyperparameterSpec("min_split_gain", "Minimum gain required to split.", "float", 0.0),
+    HyperparameterSpec("boosting_type", "LightGBM boosting strategy.", "str", "gbdt"),
+    HyperparameterSpec("early_stopping_rounds", "Advanced validation early stopping.", "int", 0),
+)
+
+CHEMPROP_SPECS = (
+    HyperparameterSpec(
+        "depth",
+        "Number of message-passing steps.",
+        "int",
+        tuning_supported=True,
+        default_tuning=True,
+        engines=("chemprop_hpopt_hyperopt",),
+    ),
+    HyperparameterSpec(
+        "message_hidden_dim",
+        "Hidden dimension of the message-passing network.",
+        "int",
+        tuning_supported=True,
+        default_tuning=True,
+        engines=("chemprop_hpopt_hyperopt",),
+    ),
+    HyperparameterSpec(
+        "ffn_hidden_dim",
+        "Hidden dimension of the feed-forward prediction network.",
+        "int",
+        tuning_supported=True,
+        default_tuning=True,
+        engines=("chemprop_hpopt_hyperopt",),
+    ),
+    HyperparameterSpec(
+        "ffn_num_layers",
+        "Number of feed-forward prediction layers.",
+        "int",
+        tuning_supported=True,
+        default_tuning=True,
+        engines=("chemprop_hpopt_hyperopt",),
+    ),
+    HyperparameterSpec(
+        "dropout",
+        "Dropout probability in the message-passing model.",
+        "float",
+        tuning_supported=True,
+        default_tuning=True,
+        engines=("chemprop_hpopt_hyperopt",),
+    ),
+    HyperparameterSpec("epochs", "Maximum training epochs.", "int", 50),
+    HyperparameterSpec("batch_size", "Batch size.", "int", 32),
+    HyperparameterSpec("num_replicates", "Number of Chemprop training replicates.", "int", 1),
+    HyperparameterSpec("ensemble_size", "Models trained in each replicate.", "int", 1),
+    HyperparameterSpec("num_workers", "Data-loader worker count.", "int", 0),
+    HyperparameterSpec("metric", "Native Chemprop evaluation metric.", "str", "rmse"),
+    HyperparameterSpec(
+        "multiclass_num_classes",
+        "Shared number of classes for multiclass targets.",
+        "int",
+    ),
+    HyperparameterSpec("accelerator", "Lightning accelerator selection.", "str"),
+    HyperparameterSpec("devices", "Lightning device selection.", "int"),
+    HyperparameterSpec("init_lr", "Initial learning rate.", "float", 0.0001),
+    HyperparameterSpec("max_lr", "Maximum learning rate.", "float", 0.001),
+    HyperparameterSpec("final_lr", "Final learning rate.", "float", 0.0001),
+    HyperparameterSpec("warmup_epochs", "Learning-rate warmup epochs.", "int", 2),
+    HyperparameterSpec("patience", "Validation patience for native Chemprop training.", "int"),
+    HyperparameterSpec("tracking_metric", "Native Chemprop tracking metric.", "str", "val_loss"),
+)
+
+TABICL_SPECS = (
+    HyperparameterSpec("n_estimators", "Number of TabICL ensemble estimators.", "int", 4),
+    HyperparameterSpec("batch_size", "TabICL training/inference batch size.", "int", 32),
+    HyperparameterSpec("norm_methods", "TabICL normalization methods.", "list"),
+    HyperparameterSpec("feat_shuffle_method", "Feature shuffle strategy.", "str"),
+    HyperparameterSpec("outlier_threshold", "Outlier handling threshold.", "float"),
+    HyperparameterSpec("class_shuffle_method", "Classification-label shuffle strategy.", "str"),
+    HyperparameterSpec("softmax_temperature", "Classification softmax temperature.", "float"),
+    HyperparameterSpec("average_logits", "Average TabICL classifier logits.", "bool"),
+    HyperparameterSpec("support_many_classes", "Enable wide multiclass support.", "bool"),
+    HyperparameterSpec("device", "Execution device selection.", "str"),
+    HyperparameterSpec("use_amp", "Use automatic mixed precision.", "bool"),
+    HyperparameterSpec("use_fa3", "Use FlashAttention 3 when available.", "bool"),
+    HyperparameterSpec("offload_mode", "TabICL offload strategy.", "str"),
+)
+
+
+BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
+    "lightgbm": {
+        "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+        "backend_name": "lightgbm",
+        "supports_hyperparameter_tuning": True,
+        "default_engine": "optuna_tpe",
+        "supported_engines": ["optuna_tpe"],
+        "default_trials": 50,
+        "default_objectives": {
+            "regression": {"metric": "rmse", "direction": "minimize", "subset": "in_domain"},
+            "classification": {
+                "metric": "balanced_accuracy",
+                "direction": "maximize",
+                "subset": "in_domain",
+            },
+            "multiclass_classification": {
+                "metric": "balanced_accuracy",
+                "direction": "maximize",
+                "subset": "in_domain",
+            },
+        },
+        "parameters": [item.as_dict() for item in LIGHTGBM_SPECS],
+    },
+    "chemprop": {
+        "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+        "backend_name": "chemprop",
+        "supports_hyperparameter_tuning": True,
+        "default_engine": "chemprop_hpopt_hyperopt",
+        "supported_engines": ["chemprop_hpopt_hyperopt"],
+        "default_trials": 50,
+        "default_objectives": {
+            "regression": {"metric": "val_loss", "direction": "minimize", "subset": "all"},
+            "classification": {"metric": "val_loss", "direction": "minimize", "subset": "all"},
+            "multiclass_classification": {
+                "metric": "val_loss",
+                "direction": "minimize",
+                "subset": "all",
+            },
+        },
+        "parameters": [item.as_dict() for item in CHEMPROP_SPECS],
+    },
+    "tabicl": {
+        "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+        "backend_name": "tabicl",
+        "supports_hyperparameter_tuning": False,
+        "default_engine": None,
+        "supported_engines": [],
+        "default_trials": None,
+        "default_objectives": {},
+        "parameters": [item.as_dict() for item in TABICL_SPECS],
+    },
+}
+
+
+def describe_backend_hyperparameters(backend_name: Optional[str] = None) -> Dict[str, Any]:
+    """Return the Qsaria-owned tuning contract for one backend or all backends."""
+    if backend_name is None:
+        return {name: dict(payload) for name, payload in BACKEND_TUNING_CATALOG.items()}
+    normalized = str(backend_name).strip().lower()
+    if normalized not in BACKEND_TUNING_CATALOG:
+        raise HyperparameterTuningError(f"Unknown tuning backend `{backend_name}`.")
+    return dict(BACKEND_TUNING_CATALOG[normalized])
+
+
+def _specs(backend_name: str) -> Dict[str, Dict[str, Any]]:
+    return {
+        str(item["name"]): item
+        for item in describe_backend_hyperparameters(backend_name).get("parameters", [])
+    }
+
+
+def default_tuning_parameter_names(backend_name: str) -> tuple[str, ...]:
+    return tuple(item["name"] for item in _specs(backend_name).values() if item["default_tuning"])
+
+
+def default_tuning_objective(backend_name: str, task_type: str) -> TuningObjective:
+    normalized_task = "classification" if task_type == "binary_classification" else task_type
+    catalog = describe_backend_hyperparameters(backend_name)
+    raw = (catalog.get("default_objectives") or {}).get(normalized_task)
+    if not raw:
+        raise HyperparameterTuningError(
+            f"No default tuning objective is declared for {backend_name}/{task_type}."
+        )
+    return TuningObjective(
+        metric=str(raw["metric"]),
+        direction=str(raw["direction"]),
+        subset=str(raw.get("subset") or "all"),
+    )
+
+
+def normalize_tuning_config(
+    raw: Optional[Mapping[str, Any]],
+    *,
+    backend_name: str,
+    task_type: str,
+    eligible: bool,
+    fixed_parameters: Iterable[str] = (),
+) -> Optional[TuningConfig]:
+    """Normalize a public request and enforce the shared V1 contract."""
+    catalog = describe_backend_hyperparameters(backend_name)
+    raw_config = dict(raw or {})
+    explicitly_requested = raw is not None
+    enabled = bool(raw_config.get("enabled", True))
+    if not enabled:
+        return None
+    if not catalog["supports_hyperparameter_tuning"]:
+        if explicitly_requested:
+            raise HyperparameterTuningError(
+                f"{backend_name} does not support automatic hyperparameter tuning in V1."
+            )
+        return None
+    if not eligible:
+        if explicitly_requested:
+            raise HyperparameterTuningError(
+                "Hyperparameter tuning V1 requires a single holdout split with train, validation, and test."
+            )
+        return None
+
+    engine = str(raw_config.get("engine") or catalog["default_engine"])
+    if engine not in catalog["supported_engines"]:
+        raise HyperparameterTuningError(
+            f"Unsupported tuning engine `{engine}` for {backend_name}. "
+            f"Expected one of {catalog['supported_engines']}."
+        )
+    n_trials = int(raw_config.get("n_trials", catalog["default_trials"]))
+    if n_trials < 1:
+        raise HyperparameterTuningError("hyperparameter_tuning.n_trials must be >= 1.")
+
+    specs = _specs(backend_name)
+    requested_parameters = raw_config.get("parameters")
+    if requested_parameters is None:
+        parameters = list(default_tuning_parameter_names(backend_name))
+    elif not isinstance(requested_parameters, (list, tuple)):
+        raise HyperparameterTuningError("hyperparameter_tuning.parameters must be a list.")
+    else:
+        parameters = [str(item) for item in requested_parameters]
+    for name in parameters:
+        spec = specs.get(name)
+        if spec is None:
+            raise HyperparameterTuningError(
+                f"Unknown Qsaria hyperparameter `{name}` for {backend_name}."
+            )
+        if not spec["tuning_supported"]:
+            raise HyperparameterTuningError(
+                f"Hyperparameter `{name}` is direct-settable but not tunable by {engine} in V1."
+            )
+
+    fixed = {str(item) for item in fixed_parameters}
+    parameters = [name for name in parameters if name not in fixed]
+    raw_space = raw_config.get("search_space") or {}
+    if not isinstance(raw_space, Mapping):
+        raise HyperparameterTuningError("hyperparameter_tuning.search_space must be an object.")
+    search_space = {str(name): dict(value) for name, value in raw_space.items()}
+    unknown_spaces = sorted(set(search_space).difference(parameters))
+    if unknown_spaces:
+        raise HyperparameterTuningError(
+            "A custom search space may only target selected, non-fixed parameters: "
+            + ", ".join(unknown_spaces)
+        )
+
+    raw_objective = raw_config.get("objective") or {}
+    if not isinstance(raw_objective, Mapping):
+        raise HyperparameterTuningError("hyperparameter_tuning.objective must be an object.")
+    default_objective = default_tuning_objective(backend_name, task_type)
+    objective = TuningObjective(
+        metric=str(raw_objective.get("metric") or default_objective.metric),
+        direction=str(raw_objective.get("direction") or default_objective.direction),
+        subset=str(raw_objective.get("subset") or default_objective.subset),
+    )
+    if objective.subset not in {"all", "in_domain", "out_of_domain"}:
+        raise HyperparameterTuningError("objective.subset must be all, in_domain, or out_of_domain.")
+    if objective.direction not in {"minimize", "maximize"}:
+        raise HyperparameterTuningError("objective.direction must be minimize or maximize.")
+    if backend_name == "lightgbm":
+        regression_metrics = {"mse": "minimize", "mae": "minimize", "rmse": "minimize", "r2": "maximize"}
+        classification_metrics = {
+            "accuracy": "maximize",
+            "balanced_accuracy": "maximize",
+            "precision_macro": "maximize",
+            "recall_macro": "maximize",
+            "f1_macro": "maximize",
+            "roc_auc": "maximize",
+        }
+        metric_directions = (
+            regression_metrics if task_type == "regression" else classification_metrics
+        )
+        expected_direction = metric_directions.get(objective.metric)
+        if expected_direction is None:
+            raise HyperparameterTuningError(
+                f"Metric `{objective.metric}` is not compatible with LightGBM {task_type} tuning."
+            )
+        if objective.direction != expected_direction:
+            raise HyperparameterTuningError(
+                f"Metric `{objective.metric}` must use direction `{expected_direction}`."
+            )
+    if backend_name == "chemprop" and objective.metric != "val_loss":
+        raise HyperparameterTuningError(
+            "Chemprop native HPO V1 always selects the global native val_loss."
+        )
+    if backend_name == "chemprop" and objective.subset != "all":
+        raise HyperparameterTuningError(
+            "Chemprop native HPO V1 always uses the global validation loss; objective.subset must be all."
+        )
+    return TuningConfig(
+        enabled=True,
+        engine=engine,
+        n_trials=n_trials,
+        parameters=tuple(parameters),
+        search_space=search_space,
+        objective=objective,
+        seed=int(raw_config["seed"]) if raw_config.get("seed") is not None else None,
+    )
+
+
+def _suggest_lightgbm_parameter(trial: Any, name: str, space: Mapping[str, Any]) -> Any:
+    kind = str(space.get("type") or "")
+    low = space.get("low")
+    high = space.get("high")
+    if kind == "int":
+        return trial.suggest_int(name, int(low), int(high), step=int(space.get("step") or 1))
+    if kind == "float":
+        return trial.suggest_float(name, float(low), float(high), log=bool(space.get("log", False)))
+    raise HyperparameterTuningError(f"Unsupported search-space type `{kind}` for `{name}`.")
+
+
+class LightGBMOptunaAdapter:
+    """Optuna/TPE adapter with pruning explicitly disabled for V1."""
+
+    engine_name = "optuna_tpe"
+
+    def validate(self, config: TuningConfig) -> None:
+        if config.engine != self.engine_name:
+            raise HyperparameterTuningError(f"Expected {self.engine_name}, got {config.engine}.")
+        if config.objective is None:
+            raise HyperparameterTuningError("LightGBM tuning requires an objective.")
+
+    def run(
+        self,
+        *,
+        config: TuningConfig,
+        fixed_parameters: Mapping[str, Any],
+        evaluate: Callable[[Dict[str, Any]], Dict[str, Any]],
+    ) -> TuningStudySummary:
+        """Run a sequential study; ``evaluate`` must never persist a candidate model."""
+        self.validate(config)
+        if {
+            "max_depth",
+            "num_leaves",
+        }.issubset(fixed_parameters) and int(fixed_parameters["num_leaves"]) > 2 ** int(
+            fixed_parameters["max_depth"]
+        ):
+            raise HyperparameterTuningError(
+                "LightGBM requires num_leaves <= 2**max_depth for a fixed direct configuration."
+            )
+        if not config.parameters:
+            return TuningStudySummary(
+                backend_name="lightgbm",
+                engine=self.engine_name,
+                status="skipped",
+                objective=config.objective.as_dict(),
+                requested_trials=config.n_trials,
+                completed_trials=0,
+                failed_trials=0,
+                reason="All default tuning parameters were fixed directly by the user.",
+            )
+        try:
+            import optuna
+        except ImportError as exc:  # pragma: no cover - dependency contract test covers this
+            raise HyperparameterTuningError("Optuna is required for LightGBM tuning.") from exc
+
+        specs = _specs("lightgbm")
+        sampler = optuna.samplers.TPESampler(
+            seed=config.seed,
+            n_startup_trials=min(10, config.n_trials),
+        )
+        study = optuna.create_study(
+            direction=config.objective.direction,
+            sampler=sampler,
+            pruner=optuna.pruners.NopPruner(),
+        )
+
+        def objective(trial: Any) -> float:
+            params = dict(fixed_parameters)
+            for name in config.parameters:
+                space = dict(specs[name].get("search_space") or {})
+                space.update(config.search_space.get(name) or {})
+                if name == "max_depth" and "num_leaves" in fixed_parameters:
+                    required_depth = math.ceil(math.log2(int(fixed_parameters["num_leaves"])))
+                    space["low"] = max(int(space["low"]), required_depth)
+                if name == "num_leaves":
+                    max_depth = int(params.get("max_depth", 12))
+                    if "max_depth" in config.parameters:
+                        max_depth = int(params["max_depth"])
+                    space["high"] = min(int(space["high"]), 2**max_depth)
+                    space["low"] = min(int(space["low"]), int(space["high"]))
+                params[name] = _suggest_lightgbm_parameter(trial, name, space)
+            outcome = evaluate(params)
+            objective_value = outcome.get("objective")
+            if objective_value is None:
+                raise HyperparameterTuningError("A LightGBM trial did not produce an objective score.")
+            trial.set_user_attr("metrics", outcome.get("metrics") or {})
+            trial.set_user_attr("diagnostics", outcome.get("diagnostics") or {})
+            return float(objective_value)
+
+        study.optimize(objective, n_trials=config.n_trials, n_jobs=1, catch=(RuntimeError,))
+        trial_rows = []
+        for trial in study.trials:
+            trial_rows.append(
+                {
+                    "number": trial.number,
+                    "state": trial.state.name.lower(),
+                    "params": dict(trial.params),
+                    "objective": trial.value,
+                    "metrics": trial.user_attrs.get("metrics") or {},
+                    "diagnostics": trial.user_attrs.get("diagnostics") or {},
+                    "duration_seconds": (
+                        round((trial.datetime_complete - trial.datetime_start).total_seconds(), 3)
+                        if trial.datetime_complete and trial.datetime_start
+                        else None
+                    ),
+                }
+            )
+        completed = [item for item in trial_rows if item["state"] == "complete"]
+        if not completed:
+            return TuningStudySummary(
+                backend_name="lightgbm",
+                engine=self.engine_name,
+                status="failed",
+                objective=config.objective.as_dict(),
+                requested_trials=config.n_trials,
+                completed_trials=0,
+                failed_trials=len(trial_rows),
+                trials=tuple(trial_rows),
+                reason="No LightGBM tuning trial completed successfully.",
+            )
+        best = study.best_trial
+        best_row = next(item for item in trial_rows if item["number"] == best.number)
+        best_row["params"] = {**fixed_parameters, **best_row["params"]}
+        return TuningStudySummary(
+            backend_name="lightgbm",
+            engine=self.engine_name,
+            status="completed",
+            objective=config.objective.as_dict(),
+            requested_trials=config.n_trials,
+            completed_trials=len(completed),
+            failed_trials=len(trial_rows) - len(completed),
+            best_trial=best_row,
+            trials=tuple(trial_rows),
+        )
+
+
+class ChempropHpoptAdapter:
+    """Validation contract for the native Chemprop/Ray HyperOpt bridge."""
+
+    engine_name = "chemprop_hpopt_hyperopt"
+
+    def validate(self, config: TuningConfig) -> None:
+        if config.engine != self.engine_name:
+            raise HyperparameterTuningError(f"Expected {self.engine_name}, got {config.engine}.")
+        if config.objective is None or config.objective.metric != "val_loss":
+            raise HyperparameterTuningError("Chemprop HPO V1 must track val_loss.")
+
+    def run(
+        self,
+        *,
+        config: TuningConfig,
+        execute: Callable[[], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Validate and delegate to the native Chemprop/Ray runner."""
+        self.validate(config)
+        return execute()
+
+
+def tuning_metadata_for_catalog(summary: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Keep only compact, useful provenance in model metadata."""
+    if not summary:
+        return {}
+    return {
+        "contract_version": summary.get("contract_version"),
+        "status": summary.get("status"),
+        "engine": summary.get("engine"),
+        "engine_version": summary.get("engine_version"),
+        "seed": summary.get("seed"),
+        "objective": summary.get("objective"),
+        "requested_trials": summary.get("requested_trials"),
+        "completed_trials": summary.get("completed_trials"),
+        "best_trial": summary.get("best_trial"),
+        "summary_path": summary.get("summary_path"),
+    }

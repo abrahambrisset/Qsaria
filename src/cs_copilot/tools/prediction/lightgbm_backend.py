@@ -188,13 +188,16 @@ class LightGBMBackend(PredictionBackend):
             "final_refit",
             "classification_threshold",
             "class_labels",
+            "persist_artifacts",
+            "return_prediction_frames",
+            "refit_on_train_validation",
         }
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
         if dropped:
-            logger.warning(
-                "Dropping unsupported LightGBM train args for this V1 backend: %s",
-                ", ".join(dropped),
+            raise InvalidPredictionInputError(
+                "Unsupported LightGBM train arguments: " + ", ".join(dropped) + ". "
+                "Use describe_backend_hyperparameters('lightgbm') for the supported contract."
             )
         return sanitized
 
@@ -663,6 +666,9 @@ class LightGBMBackend(PredictionBackend):
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
         sanitized_args = self._sanitize_train_extra_args(extra_args)
+        persist_artifacts = bool(sanitized_args.pop("persist_artifacts", True))
+        return_prediction_frames = bool(sanitized_args.pop("return_prediction_frames", False))
+        refit_on_train_validation = bool(sanitized_args.pop("refit_on_train_validation", False))
         raw_split_sizes = sanitized_args.pop("split_sizes", None)
         split_payload = sanitized_args.pop("split_payload", None)
         excluded_train_indices = {
@@ -736,9 +742,9 @@ class LightGBMBackend(PredictionBackend):
         excluded_from_train = sorted(set(source_train_idx) & excluded_train_indices)
         val_idx = split_indices.get("val") or []
         test_idx = split_indices.get("test") or []
-        if not train_idx or (not final_refit and not test_idx):
+        if not train_idx or (persist_artifacts and not final_refit and not test_idx):
             raise InvalidPredictionInputError(
-                "LightGBM split payload must provide non-empty train/test indices."
+                "LightGBM persistent training requires non-empty train/test indices."
             )
         effective_split_payload = [
             {
@@ -787,7 +793,7 @@ class LightGBMBackend(PredictionBackend):
 
         requested_device_type, auto_device, compute_env = self._resolve_device_type(sanitized_args)
         gpu_fallback_to_cpu = bool(sanitized_args.get("gpu_fallback_to_cpu", True))
-        early_stopping_rounds = int(sanitized_args.get("early_stopping_rounds", 50))
+        early_stopping_rounds = int(sanitized_args.get("early_stopping_rounds", 0))
         model_params = self._default_model_params(sanitized_args)
         if task_is_classification:
             model_params["objective"] = "multiclass" if len(class_labels) > 2 else "binary"
@@ -898,9 +904,10 @@ class LightGBMBackend(PredictionBackend):
         if test_metrics:
             metrics["test"] = test_metrics
         output_path = Path(output_dir).expanduser().resolve()
-        output_path.mkdir(parents=True, exist_ok=True)
         model_dir = output_path / "model_0"
-        model_dir.mkdir(parents=True, exist_ok=True)
+        if persist_artifacts:
+            output_path.mkdir(parents=True, exist_ok=True)
+            model_dir.mkdir(parents=True, exist_ok=True)
 
         model_payload = {
             "backend_name": self.backend_name,
@@ -929,20 +936,16 @@ class LightGBMBackend(PredictionBackend):
             )
 
         model_path = model_dir / "best.pkl"
-        with model_path.open("wb") as fh:
-            pickle.dump(model_payload, fh)
-
         validation_predictions_path = model_dir / "validation_predictions.csv"
         test_predictions_path = model_dir / "test_predictions.csv"
 
-        def _write_predictions(
-            path: Path,
+        def _prediction_frame(
             *,
             split_pred: pd.Series,
             split_proba: Any,
             split_y: pd.Series,
             split_source: pd.DataFrame,
-        ) -> None:
+        ) -> pd.DataFrame:
             if task_is_classification:
                 predictions_df = self._classification_output_frame(
                     predictions=split_pred.reset_index(drop=True),
@@ -966,59 +969,67 @@ class LightGBMBackend(PredictionBackend):
                         "y_pred": split_pred.reset_index(drop=True),
                     }
                 )
-            with S3.open(str(path), "w") as fh:
-                predictions_df.to_csv(fh, index=False)
+            return predictions_df
+
+        validation_prediction_frame = None
+        test_prediction_frame = None
 
         if y_val_pred is not None and y_val is not None:
-            _write_predictions(
-                validation_predictions_path,
+            validation_prediction_frame = _prediction_frame(
                 split_pred=y_val_pred,
                 split_proba=y_val_proba,
                 split_y=y_val,
                 split_source=working.iloc[val_idx],
             )
+            if persist_artifacts:
+                with S3.open(str(validation_predictions_path), "w") as fh:
+                    validation_prediction_frame.to_csv(fh, index=False)
         else:
             validation_predictions_path = None
 
         if y_pred is not None and y_test is not None:
-            _write_predictions(
-                test_predictions_path,
+            test_prediction_frame = _prediction_frame(
                 split_pred=y_pred,
                 split_proba=y_proba,
                 split_y=y_test,
                 split_source=working.iloc[test_idx],
             )
+            if persist_artifacts:
+                with S3.open(str(test_predictions_path), "w") as fh:
+                    test_prediction_frame.to_csv(fh, index=False)
         else:
             test_predictions_path = None
 
         splits_path = output_path / "splits.json"
-        splits_path.write_text(json.dumps(effective_split_payload, indent=2) + "\n")
-
         config_path = output_path / "config.toml"
-        config_path.write_text(
-            "\n".join(
-                [
-                    'backend_name = "lightgbm"',
-                    f'task_type = "{task.task_type}"',
-                    f'target_column = "{target_column}"',
-                    f'split_type = "{split_type}"',
-                    f'validation_protocol = "{validation_protocol}"',
-                    f'device_type = "{actual_device_type}"',
-                ]
+        if persist_artifacts:
+            with model_path.open("wb") as fh:
+                pickle.dump(model_payload, fh)
+            splits_path.write_text(json.dumps(effective_split_payload, indent=2) + "\n")
+            config_path.write_text(
+                "\n".join(
+                    [
+                        'backend_name = "lightgbm"',
+                        f'task_type = "{task.task_type}"',
+                        f'target_column = "{target_column}"',
+                        f'split_type = "{split_type}"',
+                        f'validation_protocol = "{validation_protocol}"',
+                        f'device_type = "{actual_device_type}"',
+                    ]
+                )
+                + "\n"
             )
-            + "\n"
-        )
 
         completed_at = project_now()
         return {
-            "model_path": str(model_path),
-            "best_model_path": str(model_path),
+            "model_path": str(model_path) if persist_artifacts else None,
+            "best_model_path": str(model_path) if persist_artifacts else None,
             "validation_predictions_path": (
                 str(validation_predictions_path) if validation_predictions_path else None
             ),
             "test_predictions_path": str(test_predictions_path) if test_predictions_path else None,
-            "splits_path": str(splits_path),
-            "config_path": str(config_path),
+            "splits_path": str(splits_path) if persist_artifacts else None,
+            "config_path": str(config_path) if persist_artifacts else None,
             "task_type": task.task_type,
             "metrics": metrics,
             "metrics_status": "not_evaluated" if final_refit else "evaluated",
@@ -1050,7 +1061,8 @@ class LightGBMBackend(PredictionBackend):
             "effective_train_count": int(len(train_idx)),
             "validation_count": int(len(val_idx)),
             "test_count": int(len(test_idx)),
-            "final_refit": final_refit,
+            "final_refit": final_refit or refit_on_train_validation,
+            "refit_on_train_validation": refit_on_train_validation,
             "removed_from_train_count": int(len(excluded_from_train)),
             "requested_exclusion_count": int(len(excluded_train_indices)),
             "activity_cliff_variant_id": activity_cliff_variant_id,
@@ -1069,4 +1081,12 @@ class LightGBMBackend(PredictionBackend):
             "completed_at": completed_at.isoformat(),
             "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
             "fit_error": str(fit_error) if fit_error and actual_device_type == "cpu" else None,
+            **(
+                {
+                    "validation_prediction_frame": validation_prediction_frame,
+                    "test_prediction_frame": test_prediction_frame,
+                }
+                if return_prediction_frames
+                else {}
+            ),
         }

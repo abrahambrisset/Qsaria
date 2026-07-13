@@ -25,6 +25,7 @@ from cs_copilot.tools.activity_cliffs import (
 )
 
 from .backend import PredictionExecutionError, PredictionTaskSpec
+from .hyperparameter_tuning import normalize_tuning_config
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
@@ -950,6 +951,7 @@ class TabICLToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str] = None,
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
+        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -975,6 +977,11 @@ class TabICLToolkit(Toolkit):
         root_output_path.mkdir(parents=True, exist_ok=True)
 
         requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_hyperparameter_tuning = (
+            hyperparameter_tuning
+            if hyperparameter_tuning is not None
+            else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
@@ -1045,6 +1052,14 @@ class TabICLToolkit(Toolkit):
             seed_policy=training_policy["extra_args"].get("seed_policy"),
             base_seed=training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
+        )
+        # TabICL deliberately exposes no HPO engine in V1.  Normalize here so an
+        # explicit request is rejected before the worker process is created.
+        normalize_tuning_config(
+            requested_hyperparameter_tuning,
+            backend_name="tabicl",
+            task_type=task_type,
+            eligible=False,
         )
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()

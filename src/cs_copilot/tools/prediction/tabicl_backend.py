@@ -266,9 +266,10 @@ class TabICLBackend(PredictionBackend):
         dropped = sorted(key for key in raw if key not in allowed)
         sanitized = {key: value for key, value in raw.items() if key in allowed}
         if dropped:
-            logger.warning(
-                "Dropping unsupported TabICL train args: %s",
-                ", ".join(dropped),
+            raise InvalidPredictionInputError(
+                "Unsupported TabICL train arguments: "
+                + ", ".join(dropped)
+                + ". Use describe_backend_hyperparameters('tabicl') for the supported contract."
             )
         return sanitized
 
