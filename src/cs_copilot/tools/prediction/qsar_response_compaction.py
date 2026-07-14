@@ -63,6 +63,8 @@ def compact_training_data_summary_for_response(summary: Optional[Dict[str, Any]]
             "task_kind",
             "class_count",
             "training_summary_path",
+            "hyperparameter_tuning",
+            "hyperparameter_tuning_summary_path",
             "feature_preparation",
             "feature_preparation_durations",
             "activity_cliffs",

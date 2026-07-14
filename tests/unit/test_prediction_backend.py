@@ -1001,6 +1001,14 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
         register_tools=False,
     )
     agent = SimpleNamespace(session_state={})
+    tuning_summary_path = str(run_dir / "hyperparameter_tuning_summary.json")
+    tuning_provenance = {
+        "engine": "optuna_tpe_multivariate",
+        "sampler": {"name": "TPESampler", "multivariate": True, "group": False},
+        "best_trial": {"number": 12, "params": {"max_depth": 8, "num_leaves": 64}},
+        "parameterization": {"num_leaves": {"mode": "relative_to_depth_capacity"}},
+        "summary_path": tuning_summary_path,
+    }
     toolkit.register_model(
         model_id="session_model",
         model_path=str(model_path),
@@ -1009,6 +1017,10 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="experimental",
+        training_data_summary={
+            "hyperparameter_tuning": tuning_provenance,
+            "hyperparameter_tuning_summary_path": tuning_summary_path,
+        },
         agent=agent,
     )
 
@@ -1028,6 +1040,12 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
         f"feature_{index:04d}" for index in range(64)
     ]
     assert persisted_metadata["inference_profile"]["representation_name"] == "morgan_count_only"
+    assert persisted_metadata["hyperparameter_tuning"] == tuning_provenance
+    assert persisted_metadata["hyperparameter_tuning_summary_path"] == tuning_summary_path
+    assert (
+        persisted_metadata["training_data_summary"]["hyperparameter_tuning"]
+        == tuning_provenance
+    )
     assert result["status_reason"]
     assert "workflow_demo" in result["status_reason"]
 

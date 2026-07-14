@@ -196,6 +196,12 @@ def _classification_metadata(record: PredictionModelRecord) -> Dict[str, Any]:
     return payload
 
 
+def _tuning_provenance_from_record(record: PredictionModelRecord) -> Dict[str, Any]:
+    """Return the compact tuning provenance attached to a trained model record."""
+    provenance = (record.training_data_summary or {}).get("hyperparameter_tuning")
+    return dict(provenance) if isinstance(provenance, dict) else {}
+
+
 def _resolved_path_key(path: str | Path) -> str:
     source_path = Path(str(path)).expanduser()
     try:
@@ -1131,6 +1137,13 @@ class ModelRegistryToolkit(Toolkit):
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
+        tuning_provenance = _tuning_provenance_from_record(record)
+        if tuning_provenance:
+            metadata["hyperparameter_tuning"] = tuning_provenance
+            metadata["hyperparameter_tuning_summary_path"] = (
+                record.training_data_summary.get("hyperparameter_tuning_summary_path")
+                or tuning_provenance.get("summary_path")
+            )
         metadata.update(_classification_metadata(record))
         metrics_status = record.training_data_summary.get("metrics_status")
         if metrics_status:
@@ -1326,6 +1339,13 @@ class ModelRegistryToolkit(Toolkit):
             }
         )
         payload.update(_classification_metadata(record))
+        tuning_provenance = _tuning_provenance_from_record(record)
+        if tuning_provenance:
+            payload["hyperparameter_tuning"] = tuning_provenance
+            payload["hyperparameter_tuning_summary_path"] = (
+                record.training_data_summary.get("hyperparameter_tuning_summary_path")
+                or tuning_provenance.get("summary_path")
+            )
         metrics_status = (record.training_data_summary or {}).get("metrics_status")
         if metrics_status:
             payload["metrics_status"] = metrics_status

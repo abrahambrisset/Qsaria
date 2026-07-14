@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -300,6 +302,42 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     assert "--split-sizes" not in args
     assert "--data-seed" not in args
     assert "--validation-strategy" not in args
+
+
+def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path):
+    train_csv = tmp_path / "chemprop_training_input.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\nCCC,6.0\nCCN,4.0\n")
+    captured = {}
+    backend = ChempropBackend()
+    monkeypatch.setattr(backend, "is_available", lambda: True)
+
+    def fake_run_cli(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        captured["working_dir_contents"] = list(kwargs["cwd"].iterdir())
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+    output_dir = tmp_path / "hpopt_output"
+
+    backend.hpopt_model(
+        train_csv=str(train_csv),
+        output_dir=str(output_dir),
+        task=_task(),
+        extra_args={"raytune_num_samples": 25},
+    )
+
+    args = captured["args"]
+    assert args[args.index("--raytune-num-samples") + 1] == "25"
+    assert Path(args[args.index("--output-dir") + 1]) == output_dir
+    ray_runtime_dir = Path(args[args.index("--raytune-temp-dir") + 1])
+    ray_temp_root = ray_runtime_dir.parent
+    assert ray_runtime_dir.name == "ray"
+    assert ray_temp_root.parent == Path(tempfile.gettempdir())
+    assert ray_temp_root.name.startswith("r-")
+    assert captured["kwargs"]["env_overrides"]["RAY_ADDRESS"] == "local"
+    assert captured["kwargs"]["cwd"] == ray_temp_root / "work"
+    assert captured["working_dir_contents"] == []
 
 
 def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):

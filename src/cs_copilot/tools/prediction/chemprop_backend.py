@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -413,6 +414,8 @@ class ChempropBackend(PredictionBackend):
         total_epochs: Optional[int] = None,
         total_replicates: Optional[int] = None,
         total_models: Optional[int] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+        cwd: Optional[Path] = None,
     ) -> subprocess.CompletedProcess:
         self._ensure_available()
         cli_path = self._find_cli_path()
@@ -420,12 +423,16 @@ class ChempropBackend(PredictionBackend):
             args = [cli_path, *args[1:]]
         logger.info("Running Chemprop command: %s", " ".join(args))
 
+        process_environment = os.environ.copy()
+        process_environment.update(env_overrides or {})
         process = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=process_environment,
+            cwd=str(cwd) if cwd is not None else None,
         )
 
         stream_queue: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -848,6 +855,12 @@ class ChempropBackend(PredictionBackend):
             chemprop_task_type,
             "--hpopt-save-dir",
             str(output_path),
+            # Chemprop HPO also invokes its training split builder, which writes
+            # `splits.json` under `output_dir`. Supply the already-created,
+            # absolute HPO directory so this remains valid when the subprocess
+            # runs from the isolated temporary working directory.
+            "--output-dir",
+            str(output_path),
         ]
         if task.smiles_columns:
             args.extend(["--smiles-columns", *task.smiles_columns])
@@ -873,22 +886,44 @@ class ChempropBackend(PredictionBackend):
             sanitized_extra_args[name] = expected
         sanitized_extra_args.setdefault("raytune_num_samples", 50)
         sanitized_extra_args.setdefault("search_parameter_keywords", ["basic"])
+        # Keep both directories short enough for Ray's 107-character AF_UNIX
+        # socket limit and clean them up after HPO. They must be distinct: Ray
+        # packages the process cwd for its workers, while it writes sessions and
+        # runtime resources under `raytune_temp_dir`. Sharing them makes Ray
+        # package its own live session recursively.
+        with tempfile.TemporaryDirectory(prefix="r-") as ray_temp_root:
+            ray_temp_root_path = Path(ray_temp_root)
+            ray_runtime_dir = ray_temp_root_path / "ray"
+            ray_working_dir = ray_temp_root_path / "work"
+            ray_runtime_dir.mkdir()
+            ray_working_dir.mkdir()
+            sanitized_extra_args["raytune_temp_dir"] = str(ray_runtime_dir)
+            for key, value in sanitized_extra_args.items():
+                flag = f"--{key.replace('_', '-')}"
+                if isinstance(value, bool):
+                    if value:
+                        args.append(flag)
+                elif isinstance(value, (list, tuple)):
+                    args.extend([flag, *[str(item) for item in value]])
+                elif value is not None:
+                    args.extend([flag, str(value)])
 
-        for key, value in sanitized_extra_args.items():
-            flag = f"--{key.replace('_', '-')}"
-            if isinstance(value, bool):
-                if value:
-                    args.append(flag)
-            elif isinstance(value, (list, tuple)):
-                args.extend([flag, *[str(item) for item in value]])
-            elif value is not None:
-                args.extend([flag, str(value)])
-
-        completed = self._run_cli(
-            args,
-            progress_label=f"{output_path.name}_hpopt",
-            output_dir=output_path,
-        )
+            completed = self._run_cli(
+                args,
+                progress_label=f"{output_path.name}_hpopt",
+                output_dir=output_path,
+                # Chemprop calls ray.init() without an address. Ray otherwise reconnects
+                # to its latest local cluster, whose prior runtime environment may package
+                # the complete application directory. Start a dedicated local instance.
+                #
+                # Ray Tune derives its worker working directory from the process cwd.
+                # Run the child from the empty sibling directory, never from the Ray runtime
+                # directory, to avoid recursive packaging. All Chemprop inputs and outputs
+                # above are absolute paths, so this does not change data resolution or the
+                # persisted final artifacts.
+                env_overrides={"RAY_ADDRESS": "local"},
+                cwd=ray_working_dir,
+            )
         completed_at = datetime.now().astimezone()
         return {
             "backend": self.backend_name,

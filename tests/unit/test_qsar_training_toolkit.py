@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
+    _compact_registry_payload,
     _resolve_existing_training_csv,
 )
 
@@ -57,6 +58,36 @@ def test_qsar_training_toolkit_exposes_shared_tuning_engine_registry():
     assert engine["name"] == "optuna_tpe_multivariate"
     assert engine["backend_availability"]["lightgbm"]["status"] == "supported"
     assert "optuna_tpe_multivariate" in environment["tuning_engines"]
+
+
+def test_registry_payload_response_preserves_tuning_provenance(tmp_path):
+    toolkit = QSARTrainingToolkit()
+    tuning_summary_path = tmp_path / "hyperparameter_tuning_summary.json"
+    tuning = {
+        "engine": "optuna_tpe_multivariate",
+        "sampler": {"name": "TPESampler", "multivariate": True, "group": False},
+        "best_trial": {"number": 12, "params": {"max_depth": 8, "num_leaves": 64}},
+        "parameterization": {"num_leaves": {"mode": "relative_to_depth_capacity"}},
+        "summary_path": str(tuning_summary_path),
+    }
+    payload = toolkit._recommended_registry_payload(
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["pEC50"],
+        result={
+            "model_path": str(tmp_path / "model_0" / "best.pkl"),
+            "validation_protocol": "standard_qsar",
+            "catalog_hyperparameter_tuning": tuning,
+            "hyperparameter_tuning_summary_path": str(tuning_summary_path),
+        },
+    )
+
+    compact = _compact_registry_payload(payload)
+    training_summary = compact["training_data_summary"]
+
+    assert training_summary["hyperparameter_tuning"] == tuning
+    assert training_summary["hyperparameter_tuning_summary_path"] == str(tuning_summary_path)
 
 
 def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monkeypatch):

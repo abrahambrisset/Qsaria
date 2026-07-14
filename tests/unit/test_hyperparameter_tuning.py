@@ -42,6 +42,8 @@ def test_backend_hyperparameter_contracts_expose_supported_engines_and_parameter
 
     assert lightgbm["default_engine"] == "optuna_tpe"
     assert lightgbm["supported_engines"] == ["optuna_tpe", "optuna_tpe_multivariate"]
+    max_depth = next(item for item in lightgbm["parameters"] if item["name"] == "max_depth")
+    assert max_depth["search_space"] == {"type": "int", "low": 4, "high": 12}
     assert {
         item["name"] for item in lightgbm["parameters"] if item["default_tuning"]
     } == {"n_estimators", "learning_rate", "max_depth", "num_leaves"}
@@ -76,15 +78,22 @@ def test_global_tuning_engine_registry_reports_real_backend_availability():
     assert multivariate["backend_availability"]["chemprop"]["status"] == "not_connected"
     assert multivariate["backend_availability"]["tabicl"]["status"] == "unsupported"
     assert multivariate["stability"] == "experimental"
-    assert multivariate["contract_version"] == "1.1"
+    assert multivariate["contract_version"] == "1.2"
 
 
 def test_sampler_metadata_and_catalog_provenance_keep_multivariate_settings():
     sampler = tuning_sampler_metadata("optuna_tpe_multivariate", n_startup_trials=10)
+    parameterization = {
+        "num_leaves": {
+            "mode": "relative_to_depth_capacity",
+            "internal_coordinate": "leaf_capacity_fraction",
+        }
+    }
     catalog = tuning_metadata_for_catalog(
         {
             "engine": "optuna_tpe_multivariate",
             "sampler": sampler,
+            "parameterization": parameterization,
         }
     )
 
@@ -96,6 +105,7 @@ def test_sampler_metadata_and_catalog_provenance_keep_multivariate_settings():
     }
     assert catalog["engine"] == "optuna_tpe_multivariate"
     assert catalog["sampler"] == sampler
+    assert catalog["parameterization"] == parameterization
 
 
 def test_standard_protocol_is_one_fixed_random_holdout_and_rdkit_is_tabular_default():
@@ -267,6 +277,65 @@ def test_optuna_adapter_uses_full_trials_and_respects_depth_leaf_constraint():
     assert summary.failed_trials == 0
     assert len(observed) == 4
     assert all(item["num_leaves"] <= 2 ** item["max_depth"] for item in observed)
+
+
+def test_multivariate_tpe_uses_static_leaf_coordinate_without_post_startup_fallback(monkeypatch):
+    """Depth-dependent leaves must not downgrade the multivariate sampler after startup."""
+    import optuna
+
+    independent_after_startup = []
+    original_sample_independent = optuna.samplers.TPESampler.sample_independent
+
+    def record_independent_sampling(self, study, trial, param_name, param_distribution):
+        if trial.number >= 10:
+            independent_after_startup.append(param_name)
+        return original_sample_independent(self, study, trial, param_name, param_distribution)
+
+    monkeypatch.setattr(
+        optuna.samplers.TPESampler,
+        "sample_independent",
+        record_independent_sampling,
+    )
+    config = normalize_tuning_config(
+        {"engine": "optuna_tpe_multivariate", "n_trials": 12, "seed": 17},
+        backend_name="lightgbm",
+        task_type="regression",
+        eligible=True,
+    )
+    assert config is not None
+    observed = []
+
+    def evaluate(parameters):
+        observed.append(dict(parameters))
+        return {
+            "objective": float(parameters["n_estimators"]),
+            "metrics": {"in_domain": {"rmse": float(parameters["n_estimators"])}},
+            "diagnostics": {},
+        }
+
+    summary = LightGBMOptunaAdapter().run(
+        config=config,
+        fixed_parameters={},
+        evaluate=evaluate,
+    )
+
+    assert independent_after_startup == []
+    assert len(observed) == 12
+    assert all(15 <= item["num_leaves"] <= min(127, 2 ** item["max_depth"]) for item in observed)
+    assert summary.parameterization == {
+        "num_leaves": {
+            "mode": "relative_to_depth_capacity",
+            "internal_coordinate": "leaf_capacity_fraction",
+            "internal_distribution": {"type": "float", "low": 0.0, "high": 1.0},
+            "native_bounds": {"low": 15, "high": 127},
+            "legal_capacity": "min(native_high, 2**max_depth)",
+            "derivation": "round_half_up(native_low + fraction * (legal_capacity - native_low))",
+            "reported_parameter": "num_leaves",
+        }
+    }
+    assert all("num_leaves" in item["params"] for item in summary.trials)
+    assert all("__qsaria_leaf_capacity_fraction" not in item["params"] for item in summary.trials)
+    assert all("leaf_capacity_fraction" in item["tuning_coordinates"] for item in summary.trials)
 
 
 @pytest.mark.parametrize(
@@ -515,3 +584,30 @@ def test_chemprop_hpopt_live_smoke(tmp_path):
 
     assert summary["status"] == "completed"
     assert summary["selection_protocol"]["test_rows_provided_to_hpopt"] == 0
+
+
+def test_chemprop_hpopt_normalizes_native_kebab_case_best_config(tmp_path):
+    from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+
+    best_config = tmp_path / "best_config.toml"
+    best_config.write_text(
+        "depth = [4]\n"
+        "message-hidden-dim = [300]\n"
+        "ffn-hidden-dim = 300\n"
+        "ffn-num-layers = 2\n"
+        "dropout = 0.1\n"
+    )
+
+    selected = ChempropToolkit._extract_hpopt_parameters(
+        tmp_path,
+        ["depth", "message_hidden_dim", "ffn_hidden_dim", "ffn_num_layers", "dropout"],
+        {},
+    )
+
+    assert selected == {
+        "depth": [4],
+        "message_hidden_dim": [300],
+        "ffn_hidden_dim": 300,
+        "ffn_num_layers": 2,
+        "dropout": 0.1,
+    }

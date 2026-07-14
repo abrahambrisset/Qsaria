@@ -1199,10 +1199,21 @@ class ChempropToolkit(Toolkit):
         the documented forms and then keep only Qsaria's declared architecture
         parameters.  No candidate checkpoint or Ray state crosses this method.
         """
+        def select_declared_parameters(payload: Dict[str, Any]) -> Dict[str, Any]:
+            # `chemprop hpopt` serializes its CLI configuration using kebab-case
+            # (`message-hidden-dim`), whereas Qsaria's public contract uses
+            # Python-style snake_case (`message_hidden_dim`).
+            normalized = {str(key).replace("-", "_"): value for key, value in payload.items()}
+            return {
+                name: normalized[name]
+                for name in requested_parameters
+                if name in normalized
+            }
+
         for key in ("best_params", "best_parameters", "best_hyperparameters"):
             value = backend_result.get(key)
             if isinstance(value, dict):
-                selected = {name: value[name] for name in requested_parameters if name in value}
+                selected = select_declared_parameters(value)
                 if selected:
                     return selected
 
@@ -1229,7 +1240,7 @@ class ChempropToolkit(Toolkit):
                 if isinstance(nested, dict):
                     containers.append(nested)
             for item in containers:
-                selected = {name: item[name] for name in requested_parameters if name in item}
+                selected = select_declared_parameters(item)
                 if selected:
                     return selected
         raise HyperparameterTuningError(

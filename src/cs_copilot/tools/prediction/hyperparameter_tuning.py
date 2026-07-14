@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Protocol
 
-HYPERPARAMETER_CONTRACT_VERSION = "1.1"
+HYPERPARAMETER_CONTRACT_VERSION = "1.2"
 
 
 class HyperparameterTuningError(ValueError):
@@ -95,6 +95,7 @@ class TuningStudySummary:
     failed_trials: int
     best_trial: Optional[Dict[str, Any]] = None
     trials: tuple[Dict[str, Any], ...] = ()
+    parameterization: Dict[str, Any] = field(default_factory=dict)
     reason: Optional[str] = None
     contract_version: str = HYPERPARAMETER_CONTRACT_VERSION
     engine_version: Optional[str] = None
@@ -120,6 +121,13 @@ class TuningAdapter(Protocol):
 _REGRESSION_TUNING_METRICS = ("r2", "rmse", "mae")
 _CLASSIFICATION_TUNING_METRICS = ("balanced_accuracy", "roc_auc", "f1_macro", "accuracy")
 _MINIMIZE_TUNING_METRICS = {"mae", "mape", "mse", "rmse", "val_loss", "loss"}
+
+# Optuna's multivariate TPE requires a stable distribution for every parameter
+# it models jointly. ``num_leaves`` has a legal upper bound that depends on
+# ``max_depth``; it is therefore represented internally as a fraction of the
+# legal capacity and mapped back to the native LightGBM parameter before fit.
+_MULTIVARIATE_LEAF_CAPACITY_COORDINATE = "__qsaria_leaf_capacity_fraction"
+_MULTIVARIATE_LEAF_CAPACITY_SPACE = {"type": "float", "low": 0.0, "high": 1.0}
 
 
 def _trial_metric_value(
@@ -308,7 +316,10 @@ TUNING_ENGINE_CATALOG: Dict[str, TuningEngineSpec] = {
     "optuna_tpe_multivariate": TuningEngineSpec(
         name="optuna_tpe_multivariate",
         display_name="Optuna TPE multivariate",
-        description="Joint TPE sampler that models compatible hyperparameter combinations.",
+        description=(
+            "Joint TPE sampler that models compatible hyperparameter combinations. "
+            "LightGBM depth-constrained leaves use a stable internal coordinate."
+        ),
         family="optuna",
         sampler={"name": "TPESampler", "multivariate": True, "group": False},
         backend_availability={
@@ -358,12 +369,12 @@ LIGHTGBM_SPECS = (
     ),
     HyperparameterSpec(
         "max_depth",
-        "Maximum tree depth; constrains the legal number of leaves.",
+        "Maximum tree depth; starts at 4 so the standard minimum of 15 leaves is legal.",
         "int",
         None,
         tuning_supported=True,
         default_tuning=True,
-        search_space={"type": "int", "low": 3, "high": 12},
+        search_space={"type": "int", "low": 4, "high": 12},
         engines=("optuna_tpe", "optuna_tpe_multivariate"),
     ),
     HyperparameterSpec(
@@ -725,6 +736,69 @@ def _suggest_lightgbm_parameter(trial: Any, name: str, space: Mapping[str, Any])
     raise HyperparameterTuningError(f"Unsupported search-space type `{kind}` for `{name}`.")
 
 
+def _resolved_lightgbm_space(
+    *,
+    specs: Mapping[str, Mapping[str, Any]],
+    config: TuningConfig,
+    name: str,
+) -> Dict[str, Any]:
+    """Resolve one declared space with an optional user override."""
+    space = dict(specs[name].get("search_space") or {})
+    space.update(config.search_space.get(name) or {})
+    return space
+
+
+def _uses_multivariate_leaf_parameterization(config: TuningConfig) -> bool:
+    """Whether depth and leaves are jointly tuned through a static coordinate."""
+    return (
+        config.engine == "optuna_tpe_multivariate"
+        and "max_depth" in config.parameters
+        and "num_leaves" in config.parameters
+    )
+
+
+def _leaf_bounds_for_depth(space: Mapping[str, Any], *, max_depth: int) -> tuple[int, int]:
+    """Return the native LightGBM leaf bounds that are legal at one depth."""
+    lower = int(space["low"])
+    upper = min(int(space["high"]), 2**int(max_depth))
+    if upper < lower:
+        raise HyperparameterTuningError(
+            "The requested num_leaves range is incompatible with max_depth="
+            f"{max_depth}: expected a legal value <= {upper}, got a lower bound of {lower}."
+        )
+    return lower, upper
+
+
+def _derive_num_leaves_from_capacity_fraction(
+    *,
+    fraction: float,
+    max_depth: int,
+    leaf_space: Mapping[str, Any],
+) -> int:
+    """Map a fixed [0, 1] coordinate to a legal, native LightGBM leaf count."""
+    lower, upper = _leaf_bounds_for_depth(leaf_space, max_depth=max_depth)
+    if not 0.0 <= float(fraction) <= 1.0:  # pragma: no cover - guaranteed by Optuna
+        raise HyperparameterTuningError("leaf_capacity_fraction must be between 0 and 1.")
+    return lower + math.floor(float(fraction) * (upper - lower) + 0.5)
+
+
+def _multivariate_leaf_parameterization_metadata(
+    leaf_space: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Describe the reversible internal coordinate persisted with a study."""
+    return {
+        "num_leaves": {
+            "mode": "relative_to_depth_capacity",
+            "internal_coordinate": "leaf_capacity_fraction",
+            "internal_distribution": dict(_MULTIVARIATE_LEAF_CAPACITY_SPACE),
+            "native_bounds": {"low": int(leaf_space["low"]), "high": int(leaf_space["high"])},
+            "legal_capacity": "min(native_high, 2**max_depth)",
+            "derivation": "round_half_up(native_low + fraction * (legal_capacity - native_low))",
+            "reported_parameter": "num_leaves",
+        }
+    }
+
+
 class LightGBMOptunaAdapter:
     """LightGBM bridge for the shared Optuna/TPE engine family."""
 
@@ -790,6 +864,25 @@ class LightGBMOptunaAdapter:
             raise HyperparameterTuningError("Optuna is required for LightGBM tuning.") from exc
 
         specs = _specs("lightgbm")
+        parameter_names = tuple(name for name in specs if name in config.parameters)
+        uses_leaf_capacity_coordinate = _uses_multivariate_leaf_parameterization(config)
+        leaf_space = (
+            _resolved_lightgbm_space(specs=specs, config=config, name="num_leaves")
+            if uses_leaf_capacity_coordinate
+            else None
+        )
+        if leaf_space is not None:
+            depth_space = _resolved_lightgbm_space(
+                specs=specs,
+                config=config,
+                name="max_depth",
+            )
+            _leaf_bounds_for_depth(leaf_space, max_depth=int(depth_space["low"]))
+        parameterization = (
+            _multivariate_leaf_parameterization_metadata(leaf_space)
+            if leaf_space is not None
+            else {}
+        )
         sampler = self._build_sampler(optuna, config)
         study = optuna.create_study(
             direction=config.objective.direction,
@@ -799,19 +892,42 @@ class LightGBMOptunaAdapter:
 
         def objective(trial: Any) -> float:
             params = dict(fixed_parameters)
-            for name in config.parameters:
-                space = dict(specs[name].get("search_space") or {})
-                space.update(config.search_space.get(name) or {})
+            tuning_coordinates: Dict[str, Any] = {}
+            for name in parameter_names:
+                space = _resolved_lightgbm_space(specs=specs, config=config, name=name)
                 if name == "max_depth" and "num_leaves" in fixed_parameters:
                     required_depth = math.ceil(math.log2(int(fixed_parameters["num_leaves"])))
                     space["low"] = max(int(space["low"]), required_depth)
+                    if int(space["low"]) > int(space["high"]):
+                        raise HyperparameterTuningError(
+                            "The requested max_depth range cannot represent the directly fixed "
+                            f"num_leaves={fixed_parameters['num_leaves']}."
+                        )
                 if name == "num_leaves":
+                    if uses_leaf_capacity_coordinate:
+                        fraction = trial.suggest_float(
+                            _MULTIVARIATE_LEAF_CAPACITY_COORDINATE,
+                            float(_MULTIVARIATE_LEAF_CAPACITY_SPACE["low"]),
+                            float(_MULTIVARIATE_LEAF_CAPACITY_SPACE["high"]),
+                        )
+                        params[name] = _derive_num_leaves_from_capacity_fraction(
+                            fraction=fraction,
+                            max_depth=int(params["max_depth"]),
+                            leaf_space=space,
+                        )
+                        tuning_coordinates["leaf_capacity_fraction"] = float(fraction)
+                        continue
                     max_depth = int(params.get("max_depth", 12))
-                    if "max_depth" in config.parameters:
-                        max_depth = int(params["max_depth"])
-                    space["high"] = min(int(space["high"]), 2**max_depth)
-                    space["low"] = min(int(space["low"]), int(space["high"]))
+                    lower, upper = _leaf_bounds_for_depth(space, max_depth=max_depth)
+                    space["low"] = lower
+                    space["high"] = upper
                 params[name] = _suggest_lightgbm_parameter(trial, name, space)
+            trial.set_user_attr(
+                "resolved_params",
+                {name: params[name] for name in parameter_names},
+            )
+            if tuning_coordinates:
+                trial.set_user_attr("tuning_coordinates", tuning_coordinates)
             outcome = evaluate(params)
             objective_value = outcome.get("objective")
             if objective_value is None:
@@ -827,7 +943,8 @@ class LightGBMOptunaAdapter:
                 {
                     "number": trial.number,
                     "state": trial.state.name.lower(),
-                    "params": dict(trial.params),
+                    "params": dict(trial.user_attrs.get("resolved_params") or trial.params),
+                    "tuning_coordinates": trial.user_attrs.get("tuning_coordinates") or {},
                     "objective": trial.value,
                     "metrics": trial.user_attrs.get("metrics") or {},
                     "diagnostics": trial.user_attrs.get("diagnostics") or {},
@@ -849,6 +966,7 @@ class LightGBMOptunaAdapter:
                 completed_trials=0,
                 failed_trials=len(trial_rows),
                 trials=tuple(trial_rows),
+                parameterization=parameterization,
                 reason="No LightGBM tuning trial completed successfully.",
             )
         best = study.best_trial
@@ -864,6 +982,7 @@ class LightGBMOptunaAdapter:
             failed_trials=len(trial_rows) - len(completed),
             best_trial=best_row,
             trials=tuple(trial_rows),
+            parameterization=parameterization,
         )
 
 
@@ -904,5 +1023,6 @@ def tuning_metadata_for_catalog(summary: Optional[Mapping[str, Any]]) -> Dict[st
         "requested_trials": summary.get("requested_trials"),
         "completed_trials": summary.get("completed_trials"),
         "best_trial": summary.get("best_trial"),
+        "parameterization": summary.get("parameterization") or {},
         "summary_path": summary.get("summary_path"),
     }
