@@ -558,6 +558,62 @@ def test_chemprop_hpopt_receives_train_validation_only_and_keeps_only_summary(tm
     assert (tmp_path / "final_run" / "hyperparameter_tuning_summary.json").exists()
 
 
+def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
+    class FakeChempropBackend:
+        def __init__(self):
+            self.extra_args = None
+
+        def hpopt_model(self, *, train_csv, output_dir, task, extra_args):
+            self.extra_args = dict(extra_args)
+            return {"best_params": {"dropout": 0.1}}
+
+    source = tmp_path / "source.csv"
+    source.write_text("smiles,target\nCCO,1.0\nCCN,2.0\nCCC,3.0\n")
+    config = normalize_tuning_config(
+        {"n_trials": 2, "parameters": ["dropout"]},
+        backend_name="chemprop",
+        task_type="regression",
+        eligible=True,
+    )
+    assert config is not None
+
+    gpu_backend = FakeChempropBackend()
+    gpu_toolkit = ChempropToolkit(backend=gpu_backend, register_tools=False)
+    gpu_summary = gpu_toolkit._run_chemprop_hpopt(
+        source_df=pd.read_csv(source),
+        task=_chemprop_task(),
+        split_payload=[{"train": [0], "val": [1], "test": [2]}],
+        config=config,
+        fixed_parameters={},
+        train_args={},
+        output_dir=tmp_path / "gpu_run",
+        seed=9,
+        compute_environment={"gpu_available": True, "gpu_count": 1},
+    )
+    assert gpu_backend.extra_args["raytune_use_gpu"] is True
+    assert gpu_backend.extra_args["raytune_num_gpus"] == 1
+    assert gpu_backend.extra_args["accelerator"] == "gpu"
+    assert gpu_backend.extra_args["devices"] == 1
+    assert gpu_summary["selection_protocol"]["execution_resources"]["raytune_use_gpu"] is True
+
+    cpu_backend = FakeChempropBackend()
+    cpu_toolkit = ChempropToolkit(backend=cpu_backend, register_tools=False)
+    cpu_summary = cpu_toolkit._run_chemprop_hpopt(
+        source_df=pd.read_csv(source),
+        task=_chemprop_task(),
+        split_payload=[{"train": [0], "val": [1], "test": [2]}],
+        config=config,
+        fixed_parameters={},
+        train_args={"accelerator": "cpu"},
+        output_dir=tmp_path / "cpu_run",
+        seed=9,
+        compute_environment={"gpu_available": True, "gpu_count": 1},
+    )
+    assert "raytune_use_gpu" not in cpu_backend.extra_args
+    assert "raytune_num_gpus" not in cpu_backend.extra_args
+    assert cpu_summary["selection_protocol"]["execution_resources"]["raytune_use_gpu"] is False
+
+
 @pytest.mark.live
 @pytest.mark.skipif(
     os.getenv("QSARIA_CHEMPROP_HPO_LIVE") != "1",

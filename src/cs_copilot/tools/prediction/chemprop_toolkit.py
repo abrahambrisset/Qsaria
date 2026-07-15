@@ -14,7 +14,7 @@ import tempfile
 import tomllib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import pandas as pd
 from agno.agent import Agent
@@ -41,12 +41,12 @@ from .hyperparameter_tuning import (
     normalize_tuning_config,
     tuning_metadata_for_catalog,
 )
+from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
-from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -1264,6 +1264,7 @@ class ChempropToolkit(Toolkit):
         train_args: Dict[str, Any],
         output_dir: Path,
         seed: int,
+        compute_environment: Optional[Mapping[str, Any]] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Execute native Chemprop HPO on train/validation only and clean it up."""
@@ -1274,6 +1275,11 @@ class ChempropToolkit(Toolkit):
                 "Chemprop native hpopt V1 owns its `basic` search space; custom search_space "
                 "is not yet supported."
             )
+        resolved_compute_environment = dict(
+            compute_environment or self.describe_compute_environment()
+        )
+        gpu_available = bool(resolved_compute_environment.get("gpu_available"))
+        gpu_count = int(resolved_compute_environment.get("gpu_count") or 0)
         development_indices, development_split = self._hpo_development_payload(split_payload)
         with tempfile.TemporaryDirectory(prefix="qsaria-chemprop-hpopt-") as temporary_dir:
             temporary_path = Path(temporary_dir)
@@ -1323,6 +1329,32 @@ class ChempropToolkit(Toolkit):
                     "data_seed": seed,
                 }
             )
+            requested_accelerator = str(hpopt_args.get("accelerator") or "").strip().lower()
+            explicit_cpu = requested_accelerator == "cpu"
+            use_gpu = gpu_available and gpu_count > 0 and not explicit_cpu
+            if use_gpu:
+                # Chemprop's native HPO uses Ray Train.  Lightning's accelerator alone is
+                # insufficient: Ray must reserve a GPU for its worker, otherwise it starts
+                # CPU-only trials even when Qsaria has detected CUDA successfully.
+                hpopt_args["raytune_use_gpu"] = True
+                hpopt_args["raytune_num_gpus"] = 1
+                if requested_accelerator in {"", "auto"}:
+                    hpopt_args["accelerator"] = "gpu"
+                if hpopt_args.get("devices") in {None, "", "auto"}:
+                    hpopt_args["devices"] = 1
+            else:
+                # A direct CPU request is authoritative, and a CPU-only machine must never
+                # carry stale Ray GPU resource settings into the Chemprop command.
+                hpopt_args.pop("raytune_use_gpu", None)
+                hpopt_args.pop("raytune_num_gpus", None)
+            hpopt_execution = {
+                "gpu_available": gpu_available,
+                "gpu_count_available": gpu_count,
+                "raytune_use_gpu": use_gpu,
+                "raytune_num_gpus": 1 if use_gpu else 0,
+                "accelerator": hpopt_args.get("accelerator") or "auto",
+                "devices": hpopt_args.get("devices") or "auto",
+            }
             backend_kwargs: Dict[str, Any] = {
                 "train_csv": chemprop_input["chemprop_training_input_csv"],
                 "output_dir": str(temporary_path / "ray_output"),
@@ -1362,6 +1394,7 @@ class ChempropToolkit(Toolkit):
                 "raytune_trial_scheduler": "FIFO",
                 "raytune_num_workers": 1,
                 "raytune_max_concurrent_trials": 1,
+                "execution_resources": hpopt_execution,
                 "hyperopt_random_state_seed": seed,
                 "test_rows_provided_to_hpopt": 0,
                 "applicability_domain_used_for_selection": False,
@@ -2034,6 +2067,7 @@ class ChempropToolkit(Toolkit):
                             train_args=run_args,
                             output_dir=root_output_path,
                             seed=int(tuning_config.seed or split_run["seed"]),
+                            compute_environment=training_policy["compute_environment"],
                             progress_callback=publish_epoch_progress,
                         )
                         selected_parameters = dict(

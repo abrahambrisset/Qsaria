@@ -251,6 +251,8 @@ class ChempropBackend(PredictionBackend):
             "raytune_search_algorithm",
             "raytune_trial_scheduler",
             "raytune_num_workers",
+            "raytune_use_gpu",
+            "raytune_num_gpus",
             "raytune_max_concurrent_trials",
             "hyperopt_random_state_seed",
             "search_parameter_keywords",

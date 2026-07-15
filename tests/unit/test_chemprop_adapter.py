@@ -343,11 +343,21 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
         train_csv=str(train_csv),
         output_dir=str(output_dir),
         task=_task(),
-        extra_args={"raytune_num_samples": 25},
+        extra_args={
+            "raytune_num_samples": 25,
+            "raytune_use_gpu": True,
+            "raytune_num_gpus": 1,
+            "accelerator": "gpu",
+            "devices": 1,
+        },
     )
 
     args = captured["args"]
     assert args[args.index("--raytune-num-samples") + 1] == "25"
+    assert "--raytune-use-gpu" in args
+    assert args[args.index("--raytune-num-gpus") + 1] == "1"
+    assert args[args.index("--accelerator") + 1] == "gpu"
+    assert args[args.index("--devices") + 1] == "1"
     assert Path(args[args.index("--output-dir") + 1]) == output_dir
     ray_runtime_dir = Path(args[args.index("--raytune-temp-dir") + 1])
     ray_temp_root = ray_runtime_dir.parent
