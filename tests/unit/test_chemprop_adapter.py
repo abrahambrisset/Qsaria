@@ -382,6 +382,7 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
         task=_task(),
         extra_args={
             "raytune_num_samples": 25,
+            "epochs": 30,
             "raytune_use_gpu": True,
             "raytune_num_gpus": 1,
             "accelerator": "gpu",
@@ -404,6 +405,7 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
     assert captured["kwargs"]["env_overrides"]["RAY_ADDRESS"] == "local"
     assert captured["kwargs"]["cwd"] == ray_temp_root / "work"
     assert captured["working_dir_contents"] == []
+    assert captured["kwargs"]["total_epochs"] == 30
     assert captured["kwargs"]["total_trials"] == 25
 
 

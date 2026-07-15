@@ -1016,6 +1016,11 @@ class ChempropBackend(PredictionBackend):
                 args,
                 progress_label=f"{output_path.name}_hpopt",
                 output_dir=output_path,
+                total_epochs=(
+                    int(sanitized_extra_args.get("epochs"))
+                    if sanitized_extra_args.get("epochs") is not None
+                    else None
+                ),
                 total_trials=int(sanitized_extra_args["raytune_num_samples"]),
                 # Chemprop calls ray.init() without an address. Ray otherwise reconnects
                 # to its latest local cluster, whose prior runtime environment may package
