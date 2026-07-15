@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 import unicodedata
 from pathlib import Path
 
@@ -23,6 +24,15 @@ from cs_copilot.agents.teams import get_cs_copilot_agent_team, get_qsar_agent_te
 from cs_copilot.model_config import _is_retriable, arun_with_retry, load_model_from_config
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.formatting import smiles_to_png_bytes
+from cs_copilot.tools.prediction.qsar_progress import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    completed_phase_for_tool,
+    load_active_run_snapshot,
+    phase_for_tool,
+    render_status_card,
+)
 from cs_copilot.utils.logging import compact_log_data, get_logger, setup_logging
 
 load_dotenv()
@@ -1357,6 +1367,14 @@ async def relay(stream):
     qsar_mode = _is_qsar_team_mode()
     qsar_progress_msg = None
     qsar_heartbeat_task: asyncio.Task | None = None
+    qsar_progress_started_at: float | None = None
+    qsar_progress_state: dict[str, object] = {
+        "status": STATUS_RUNNING,
+        "phase": "Preparing QSAR workflow",
+        "detail": None,
+        "backend_name": None,
+    }
+    _UNSET_PROGRESS_DETAIL = object()
     active_tool_calls: dict[str, dict] = {}
     active_tool_name_queues: dict[str, list[str]] = {}
     tool_event_sequence = 0
@@ -1423,41 +1441,66 @@ async def relay(stream):
         if not active_run:
             active_run = (session_state.get("qsar_training") or {}).get("active_run")
 
-        lines = ["Workflow QSAR en cours..."]
-        if isinstance(active_run, dict) and active_run:
-            progress = active_run.get("progress_message")
-            label = active_run.get("current_split_label")
-            protocol = active_run.get("validation_protocol")
-            profile = active_run.get("training_profile")
-            if progress:
-                lines.append(str(progress))
-            elif label:
-                lines.append(f"Etape active : {label}")
-            if protocol or profile:
-                details = " | ".join(
-                    item
-                    for item in (
-                        f"validation={protocol}" if protocol else "",
-                        f"profile={profile}" if profile else "",
-                    )
-                    if item
-                )
-                if details:
-                    lines.append(details)
-        lines.append(f"Toujours actif ({elapsed_seconds}s).")
-        return "\n".join(lines)
+        snapshot = load_active_run_snapshot(active_run if isinstance(active_run, dict) else None)
+        phase = snapshot.get("phase") or qsar_progress_state.get("phase")
+        detail = snapshot.get("progress_message") or qsar_progress_state.get("detail")
+        backend_name = snapshot.get("backend_name") or qsar_progress_state.get("backend_name")
+
+        if str(backend_name or "").lower() == "tabicl":
+            row_counts = [
+                ("train", snapshot.get("train_rows")),
+                ("validation", snapshot.get("val_rows")),
+                ("test", snapshot.get("test_rows")),
+            ]
+            observed_counts = [f"{count} {label}" for label, count in row_counts if count is not None]
+            if observed_counts:
+                tabicl_detail = " · ".join(observed_counts)
+                detail = f"{detail} · {tabicl_detail}" if detail else tabicl_detail
+
+        return render_status_card(
+            status=str(qsar_progress_state.get("status") or STATUS_RUNNING),
+            elapsed_seconds=elapsed_seconds,
+            phase=str(phase) if phase else None,
+            backend_name=backend_name,
+            detail=str(detail) if detail else None,
+        )
+
+    async def _refresh_qsar_progress() -> None:
+        if qsar_progress_msg is None:
+            return
+        elapsed = (
+            int(time.monotonic() - qsar_progress_started_at)
+            if qsar_progress_started_at is not None
+            else 0
+        )
+        qsar_progress_msg.content = _current_qsar_progress_text(elapsed)
+        await qsar_progress_msg.update()
+
+    async def _set_qsar_progress(
+        *,
+        status: str | None = None,
+        phase: str | None = None,
+        detail: str | None | object = _UNSET_PROGRESS_DETAIL,
+        backend_name: str | None = None,
+    ) -> None:
+        if status is not None:
+            qsar_progress_state["status"] = status
+        if phase is not None:
+            qsar_progress_state["phase"] = phase
+        if detail is not _UNSET_PROGRESS_DETAIL:
+            qsar_progress_state["detail"] = detail
+        if backend_name is not None:
+            qsar_progress_state["backend_name"] = backend_name
+        await _refresh_qsar_progress()
 
     async def _qsar_progress_heartbeat() -> None:
-        elapsed = 0
         consecutive_errors = 0
         while True:
-            await asyncio.sleep(30)
-            elapsed += 30
+            await asyncio.sleep(10)
             if qsar_progress_msg is None:
                 continue
             try:
-                qsar_progress_msg.content = _current_qsar_progress_text(elapsed)
-                await qsar_progress_msg.update()
+                await _refresh_qsar_progress()
                 consecutive_errors = 0
             except asyncio.CancelledError:
                 raise
@@ -1473,7 +1516,15 @@ async def relay(stream):
             _get_runtime_context()["team"],
             _get_runtime_context()["thread"],
         )
-        qsar_progress_msg = cl.Message(content="Workflow QSAR en cours...", author="assistant")
+        qsar_progress_started_at = time.monotonic()
+        qsar_progress_msg = cl.Message(
+            content=render_status_card(
+                status=STATUS_RUNNING,
+                elapsed_seconds=0,
+                phase="Preparing QSAR workflow",
+            ),
+            author="assistant",
+        )
         await qsar_progress_msg.send()
         qsar_heartbeat_task = asyncio.create_task(_qsar_progress_heartbeat())
 
@@ -1497,6 +1548,25 @@ async def relay(stream):
                     step.input = tool_args
                     await step.send()
                 _remember_active_tool(call_id, tool_name, step)
+                if qsar_mode:
+                    tool_phase = phase_for_tool(tool_name)
+                    if tool_phase:
+                        backend_name = {
+                            "train_lightgbm_model": "lightgbm",
+                            "train_tabicl_model": "tabicl",
+                            "train_chemprop_model": "chemprop",
+                            "train_model": "chemprop",
+                        }.get(tool_name) or (
+                            str(tool_args.get("backend_name"))
+                            if isinstance(tool_args, dict) and tool_args.get("backend_name")
+                            else None
+                        )
+                        await _set_qsar_progress(
+                            status=STATUS_RUNNING,
+                            phase=tool_phase,
+                            detail=None,
+                            backend_name=backend_name,
+                        )
                 continue
 
             if ev and ev.endswith("Completed"):
@@ -1510,6 +1580,19 @@ async def relay(stream):
                 if show_tool_calls and active_entry and active_entry.get("step") is not None:
                     active_entry["step"].output = chunk.content or "✅ done"
                     await active_entry["step"].update()
+                if qsar_mode:
+                    tool_phase = completed_phase_for_tool(tool_name) or phase_for_tool(tool_name)
+                    if tool_phase:
+                        await _set_qsar_progress(phase=tool_phase, detail=None)
+                continue
+
+            if qsar_mode and ev and (ev.endswith("Failed") or ev.endswith("Error")):
+                tool = getattr(chunk, "tool", None)
+                tool_name = _extract_tool_name(tool)
+                await _set_qsar_progress(
+                    status=STATUS_FAILED,
+                    phase=phase_for_tool(tool_name) or str(qsar_progress_state.get("phase") or "QSAR workflow"),
+                )
                 continue
 
             # ── plain text from the LLM / agent ─────────────────────────────────
@@ -1532,6 +1615,11 @@ async def relay(stream):
                 line, buf = buf.split("\n", 1)
                 assistant = await _stream_line_with_elements(line, assistant, append_newline=True)
     except Exception as exc:
+        if qsar_mode:
+            await _set_qsar_progress(
+                status=STATUS_FAILED,
+                phase=str(qsar_progress_state.get("phase") or "QSAR workflow"),
+            )
         if not qsar_mode or not full_content.strip():
             raise
         stream_error = exc
@@ -1556,12 +1644,10 @@ async def relay(stream):
                 f"la redaction finale: {stream_error}\n\n{final_report}"
             ).strip()
         if qsar_progress_msg is not None:
-            qsar_progress_msg.content = (
-                "Workflow QSAR terminé, rapport final interrompu par le fournisseur LLM."
-                if stream_error is not None
-                else "Workflow QSAR terminé."
+            await _set_qsar_progress(
+                status=STATUS_FAILED if stream_error is not None else STATUS_COMPLETED,
+                phase=str(qsar_progress_state.get("phase") or "QSAR workflow"),
             )
-            await qsar_progress_msg.update()
         runtime_logger.info(
             "QSAR workflow completed | team=%s | thread=%s",
             _get_runtime_context()["team"],

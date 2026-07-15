@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -56,6 +57,24 @@ def test_chemprop_adapter_writes_minimal_aligned_inputs(tmp_path):
     assert list(clean.columns) == ["smiles", "pEC50"]
     assert result["split_counts"] == {"train": 1, "val": 1, "test": 1}
     assert result["row_count"] == 3
+
+
+def test_chemprop_cli_forwards_observed_epoch_progress(monkeypatch):
+    backend = ChempropBackend()
+    observed = []
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_find_cli_path", lambda: None)
+
+    backend._run_cli(
+        [
+            sys.executable,
+            "-c",
+            "print('Epoch 1/3', flush=True); print('Epoch 2/3', flush=True)",
+        ],
+        progress_callback=observed.append,
+    )
+
+    assert [(item["epoch"], item["total_epochs"]) for item in observed] == [(1, 3), (2, 3)]
 
 
 def test_chemprop_adapter_accepts_train_test_without_hidden_validation(tmp_path):

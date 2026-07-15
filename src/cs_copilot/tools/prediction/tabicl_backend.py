@@ -643,10 +643,10 @@ class TabICLBackend(PredictionBackend):
         def _emit_heartbeat() -> None:
             progress_message = None
             if heartbeat_run_index and heartbeat_total_runs:
-                progress_message = f"TabICL training progress: run {heartbeat_run_index}/{heartbeat_total_runs} - {heartbeat_label}"
+                progress_message = f"run {heartbeat_run_index} of {heartbeat_total_runs}"
             payload = {
                 "status": "running",
-                "phase": "fit",
+                "phase": "Training model",
                 "backend_name": self.backend_name,
                 "label": heartbeat_label,
                 "run_index": heartbeat_run_index,

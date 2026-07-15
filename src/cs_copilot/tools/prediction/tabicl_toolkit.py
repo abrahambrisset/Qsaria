@@ -31,6 +31,7 @@ from .qsar_splitters import (
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
+from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -388,6 +389,7 @@ class TabICLToolkit(Toolkit):
             "current_split_index": None,
             "total_splits": len(protocol_policy["split_runs"]),
             "progress_message": None,
+            "phase": "Preparing TabICL training",
             "worker_pid": worker_pid,
             "worker_status": worker_status,
         }
@@ -574,8 +576,10 @@ class TabICLToolkit(Toolkit):
 
                 active_run_record["current_split_label"] = label
                 active_run_record["current_split_index"] = run_index
-                active_run_record["progress_message"] = (
-                    f"TabICL training progress: run {run_index}/{len(protocol_policy['split_runs'])} - {label}"
+                apply_progress_update(
+                    active_run_record,
+                    "Training model",
+                    {"detail": f"run {run_index} of {len(protocol_policy['split_runs'])}"},
                 )
                 active_run_record["worker_status"] = "running"
                 if prediction_state is not None:

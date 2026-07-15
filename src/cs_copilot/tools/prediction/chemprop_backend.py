@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 
@@ -416,6 +416,7 @@ class ChempropBackend(PredictionBackend):
         total_models: Optional[int] = None,
         env_overrides: Optional[Dict[str, str]] = None,
         cwd: Optional[Path] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> subprocess.CompletedProcess:
         self._ensure_available()
         cli_path = self._find_cli_path()
@@ -443,6 +444,15 @@ class ChempropBackend(PredictionBackend):
         last_progress_line: Optional[str] = None
         started_at = time.monotonic()
         next_heartbeat_at = started_at + heartbeat_seconds
+
+        def publish_progress(**payload: Any) -> None:
+            """Emit best-effort progress without coupling CLI execution to the UI."""
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:  # pragma: no cover - UI telemetry must never stop Chemprop
+                pass
 
         def _pump_stream(stream, source: str) -> None:
             try:
@@ -478,10 +488,18 @@ class ChempropBackend(PredictionBackend):
 
                     current_epoch, observed_total = self._extract_epoch_progress(stripped)
                     if current_epoch is not None:
+                        epoch_changed = current_epoch != last_epoch
                         last_epoch = current_epoch
                         if observed_total is not None:
                             observed_total_epochs = observed_total
                         last_progress_line = stripped
+                        if epoch_changed:
+                            publish_progress(
+                                event="epoch",
+                                epoch=current_epoch,
+                                total_epochs=observed_total_epochs or total_epochs,
+                                progress_label=progress_label,
+                            )
                 except queue.Empty:
                     pass
 
@@ -739,6 +757,7 @@ class ChempropBackend(PredictionBackend):
         task: PredictionTaskSpec,
         *,
         extra_args: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         input_path = Path(train_csv).expanduser()
         if not input_path.exists():
@@ -806,6 +825,7 @@ class ChempropBackend(PredictionBackend):
                 if sanitized_extra_args.get("ensemble_size") is not None
                 else None
             ),
+            progress_callback=progress_callback,
         )
         completed_at = datetime.now().astimezone()
         return {
@@ -826,6 +846,7 @@ class ChempropBackend(PredictionBackend):
         task: PredictionTaskSpec,
         *,
         extra_args: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run Chemprop's native Ray Tune/HyperOpt entry point.
 
@@ -923,6 +944,7 @@ class ChempropBackend(PredictionBackend):
                 # persisted final artifacts.
                 env_overrides={"RAY_ADDRESS": "local"},
                 cwd=ray_working_dir,
+                progress_callback=progress_callback,
             )
         completed_at = datetime.now().astimezone()
         return {

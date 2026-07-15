@@ -835,6 +835,7 @@ class LightGBMOptunaAdapter:
         config: TuningConfig,
         fixed_parameters: Mapping[str, Any],
         evaluate: Callable[[Dict[str, Any]], Dict[str, Any]],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> TuningStudySummary:
         """Run a sequential study; ``evaluate`` must never persist a candidate model."""
         self.validate(config)
@@ -890,7 +891,22 @@ class LightGBMOptunaAdapter:
             pruner=optuna.pruners.NopPruner(),
         )
 
+        def notify_progress(**payload: Any) -> None:
+            """Publish best-effort telemetry without affecting the study result."""
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:  # pragma: no cover - UI telemetry must never stop tuning
+                pass
+
         def objective(trial: Any) -> float:
+            notify_progress(
+                event="trial_started",
+                trial_number=trial.number,
+                trial_index=trial.number + 1,
+                total_trials=config.n_trials,
+            )
             params = dict(fixed_parameters)
             tuning_coordinates: Dict[str, Any] = {}
             for name in parameter_names:
@@ -928,12 +944,28 @@ class LightGBMOptunaAdapter:
             )
             if tuning_coordinates:
                 trial.set_user_attr("tuning_coordinates", tuning_coordinates)
-            outcome = evaluate(params)
+            try:
+                outcome = evaluate(params)
+            except Exception:
+                notify_progress(
+                    event="trial_failed",
+                    trial_number=trial.number,
+                    trial_index=trial.number + 1,
+                    total_trials=config.n_trials,
+                )
+                raise
             objective_value = outcome.get("objective")
             if objective_value is None:
                 raise HyperparameterTuningError("A LightGBM trial did not produce an objective score.")
             trial.set_user_attr("metrics", outcome.get("metrics") or {})
             trial.set_user_attr("diagnostics", outcome.get("diagnostics") or {})
+            notify_progress(
+                event="trial_completed",
+                trial_number=trial.number,
+                trial_index=trial.number + 1,
+                total_trials=config.n_trials,
+                objective=float(objective_value),
+            )
             return float(objective_value)
 
         study.optimize(objective, n_trials=config.n_trials, n_jobs=1, catch=(RuntimeError,))

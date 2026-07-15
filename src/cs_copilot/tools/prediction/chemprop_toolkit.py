@@ -14,7 +14,7 @@ import tempfile
 import tomllib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 from agno.agent import Agent
@@ -46,6 +46,7 @@ from .qsar_splitters import (
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
+from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -981,6 +982,7 @@ class ChempropToolkit(Toolkit):
         split_payload: List[Dict[str, List[int]]],
         split_label: str,
         seed: Optional[int],
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         run_output_dir = Path(output_dir).expanduser().resolve()
         chemprop_input = materialize_chemprop_inputs(
@@ -1018,12 +1020,15 @@ class ChempropToolkit(Toolkit):
                     "Chemprop multiclass training requires one shared positive class count."
                 )
             backend_train_args["multiclass_num_classes"] = class_counts.pop()
-        result = self.backend.train_model(
-            train_csv=chemprop_input["chemprop_training_input_csv"],
-            output_dir=output_dir,
-            task=task,
-            extra_args=backend_train_args,
-        )
+        backend_kwargs: Dict[str, Any] = {
+            "train_csv": chemprop_input["chemprop_training_input_csv"],
+            "output_dir": output_dir,
+            "task": task,
+            "extra_args": backend_train_args,
+        }
+        if progress_callback is not None:
+            backend_kwargs["progress_callback"] = progress_callback
+        result = self.backend.train_model(**backend_kwargs)
         result.update(
             self._compute_training_metrics(
                 train_csv=chemprop_input["chemprop_training_input_csv"],
@@ -1259,6 +1264,7 @@ class ChempropToolkit(Toolkit):
         train_args: Dict[str, Any],
         output_dir: Path,
         seed: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Execute native Chemprop HPO on train/validation only and clean it up."""
         ChempropHpoptAdapter().validate(config)
@@ -1317,12 +1323,15 @@ class ChempropToolkit(Toolkit):
                     "data_seed": seed,
                 }
             )
-            backend_result = self.backend.hpopt_model(
-                train_csv=chemprop_input["chemprop_training_input_csv"],
-                output_dir=str(temporary_path / "ray_output"),
-                task=task,
-                extra_args=hpopt_args,
-            )
+            backend_kwargs: Dict[str, Any] = {
+                "train_csv": chemprop_input["chemprop_training_input_csv"],
+                "output_dir": str(temporary_path / "ray_output"),
+                "task": task,
+                "extra_args": hpopt_args,
+            }
+            if progress_callback is not None:
+                backend_kwargs["progress_callback"] = progress_callback
+            backend_result = self.backend.hpopt_model(**backend_kwargs)
             best_parameters = self._extract_hpopt_parameters(
                 temporary_path,
                 list(config.parameters),
@@ -1879,6 +1888,7 @@ class ChempropToolkit(Toolkit):
         qsar_training_state = None
         active_run_record = {
             "status": "running",
+            "backend_name": "chemprop",
             "train_csv": source_train_csv,
             "output_dir": resolved_output_dir,
             "validation_protocol": protocol_policy["protocol"],
@@ -1886,7 +1896,37 @@ class ChempropToolkit(Toolkit):
             "created_at": trained_at.isoformat(),
             "active_marker_path": str(active_marker_path),
             "current_split_label": None,
+            "phase": "Preparing Chemprop training",
+            "progress_message": None,
         }
+
+        def publish_active_progress(phase: str, payload: Optional[Dict[str, Any]] = None) -> None:
+            """Persist compact Chemprop telemetry for the shared QSAR status card."""
+            apply_progress_update(active_run_record, phase, payload)
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = dict(active_run_record)
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = dict(active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
+
+        def publish_epoch_progress(payload: Dict[str, Any]) -> None:
+            epoch = payload.get("epoch")
+            total_epochs = payload.get("total_epochs")
+            if epoch is None:
+                return
+            phase = str(active_run_record.get("phase") or "Training model")
+            if phase == "Native hyperparameter optimization":
+                detail = (
+                    f"Current candidate — epoch {epoch} of {total_epochs}"
+                    if total_epochs
+                    else f"Current candidate — epoch {epoch}"
+                )
+            else:
+                detail = f"epoch {epoch} of {total_epochs}" if total_epochs else f"epoch {epoch}"
+            publish_active_progress(
+                phase,
+                {"detail": detail, "epoch": epoch, "total_epochs": total_epochs},
+            )
 
         if agent is not None:
             prediction_state = get_prediction_state(agent)
@@ -1981,6 +2021,10 @@ class ChempropToolkit(Toolkit):
 
                 if tuning_config is not None:
                     if tuning_config.parameters:
+                        publish_active_progress(
+                            "Native hyperparameter optimization",
+                            {"detail": f"{tuning_config.n_trials} candidates requested"},
+                        )
                         tuning_summary = self._run_chemprop_hpopt(
                             source_df=split_source_df,
                             task=task,
@@ -1990,6 +2034,7 @@ class ChempropToolkit(Toolkit):
                             train_args=run_args,
                             output_dir=root_output_path,
                             seed=int(tuning_config.seed or split_run["seed"]),
+                            progress_callback=publish_epoch_progress,
                         )
                         selected_parameters = dict(
                             (tuning_summary.get("best_trial") or {}).get("params") or {}
@@ -2039,11 +2084,10 @@ class ChempropToolkit(Toolkit):
                     label = "hyperparameter_final_refit"
 
                 active_run_record["current_split_label"] = label
-                if prediction_state is not None:
-                    prediction_state["active_training_run"] = dict(active_run_record)
-                if qsar_training_state is not None:
-                    qsar_training_state["active_run"] = dict(active_run_record)
-                write_active_training_marker(active_marker_path, active_run_record)
+                publish_active_progress(
+                    "Refitting final model" if label == "hyperparameter_final_refit" else "Training model",
+                    {"detail": "train + validation" if label == "hyperparameter_final_refit" else label},
+                )
 
                 single_result = self._train_single_run(
                     train_csv=local_train_csv,
@@ -2053,7 +2097,9 @@ class ChempropToolkit(Toolkit):
                     split_payload=split_payload,
                     split_label=label,
                     seed=split_run["seed"],
+                    progress_callback=publish_epoch_progress,
                 )
+                publish_active_progress("Evaluating final test set", {})
                 if label.startswith("cv_repeat_"):
                     strategy_name = label
                     strategy_family = "cross_validation"
@@ -2116,6 +2162,7 @@ class ChempropToolkit(Toolkit):
                     "data_seed": protocol_policy["seed_policy"]["model_seed"],
                     "final_refit": True,
                 }
+                publish_active_progress("Refitting final model", {"detail": "all training rows"})
                 final_refit_run = self._train_single_run(
                     train_csv=local_train_csv,
                     task=task,
@@ -2124,7 +2171,9 @@ class ChempropToolkit(Toolkit):
                     split_payload=final_split_payload,
                     split_label="final_refit",
                     seed=protocol_policy["seed_policy"].get("model_seed"),
+                    progress_callback=publish_epoch_progress,
                 )
+                publish_active_progress("Evaluating final test set", {})
                 final_refit_run["strategy"] = "final_refit"
                 final_refit_run["strategy_family"] = "final_refit"
                 final_refit_run["strategy_label"] = "final_refit"
@@ -2165,6 +2214,7 @@ class ChempropToolkit(Toolkit):
                 primary_output_dir=final_primary_output_dir,
             )
             validation_assessment = self._assess_protocol_results(split_results)
+            publish_active_progress("Assessing applicability domain", {})
             ad_summary = self._build_applicability_domain(
                 train_csv=local_train_csv,
                 primary_run=final_primary_run,
@@ -2360,7 +2410,15 @@ class ChempropToolkit(Toolkit):
             result["bundle_file_ref"] = str(bundle)
             result["training_bundle"] = str(bundle)
             result["bundle_download_tag"] = f"<file>{bundle}</file>"
+            publish_active_progress("Writing training artifacts", {})
             write_training_summary(training_summary_path, result)
+            active_run_record["status"] = "completed"
+            active_run_record["completed_at"] = project_now().isoformat()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = dict(active_run_record)
+            if qsar_training_state is not None:
+                qsar_training_state["active_run"] = dict(active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
             return result
         except Exception as exc:
             active_run_record["status"] = "failed"

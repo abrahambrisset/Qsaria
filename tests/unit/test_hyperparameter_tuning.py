@@ -279,6 +279,37 @@ def test_optuna_adapter_uses_full_trials_and_respects_depth_leaf_constraint():
     assert all(item["num_leaves"] <= 2 ** item["max_depth"] for item in observed)
 
 
+def test_optuna_adapter_emits_truthful_trial_progress():
+    config = normalize_tuning_config(
+        {"n_trials": 2, "seed": 19},
+        backend_name="lightgbm",
+        task_type="regression",
+        eligible=True,
+    )
+    assert config is not None
+    progress = []
+
+    LightGBMOptunaAdapter().run(
+        config=config,
+        fixed_parameters={},
+        evaluate=lambda _: {
+            "objective": 0.5,
+            "metrics": {"in_domain": {"rmse": 0.5}},
+            "diagnostics": {},
+        },
+        progress_callback=progress.append,
+    )
+
+    assert [item["event"] for item in progress] == [
+        "trial_started",
+        "trial_completed",
+        "trial_started",
+        "trial_completed",
+    ]
+    assert [item["trial_index"] for item in progress] == [1, 1, 2, 2]
+    assert all(item["total_trials"] == 2 for item in progress)
+
+
 def test_multivariate_tpe_uses_static_leaf_coordinate_without_post_startup_fallback(monkeypatch):
     """Depth-dependent leaves must not downgrade the multivariate sampler after startup."""
     import optuna

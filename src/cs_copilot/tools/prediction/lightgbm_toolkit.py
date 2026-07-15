@@ -11,7 +11,7 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 from agno.agent import Agent
@@ -41,6 +41,7 @@ from .qsar_splitters import (
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
+from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -707,9 +708,12 @@ class LightGBMToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str],
         similarity_top_k_neighbors: int | str | None,
         similarity_threshold_percentile: float | str | None,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Tune one fixed train/validation/test holdout, then refit on train+validation."""
         total_started_at = project_now()
+        if progress_callback is not None:
+            progress_callback("Hyperparameter optimization", {"detail": "Preparing validation split"})
         root_output_path = Path(resolved_output_dir)
         effective_feature_columns = list(feature_columns) or [
             str(column)
@@ -888,10 +892,31 @@ class LightGBMToolkit(Toolkit):
                     },
                 }
 
+            def report_trial_progress(payload: Dict[str, Any]) -> None:
+                if progress_callback is None:
+                    return
+                trial_index = payload.get("trial_index")
+                total_trials = payload.get("total_trials")
+                detail = (
+                    f"trial {trial_index} of {total_trials}"
+                    if trial_index and total_trials
+                    else "evaluating candidate"
+                )
+                progress_callback(
+                    "Hyperparameter optimization",
+                    {
+                        "detail": detail,
+                        "tuning_event": payload.get("event"),
+                        "trial_index": trial_index,
+                        "total_trials": total_trials,
+                    },
+                )
+
             summary = LightGBMOptunaAdapter().run(
                 config=tuning_config,
                 fixed_parameters=fixed_model_args,
                 evaluate=evaluate,
+                progress_callback=report_trial_progress,
             ).as_dict()
 
         summary["seed"] = tuning_config.seed
@@ -934,6 +959,8 @@ class LightGBMToolkit(Toolkit):
                 },
             }
         ]
+        if progress_callback is not None:
+            progress_callback("Refitting final model", {"detail": "train + validation"})
         final_run = self.backend.train_model(
             train_csv=train_csv,
             output_dir=resolved_output_dir,
@@ -958,6 +985,8 @@ class LightGBMToolkit(Toolkit):
                 "split_payload": final_split_payload,
             }
         )
+        if progress_callback is not None:
+            progress_callback("Evaluating final test set", {})
         root_artifacts = self._materialize_primary_protocol_artifacts(
             root_output_dir=root_output_path,
             primary_run=final_run,
@@ -1203,7 +1232,16 @@ class LightGBMToolkit(Toolkit):
             "current_split_index": None,
             "total_splits": len(protocol_policy["split_runs"]),
             "progress_message": None,
+            "phase": "Preparing LightGBM training",
         }
+
+        def publish_active_progress(phase: str, payload: Optional[Dict[str, Any]] = None) -> None:
+            """Persist compact telemetry for the UI without changing training behavior."""
+            apply_progress_update(active_run_record, phase, payload)
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = dict(active_run_record)
+            write_active_training_marker(active_marker_path, active_run_record)
+
         if prediction_state is not None:
             prediction_state["active_training_run"] = dict(active_run_record)
         write_active_training_marker(active_marker_path, active_run_record)
@@ -1262,23 +1300,38 @@ class LightGBMToolkit(Toolkit):
                 raise HyperparameterTuningError(
                     "Activity-cliff feedback loops cannot be combined with hyperparameter tuning in V1."
                 )
-            return self._train_tuned_holdout(
-                train_csv=train_csv,
-                resolved_output_dir=resolved_output_dir,
-                task=task,
-                protocol_policy=protocol_policy,
-                training_policy=training_policy,
-                split_source_df=split_source_df,
-                split_run=split_runs[0],
-                feature_columns=list(normalized_feature_columns or []),
-                categorical_feature_columns=list(normalized_categorical_feature_columns or []),
-                representation_name=representation_name,
-                direct_model_args=direct_model_args,
-                raw_tuning_config=requested_hyperparameter_tuning,
-                applicability_domain_methods=requested_ad_methods,
-                similarity_top_k_neighbors=requested_similarity_top_k,
-                similarity_threshold_percentile=requested_similarity_percentile,
-            )
+            try:
+                tuned_result = self._train_tuned_holdout(
+                    train_csv=train_csv,
+                    resolved_output_dir=resolved_output_dir,
+                    task=task,
+                    protocol_policy=protocol_policy,
+                    training_policy=training_policy,
+                    split_source_df=split_source_df,
+                    split_run=split_runs[0],
+                    feature_columns=list(normalized_feature_columns or []),
+                    categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+                    representation_name=representation_name,
+                    direct_model_args=direct_model_args,
+                    raw_tuning_config=requested_hyperparameter_tuning,
+                    applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
+                    progress_callback=publish_active_progress,
+                )
+            except Exception:
+                active_run_record["status"] = "failed"
+                active_run_record["completed_at"] = project_now().isoformat()
+                if prediction_state is not None:
+                    prediction_state["active_training_run"] = None
+                write_active_training_marker(active_marker_path, active_run_record)
+                raise
+            active_run_record["status"] = "completed"
+            active_run_record["completed_at"] = project_now().isoformat()
+            if prediction_state is not None:
+                prediction_state["active_training_run"] = None
+            write_active_training_marker(active_marker_path, active_run_record)
+            return tuned_result
         split_results: List[Dict[str, Any]] = []
         primary_run: Optional[Dict[str, Any]] = None
         total_started_at = project_now()
@@ -1332,13 +1385,10 @@ class LightGBMToolkit(Toolkit):
 
                 active_run_record["current_split_label"] = label
                 active_run_record["current_split_index"] = run_index
-                active_run_record["progress_message"] = (
-                    "LightGBM training progress: "
-                    f"run {run_index}/{len(protocol_policy['split_runs'])} - {label}"
+                publish_active_progress(
+                    "Training model",
+                    {"detail": f"run {run_index} of {len(protocol_policy['split_runs'])}"},
                 )
-                if prediction_state is not None:
-                    prediction_state["active_training_run"] = dict(active_run_record)
-                write_active_training_marker(active_marker_path, active_run_record)
 
                 single_result = self.backend.train_model(
                     train_csv=train_csv,
@@ -1443,13 +1493,10 @@ class LightGBMToolkit(Toolkit):
 
                     active_run_record["status"] = "running"
                     active_run_record["current_split_label"] = f"{variant_id}:{label}"
-                    active_run_record["progress_message"] = (
-                        "LightGBM activity-cliff loop training: "
-                        f"{variant_id} on fixed {label} holdout"
+                    publish_active_progress(
+                        "Training activity-cliff variant",
+                        {"detail": f"{variant_id} on fixed {label} holdout"},
                     )
-                    if prediction_state is not None:
-                        prediction_state["active_training_run"] = dict(active_run_record)
-                    write_active_training_marker(active_marker_path, active_run_record)
 
                     variant_result = self.backend.train_model(
                         train_csv=train_csv,
