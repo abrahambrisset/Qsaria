@@ -77,6 +77,43 @@ def test_chemprop_cli_forwards_observed_epoch_progress(monkeypatch):
     assert [(item["epoch"], item["total_epochs"]) for item in observed] == [(1, 3), (2, 3)]
 
 
+def test_chemprop_cli_forwards_observed_ray_tune_candidate_progress(monkeypatch):
+    """Ray's own status rows drive the candidate counter, not trial artifacts."""
+
+    backend = ChempropBackend()
+    observed = []
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_find_cli_path", lambda: None)
+
+    backend._run_cli(
+        [
+            sys.executable,
+            "-c",
+            "print('│ train_func_deadbeef │ TERMINATED │', flush=True); "
+            "print('train_func_cafebabe      RUNNING', flush=True); "
+            "print('Epoch 2/10', flush=True)",
+        ],
+        total_trials=25,
+        progress_callback=observed.append,
+    )
+
+    ray_status = next(item for item in observed if item["event"] == "ray_tune_trial_status")
+    assert ray_status == {
+        "event": "ray_tune_trial_status",
+        "trial_id": "train_func_cafebabe",
+        "trial_status": "RUNNING",
+        "candidate_index": 2,
+        "total_trials": 25,
+        "completed_trials": 1,
+        "failed_trials": 0,
+    }
+    assert (observed[-1]["event"], observed[-1]["epoch"], observed[-1]["total_epochs"]) == (
+        "epoch",
+        2,
+        10,
+    )
+
+
 def test_chemprop_adapter_accepts_train_test_without_hidden_validation(tmp_path):
     source = tmp_path / "curated.csv"
     pd.DataFrame(
@@ -367,6 +404,7 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
     assert captured["kwargs"]["env_overrides"]["RAY_ADDRESS"] == "local"
     assert captured["kwargs"]["cwd"] == ray_temp_root / "work"
     assert captured["working_dir_contents"] == []
+    assert captured["kwargs"]["total_trials"] == 25
 
 
 def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):

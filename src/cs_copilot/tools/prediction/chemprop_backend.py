@@ -45,7 +45,77 @@ from .training_orchestration import is_classification_task, normalize_task_type
 logger = logging.getLogger(__name__)
 
 EPOCH_PROGRESS_RE = re.compile(r"\bepoch\b[^0-9]*(\d+)(?:\s*/\s*(\d+))?", re.IGNORECASE)
+# Ray Tune writes a periodically refreshed table to the Chemprop CLI stream.  The
+# table uses either ASCII or Unicode separators depending on the installed Ray
+# version, hence the deliberately small and separator-tolerant expression.
+RAY_TUNE_TRIAL_STATUS_RE = re.compile(
+    r"(?P<trial>[A-Za-z][\w.-]*_[A-Za-z0-9]+)\s*(?:[|│]\s*|\s{2,})"
+    r"(?P<status>PENDING|RUNNING|TERMINATED|ERROR|PAUSED)\b",
+    re.IGNORECASE,
+)
 DEFAULT_CHEMPROP_FINGERPRINT_FFN_BLOCK_INDEX = -1
+
+
+class _RayTuneTrialTracker:
+    """Extract truthful sequential candidate progress from Ray's CLI table.
+
+    Qsaria's native Chemprop HPO configuration deliberately uses FIFO with one
+    concurrent trial.  Under that contract, the number of terminal trials plus
+    the one active trial is the candidate ordinal.  We only emit a value once
+    Ray itself has exposed an active trial, never by examining checkpoints or
+    temporary Ray files.
+    """
+
+    _ACTIVE_STATUSES = {"RUNNING", "PENDING", "PAUSED"}
+    _TERMINAL_STATUSES = {"TERMINATED", "ERROR"}
+
+    def __init__(self, total_trials: Optional[int]) -> None:
+        self.total_trials = int(total_trials) if total_trials else None
+        self._trial_statuses: Dict[str, str] = {}
+
+    def observe(self, line: str) -> Optional[Dict[str, Any]]:
+        """Return a progress event when a Ray table row changes state."""
+
+        match = RAY_TUNE_TRIAL_STATUS_RE.search(line)
+        if match is None or self.total_trials is None:
+            return None
+
+        trial_id = match.group("trial")
+        status = match.group("status").upper()
+        if self._trial_statuses.get(trial_id) == status:
+            return None
+        self._trial_statuses[trial_id] = status
+
+        active_trials = [
+            current_id
+            for current_id, current_status in self._trial_statuses.items()
+            if current_status in self._ACTIVE_STATUSES
+        ]
+        # HPO is configured sequentially.  If this invariant is ever relaxed,
+        # withholding the ordinal is safer than displaying a fabricated one.
+        if len(active_trials) != 1:
+            return None
+
+        completed_trials = sum(
+            current_status == "TERMINATED"
+            for current_status in self._trial_statuses.values()
+        )
+        failed_trials = sum(
+            current_status == "ERROR" for current_status in self._trial_statuses.values()
+        )
+        candidate_index = completed_trials + failed_trials + 1
+        if not 1 <= candidate_index <= self.total_trials:
+            return None
+
+        return {
+            "event": "ray_tune_trial_status",
+            "trial_id": active_trials[0],
+            "trial_status": self._trial_statuses[active_trials[0]],
+            "candidate_index": candidate_index,
+            "total_trials": self.total_trials,
+            "completed_trials": completed_trials,
+            "failed_trials": failed_trials,
+        }
 
 
 class ChempropBackend(PredictionBackend):
@@ -416,6 +486,7 @@ class ChempropBackend(PredictionBackend):
         total_epochs: Optional[int] = None,
         total_replicates: Optional[int] = None,
         total_models: Optional[int] = None,
+        total_trials: Optional[int] = None,
         env_overrides: Optional[Dict[str, str]] = None,
         cwd: Optional[Path] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -446,6 +517,7 @@ class ChempropBackend(PredictionBackend):
         last_progress_line: Optional[str] = None
         started_at = time.monotonic()
         next_heartbeat_at = started_at + heartbeat_seconds
+        ray_trial_tracker = _RayTuneTrialTracker(total_trials)
 
         def publish_progress(**payload: Any) -> None:
             """Emit best-effort progress without coupling CLI execution to the UI."""
@@ -466,6 +538,40 @@ class ChempropBackend(PredictionBackend):
                 if stream is not None:
                     stream.close()
 
+        def _consume_stream_line(source: str, line: str) -> None:
+            """Collect a CLI line and forward any observed backend telemetry."""
+
+            nonlocal last_epoch, observed_total_epochs, last_progress_line
+            if source == "stdout":
+                stdout_lines.append(line)
+            else:
+                stderr_lines.append(line)
+
+            stripped = line.rstrip()
+            if not stripped:
+                return
+
+            ray_trial_progress = ray_trial_tracker.observe(stripped)
+            if ray_trial_progress is not None:
+                publish_progress(**ray_trial_progress)
+
+            current_epoch, observed_total = self._extract_epoch_progress(stripped)
+            if current_epoch is None:
+                return
+
+            epoch_changed = current_epoch != last_epoch
+            last_epoch = current_epoch
+            if observed_total is not None:
+                observed_total_epochs = observed_total
+            last_progress_line = stripped
+            if epoch_changed:
+                publish_progress(
+                    event="epoch",
+                    epoch=current_epoch,
+                    total_epochs=observed_total_epochs or total_epochs,
+                    progress_label=progress_label,
+                )
+
         stdout_thread = threading.Thread(
             target=_pump_stream, args=(process.stdout, "stdout"), daemon=True
         )
@@ -479,29 +585,7 @@ class ChempropBackend(PredictionBackend):
             while True:
                 try:
                     source, line = stream_queue.get(timeout=1.0)
-                    stripped = line.rstrip()
-                    if source == "stdout":
-                        stdout_lines.append(line)
-                    else:
-                        stderr_lines.append(line)
-
-                    if not stripped:
-                        continue
-
-                    current_epoch, observed_total = self._extract_epoch_progress(stripped)
-                    if current_epoch is not None:
-                        epoch_changed = current_epoch != last_epoch
-                        last_epoch = current_epoch
-                        if observed_total is not None:
-                            observed_total_epochs = observed_total
-                        last_progress_line = stripped
-                        if epoch_changed:
-                            publish_progress(
-                                event="epoch",
-                                epoch=current_epoch,
-                                total_epochs=observed_total_epochs or total_epochs,
-                                progress_label=progress_label,
-                            )
+                    _consume_stream_line(source, line)
                 except queue.Empty:
                     pass
 
@@ -509,10 +593,7 @@ class ChempropBackend(PredictionBackend):
                     while True:
                         try:
                             source, line = stream_queue.get_nowait()
-                            if source == "stdout":
-                                stdout_lines.append(line)
-                            else:
-                                stderr_lines.append(line)
+                            _consume_stream_line(source, line)
                         except queue.Empty:
                             break
                     break
@@ -935,6 +1016,7 @@ class ChempropBackend(PredictionBackend):
                 args,
                 progress_label=f"{output_path.name}_hpopt",
                 output_dir=output_path,
+                total_trials=int(sanitized_extra_args["raytune_num_samples"]),
                 # Chemprop calls ray.init() without an address. Ray otherwise reconnects
                 # to its latest local cluster, whose prior runtime environment may package
                 # the complete application directory. Start a dedicated local instance.

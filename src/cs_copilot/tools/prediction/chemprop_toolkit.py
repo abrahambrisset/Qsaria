@@ -1942,17 +1942,48 @@ class ChempropToolkit(Toolkit):
                 qsar_training_state["active_run"] = dict(active_run_record)
             write_active_training_marker(active_marker_path, active_run_record)
 
-        def publish_epoch_progress(payload: Dict[str, Any]) -> None:
+        def publish_chemprop_progress(payload: Dict[str, Any]) -> None:
+            """Project native Chemprop and Ray telemetry onto the shared status card."""
+
+            phase = str(active_run_record.get("phase") or "Training model")
+            if payload.get("event") == "ray_tune_trial_status":
+                candidate_index = payload.get("candidate_index")
+                total_trials = payload.get("total_trials")
+                if phase != "Native hyperparameter optimization" or candidate_index is None:
+                    return
+                detail = (
+                    f"Candidate {candidate_index} of {total_trials}"
+                    if total_trials
+                    else f"Candidate {candidate_index}"
+                )
+                publish_active_progress(
+                    phase,
+                    {
+                        "detail": detail,
+                        "candidate_index": candidate_index,
+                        "total_trials": total_trials,
+                        "completed_trials": payload.get("completed_trials"),
+                        "failed_trials": payload.get("failed_trials"),
+                    },
+                )
+                return
+
             epoch = payload.get("epoch")
             total_epochs = payload.get("total_epochs")
             if epoch is None:
                 return
-            phase = str(active_run_record.get("phase") or "Training model")
             if phase == "Native hyperparameter optimization":
+                candidate_index = active_run_record.get("candidate_index")
+                total_trials = active_run_record.get("total_trials")
+                candidate_prefix = (
+                    f"Candidate {candidate_index} of {total_trials} — "
+                    if candidate_index is not None and total_trials
+                    else "Current candidate — "
+                )
                 detail = (
-                    f"Current candidate — epoch {epoch} of {total_epochs}"
+                    f"{candidate_prefix}epoch {epoch} of {total_epochs}"
                     if total_epochs
-                    else f"Current candidate — epoch {epoch}"
+                    else f"{candidate_prefix}epoch {epoch}"
                 )
             else:
                 detail = f"epoch {epoch} of {total_epochs}" if total_epochs else f"epoch {epoch}"
@@ -2068,7 +2099,7 @@ class ChempropToolkit(Toolkit):
                             output_dir=root_output_path,
                             seed=int(tuning_config.seed or split_run["seed"]),
                             compute_environment=training_policy["compute_environment"],
-                            progress_callback=publish_epoch_progress,
+                            progress_callback=publish_chemprop_progress,
                         )
                         selected_parameters = dict(
                             (tuning_summary.get("best_trial") or {}).get("params") or {}
@@ -2131,7 +2162,7 @@ class ChempropToolkit(Toolkit):
                     split_payload=split_payload,
                     split_label=label,
                     seed=split_run["seed"],
-                    progress_callback=publish_epoch_progress,
+                    progress_callback=publish_chemprop_progress,
                 )
                 publish_active_progress("Evaluating final test set", {})
                 if label.startswith("cv_repeat_"):
@@ -2205,7 +2236,7 @@ class ChempropToolkit(Toolkit):
                     split_payload=final_split_payload,
                     split_label="final_refit",
                     seed=protocol_policy["seed_policy"].get("model_seed"),
-                    progress_callback=publish_epoch_progress,
+                    progress_callback=publish_chemprop_progress,
                 )
                 publish_active_progress("Evaluating final test set", {})
                 final_refit_run["strategy"] = "final_refit"
