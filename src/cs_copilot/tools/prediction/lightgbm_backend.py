@@ -719,7 +719,12 @@ class LightGBMBackend(PredictionBackend):
         encoded_working = working.copy()
         encoded_working[feature_columns] = encoded_features
 
-        if final_refit:
+        # A final refit normally means "all development rows", but an
+        # outlier-analysis variant can still carry an explicitly isolated
+        # external test set.  Never replace such a caller-supplied split:
+        # doing so silently drops the test rows and makes the filtered variant
+        # look unevaluated.
+        if final_refit and not split_payload:
             split_payload = build_full_train_split_payload(df=encoded_working)
         elif not split_payload:
             split_payload = build_qsar_split_payload(
@@ -742,9 +747,9 @@ class LightGBMBackend(PredictionBackend):
         excluded_from_train = sorted(set(source_train_idx) & excluded_train_indices)
         val_idx = split_indices.get("val") or []
         test_idx = split_indices.get("test") or []
-        if not train_idx or (persist_artifacts and not final_refit and not test_idx):
+        if not train_idx or (persist_artifacts and not final_refit and not (val_idx or test_idx)):
             raise InvalidPredictionInputError(
-                "LightGBM persistent training requires non-empty train/test indices."
+                "LightGBM persistent training requires non-empty train and validation or test indices."
             )
         effective_split_payload = [
             {
@@ -1032,8 +1037,8 @@ class LightGBMBackend(PredictionBackend):
             "config_path": str(config_path) if persist_artifacts else None,
             "task_type": task.task_type,
             "metrics": metrics,
-            "metrics_status": "not_evaluated" if final_refit else "evaluated",
-            "evaluation_required": bool(final_refit),
+            "metrics_status": "not_evaluated" if final_refit and not test_idx else "evaluated",
+            "evaluation_required": bool(final_refit and not test_idx),
             "feature_columns": feature_columns,
             "feature_count": len(feature_columns),
             "categorical_feature_columns": categorical_feature_columns,

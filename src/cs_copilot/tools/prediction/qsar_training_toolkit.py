@@ -24,6 +24,7 @@ from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeature
 from .chemprop_toolkit import ChempropToolkit
 from .hyperparameter_tuning import describe_backend_hyperparameters, describe_tuning_engines
 from .lightgbm_toolkit import LightGBMToolkit
+from .outlier_analysis import describe_outlier_analysis_policy
 from .qsar_reporting import build_training_reporting_handoff
 from .qsar_response_compaction import (
     compact_applicability_domain_for_response as _compact_applicability_domain_for_response,
@@ -359,6 +360,8 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "chemprop_splits_file",
         "chemprop_input_manifest_path",
         "reporting_handoff",
+        "outlier_analysis",
+        "outlier_model_variants",
     )
     compact = {key: result.get(key) for key in keep_keys if result.get(key) is not None}
     compact.update(
@@ -468,6 +471,7 @@ class QSARTrainingToolkit(Toolkit):
         self.register(self.describe_qsar_training_environment)
         self.register(self.describe_backend_hyperparameters)
         self.register(self.describe_tuning_engines)
+        self.register(self.describe_outlier_analysis)
         self.register(self.prepare_training_dataset)
         self.register(self.train_qsar_model)
         self.register(self.train_chemprop_model)
@@ -487,6 +491,7 @@ class QSARTrainingToolkit(Toolkit):
             "automatic_tabular_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             "backend_hyperparameters": describe_backend_hyperparameters(),
             "tuning_engines": describe_tuning_engines(),
+            "outlier_analysis": describe_outlier_analysis_policy(),
             "toolkit": "QSARTrainingToolkit",
         }
 
@@ -497,6 +502,10 @@ class QSARTrainingToolkit(Toolkit):
     def describe_tuning_engines(self, engine_name: Optional[str] = None) -> Dict[str, Any]:
         """Describe shared tuning engines and their real backend availability."""
         return describe_tuning_engines(engine_name)
+
+    def describe_outlier_analysis(self) -> Dict[str, Any]:
+        """Describe the shared post-selection outlier analysis policy."""
+        return describe_outlier_analysis_policy()
 
     def backend_mapping(self) -> Dict[str, Any]:
         """Return the backend instances used by the training facade."""
@@ -944,6 +953,28 @@ class QSARTrainingToolkit(Toolkit):
             }
         if metrics_status == "not_evaluated":
             known_metrics = {}
+        # Persisting outlier variants registers each final fit independently.
+        # Keep the artifact provenance with that exact fit instead of relying
+        # on the campaign-level summary, whose primary run is the baseline.
+        # The model registry consumes these paths when materializing the
+        # catalog entry.
+        artifact_sources = {
+            "training_summary_path": summary_path,
+            "config_path": result.get("config_path"),
+            "splits_path": result.get("splits_path"),
+            "validation_predictions_path": result.get("validation_predictions_path"),
+            "test_predictions_path": result.get("test_predictions_path"),
+            "hyperparameter_tuning_summary_path": result.get(
+                "hyperparameter_tuning_summary_path"
+            )
+            or (result.get("hyperparameter_tuning") or {}).get("summary_path"),
+            "applicability_domain": result.get("applicability_domain") or {},
+            "plot_artifacts": result.get("plot_artifacts") or {},
+            "activity_cliffs": result.get("activity_cliffs") or {},
+            "curation": result.get("curation") or {},
+            "feature_preparation": result.get("feature_preparation") or {},
+            "outlier_analysis": result.get("outlier_analysis") or {},
+        }
         model_id = (
             f"{backend_name}_{result.get('representation_name') or 'model'}_"
             f"{_cache_key({'model_path': model_path, 'validation_protocol': result.get('validation_protocol')})}"
@@ -976,6 +1007,7 @@ class QSARTrainingToolkit(Toolkit):
                     result.get("feature_preparation") or {}
                 ),
                 "training_summary_path": summary_path,
+                "artifact_sources": artifact_sources,
                 "hyperparameter_tuning": result.get("catalog_hyperparameter_tuning")
                 or result.get("hyperparameter_tuning_metadata")
                 or {},
@@ -985,6 +1017,8 @@ class QSARTrainingToolkit(Toolkit):
                 or (result.get("hyperparameter_tuning") or {}).get("summary_path"),
                 "cross_validation": cross_validation,
                 "catalog_model_policy": result.get("catalog_model_policy"),
+                "outlier_analysis": result.get("outlier_analysis") or {},
+                "outlier_variant": result.get("outlier_variant"),
             },
             "inference_profile": {
                 "representation_name": result.get("representation_name"),
@@ -1008,6 +1042,45 @@ class QSARTrainingToolkit(Toolkit):
         result: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         payloads: List[Dict[str, Any]] = []
+        variant_models = result.get("outlier_model_variants") or []
+        if variant_models:
+            for index, variant in enumerate(variant_models, start=1):
+                run = variant.get("run") if isinstance(variant, dict) else None
+                if not isinstance(run, dict):
+                    continue
+                model_path = run.get("best_model_path") or run.get("model_path")
+                if not model_path:
+                    continue
+                variant_id = str(variant.get("variant_id") or run.get("outlier_variant") or index)
+                context = {
+                    **result,
+                    **run,
+                    "model_path": model_path,
+                    "best_model_path": model_path,
+                    "outlier_variant": variant_id,
+                    "applicability_domain": run.get("applicability_domain")
+                    or result.get("applicability_domain")
+                    or {},
+                    "validation_protocol": f"{result.get('validation_protocol')}_{variant_id}",
+                }
+                payloads.append(
+                    {
+                        "rank": index,
+                        "candidate_id": f"{backend_name}_{result.get('representation_name')}_{variant_id}",
+                        "backend_name": backend_name,
+                        "representation_name": result.get("representation_name"),
+                        "split_label": variant_id,
+                        "registry_payload": self._recommended_registry_payload(
+                            backend_name=backend_name,
+                            task_type=task_type,
+                            smiles_column=smiles_column,
+                            target_columns=target_columns,
+                            result=context,
+                        ),
+                    }
+                )
+            if payloads:
+                return payloads
         for index, split_result in enumerate(result.get("split_results") or [], start=1):
             model_path = split_result.get("best_model_path") or split_result.get("model_path")
             if not model_path:
@@ -1230,9 +1303,8 @@ class QSARTrainingToolkit(Toolkit):
                 "candidate_count": len(candidate_registry_payloads),
                 "candidate_registry_payloads_key": "candidate_registry_payloads",
                 "required_tool_sequence": (
-                    "For each candidate_registry_payloads item: call register_model with "
-                    "`registry_payload`, then persist_registered_model with the returned "
-                    "temporary model_id. Report every persisted canonical catalog model_id."
+                    "Call register_and_persist_candidates with the exact "
+                    "candidate_registry_payloads list and report every returned canonical catalog model_id."
                 ),
                 "recommended_candidate": best_result.get("candidate_id")
                 or f"{backend_name}_{best_result.get('representation_name')}",
@@ -1282,6 +1354,7 @@ class QSARTrainingToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1308,6 +1381,11 @@ class QSARTrainingToolkit(Toolkit):
             hyperparameter_tuning
             if hyperparameter_tuning is not None
             else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
+        requested_outlier_analysis = (
+            outlier_analysis
+            if outlier_analysis is not None
+            else requested_extra_args.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
@@ -1352,6 +1430,7 @@ class QSARTrainingToolkit(Toolkit):
                 similarity_threshold_percentile=requested_similarity_percentile,
                 extra_args=requested_extra_args,
                 hyperparameter_tuning=requested_hyperparameter_tuning,
+                outlier_analysis=requested_outlier_analysis,
                 agent=agent,
             )
             result["backend_name"] = "chemprop"
@@ -1440,6 +1519,7 @@ class QSARTrainingToolkit(Toolkit):
                     similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
                     hyperparameter_tuning=requested_hyperparameter_tuning,
+                    outlier_analysis=requested_outlier_analysis,
                     agent=agent,
                 )
             else:
@@ -1463,6 +1543,7 @@ class QSARTrainingToolkit(Toolkit):
                     similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
                     hyperparameter_tuning=requested_hyperparameter_tuning,
+                    outlier_analysis=requested_outlier_analysis,
                     agent=agent,
                 )
             result["backend_name"] = normalized_backend
@@ -1497,9 +1578,9 @@ class QSARTrainingToolkit(Toolkit):
             target_columns=list(normalized_target_columns),
             result=result,
         )
-        if (
-            len(split_registry_payloads) > 1
-            and result.get("validation_strategy_type") != "cross_validation"
+        if len(split_registry_payloads) > 1 and (
+            result.get("validation_strategy_type") != "cross_validation"
+            or result.get("outlier_model_variants")
         ):
             result["candidate_registry_payloads"] = split_registry_payloads
             result["recommended_registry_payloads"] = [
@@ -1510,9 +1591,8 @@ class QSARTrainingToolkit(Toolkit):
                 "candidate_count": len(split_registry_payloads),
                 "candidate_registry_payloads_key": "candidate_registry_payloads",
                 "required_tool_sequence": (
-                    "For each candidate_registry_payloads item: call register_model with "
-                    "`registry_payload`, then persist_registered_model with the returned "
-                    "temporary model_id. Report every persisted canonical catalog model_id."
+                    "Call register_and_persist_candidates with the exact "
+                    "candidate_registry_payloads list and report every returned canonical catalog model_id."
                 ),
             }
         result["reporting_handoff"] = build_training_reporting_handoff(result)
@@ -1551,6 +1631,7 @@ class QSARTrainingToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1574,6 +1655,7 @@ class QSARTrainingToolkit(Toolkit):
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
             hyperparameter_tuning=hyperparameter_tuning,
+            outlier_analysis=outlier_analysis,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1600,6 +1682,7 @@ class QSARTrainingToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1626,6 +1709,7 @@ class QSARTrainingToolkit(Toolkit):
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
             hyperparameter_tuning=hyperparameter_tuning,
+            outlier_analysis=outlier_analysis,
             extra_args=extra_args,
             agent=agent,
         )
@@ -1651,6 +1735,7 @@ class QSARTrainingToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1676,6 +1761,7 @@ class QSARTrainingToolkit(Toolkit):
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
             hyperparameter_tuning=hyperparameter_tuning,
+            outlier_analysis=outlier_analysis,
             extra_args=extra_args,
             agent=agent,
         )

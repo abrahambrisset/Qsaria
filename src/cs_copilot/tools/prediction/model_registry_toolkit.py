@@ -398,6 +398,7 @@ class ModelRegistryToolkit(Toolkit):
             self.register(self.register_catalog_model)
             self.register(self.register_model)
             self.register(self.persist_registered_model)
+            self.register(self.register_and_persist_candidates)
             self.register(self.list_registered_models)
             self.register(self.summarize_model)
 
@@ -727,6 +728,8 @@ class ModelRegistryToolkit(Toolkit):
         }
         plot_sources: Dict[str, Path] = {}
         activity_cliff_sources: Dict[str, Path] = {}
+        outlier_analysis_sources: Dict[str, Path] = {}
+        outlier_analysis_plot_sources: Dict[str, Path] = {}
         activity_cliff_variant_model_sources: List[Dict[str, Any]] = []
         split_prediction_sources: Dict[str, Path] = {}
         split_splits_sources: Dict[str, Path] = {}
@@ -734,6 +737,7 @@ class ModelRegistryToolkit(Toolkit):
         curation_payload: Dict[str, Any] = {}
         feature_preparation_payload: Dict[str, Any] = {}
         ad_plots_source: Optional[Path] = None
+        tuning_summary_source: Optional[Path] = None
 
         for key in (
             "config_path",
@@ -754,6 +758,9 @@ class ModelRegistryToolkit(Toolkit):
             raw_path = source_artifacts.get(key)
             if raw_path:
                 optional_artifacts[key] = Path(str(raw_path)).expanduser()
+        raw_tuning_summary_path = source_artifacts.get("hyperparameter_tuning_summary_path")
+        if raw_tuning_summary_path:
+            tuning_summary_source = Path(str(raw_tuning_summary_path)).expanduser()
 
         activity_plot_names = {
             "activity_cliff_score_histogram",
@@ -800,6 +807,24 @@ class ModelRegistryToolkit(Toolkit):
                 )
         feature_preparation_payload = source_artifacts.get("feature_preparation") or {}
         activity_payload = source_artifacts.get("activity_cliffs") or {}
+        outlier_analysis_payload = _mapping_or_empty(source_artifacts.get("outlier_analysis"))
+        outlier_artifacts = _mapping_or_empty(outlier_analysis_payload.get("artifacts"))
+        for key in (
+            "summary_path",
+            "selection_predictions_path",
+            "filtered_development_path",
+            "comparison_path",
+        ):
+            raw_path = outlier_analysis_payload.get(key) or outlier_artifacts.get(key)
+            if raw_path:
+                outlier_analysis_sources[key] = Path(str(raw_path)).expanduser()
+        for plot_name, raw_path in (
+            outlier_analysis_payload.get("plot_artifacts")
+            or outlier_artifacts.get("plot_artifacts")
+            or {}
+        ).items():
+            if raw_path:
+                outlier_analysis_plot_sources[str(plot_name)] = Path(str(raw_path)).expanduser()
         for key in (
             "annotated_training_csv",
             "summary_path",
@@ -902,6 +927,13 @@ class ModelRegistryToolkit(Toolkit):
         if copied_plot_artifacts:
             copied_files["plot_artifacts"] = copied_plot_artifacts
 
+        if tuning_summary_source and tuning_summary_source.exists():
+            tuning_target = artifacts_dir / "hyperparameter_tuning_summary.json"
+            shutil.copy2(tuning_summary_source, tuning_target)
+            copied_files["hyperparameter_tuning_summary_path"] = _relative_posix(
+                tuning_target, model_root
+            )
+
         if ad_plots_source and ad_plots_source.is_dir():
             target_path = artifacts_dir / "applicability_domain" / "plots"
             if target_path.exists():
@@ -984,6 +1016,31 @@ class ModelRegistryToolkit(Toolkit):
                 copied_activity_cliff_variant_models[key] = _relative_posix(target_path, model_root)
         if copied_activity_cliff_variant_models:
             copied_files["activity_cliff_variant_models"] = copied_activity_cliff_variant_models
+
+        copied_outlier_analysis_artifacts: Dict[str, str] = {}
+        if outlier_analysis_sources or outlier_analysis_plot_sources:
+            outlier_dir = artifacts_dir / "outlier_analysis"
+            outlier_dir.mkdir(parents=True, exist_ok=True)
+            for artifact_name, source_path in outlier_analysis_sources.items():
+                if not source_path.exists():
+                    continue
+                target_path = outlier_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_outlier_analysis_artifacts[artifact_name] = _relative_posix(
+                    target_path, model_root
+                )
+            for plot_name, source_path in outlier_analysis_plot_sources.items():
+                if not source_path.exists():
+                    continue
+                target_dir = outlier_dir / "plots"
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / source_path.name
+                shutil.copy2(source_path, target_path)
+                copied_outlier_analysis_artifacts[plot_name] = _relative_posix(
+                    target_path, model_root
+                )
+        if copied_outlier_analysis_artifacts:
+            copied_files["outlier_analysis"] = copied_outlier_analysis_artifacts
 
         if train_csv:
             source_train_csv = Path(train_csv).expanduser()
@@ -1139,9 +1196,15 @@ class ModelRegistryToolkit(Toolkit):
         }
         tuning_provenance = _tuning_provenance_from_record(record)
         if tuning_provenance:
+            tuning_provenance = dict(tuning_provenance)
+            if copied_files.get("hyperparameter_tuning_summary_path"):
+                tuning_provenance["summary_path"] = copied_files[
+                    "hyperparameter_tuning_summary_path"
+                ]
             metadata["hyperparameter_tuning"] = tuning_provenance
             metadata["hyperparameter_tuning_summary_path"] = (
-                record.training_data_summary.get("hyperparameter_tuning_summary_path")
+                copied_files.get("hyperparameter_tuning_summary_path")
+                or record.training_data_summary.get("hyperparameter_tuning_summary_path")
                 or tuning_provenance.get("summary_path")
             )
         metadata.update(_classification_metadata(record))
@@ -1271,6 +1334,26 @@ class ModelRegistryToolkit(Toolkit):
                 metadata["activity_cliffs"][
                     "variant_model_artifacts"
                 ] = copied_activity_cliff_variant_models
+        if outlier_analysis_payload:
+            metadata_outlier_analysis = dict(outlier_analysis_payload)
+            metadata_outlier_analysis.pop("artifacts", None)
+            metadata_outlier_analysis["artifacts"] = copied_outlier_analysis_artifacts
+            for key in (
+                "summary_path",
+                "selection_predictions_path",
+                "filtered_development_path",
+                "comparison_path",
+            ):
+                if copied_outlier_analysis_artifacts.get(key):
+                    metadata_outlier_analysis[key] = copied_outlier_analysis_artifacts[key]
+            copied_outlier_plots = {
+                key: copied_outlier_analysis_artifacts[key]
+                for key in outlier_analysis_plot_sources
+                if copied_outlier_analysis_artifacts.get(key)
+            }
+            if copied_outlier_plots:
+                metadata_outlier_analysis["plot_artifacts"] = copied_outlier_plots
+            metadata["outlier_analysis"] = metadata_outlier_analysis
         metadata_path = model_root / "metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -1341,9 +1424,15 @@ class ModelRegistryToolkit(Toolkit):
         payload.update(_classification_metadata(record))
         tuning_provenance = _tuning_provenance_from_record(record)
         if tuning_provenance:
+            tuning_provenance = dict(tuning_provenance)
+            if (payload.get("artifacts") or {}).get("hyperparameter_tuning_summary_path"):
+                tuning_provenance["summary_path"] = (payload.get("artifacts") or {}).get(
+                    "hyperparameter_tuning_summary_path"
+                )
             payload["hyperparameter_tuning"] = tuning_provenance
             payload["hyperparameter_tuning_summary_path"] = (
-                record.training_data_summary.get("hyperparameter_tuning_summary_path")
+                (payload.get("artifacts") or {}).get("hyperparameter_tuning_summary_path")
+                or record.training_data_summary.get("hyperparameter_tuning_summary_path")
                 or tuning_provenance.get("summary_path")
             )
         metrics_status = (record.training_data_summary or {}).get("metrics_status")
@@ -1578,6 +1667,9 @@ class ModelRegistryToolkit(Toolkit):
         resolved_ad_methods = _mapping_or_empty(resolved_applicability_domain.get("methods"))
         resolved_bounding_box = _mapping_or_empty(resolved_ad_methods.get("bounding_box"))
         resolved_isolation_forest = _mapping_or_empty(resolved_ad_methods.get("isolation_forest"))
+        artifact_sources = _mapping_or_empty(
+            (current.training_data_summary or {}).get("artifact_sources")
+        )
         source_artifacts = {
             "training_summary_path": (
                 str(summary_path) if summary_path and summary_path.exists() else None
@@ -1586,6 +1678,10 @@ class ModelRegistryToolkit(Toolkit):
             "splits_path": summary_payload.get("splits_path"),
             "validation_predictions_path": summary_payload.get("validation_predictions_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
+            "hyperparameter_tuning_summary_path": (
+                summary_payload.get("hyperparameter_tuning_summary_path")
+                or (summary_payload.get("hyperparameter_tuning") or {}).get("summary_path")
+            ),
             "chemprop_training_input_csv": summary_payload.get("chemprop_training_input_csv"),
             "chemprop_splits_file": summary_payload.get("chemprop_splits_file"),
             "chemprop_input_manifest_path": summary_payload.get("chemprop_input_manifest_path"),
@@ -1611,7 +1707,30 @@ class ModelRegistryToolkit(Toolkit):
             "activity_cliffs": summary_payload.get("activity_cliffs") or {},
             "curation": merged_curation,
             "feature_preparation": summary_payload.get("feature_preparation") or {},
+            "outlier_analysis": summary_payload.get("outlier_analysis") or {},
         }
+        # Variant candidates share a campaign summary but own their model,
+        # predictions and AD artifacts.  Prefer those explicit sources so a
+        # filtered model is never materialized with the baseline test file.
+        for key in (
+            "training_summary_path",
+            "config_path",
+            "splits_path",
+            "validation_predictions_path",
+            "test_predictions_path",
+            "hyperparameter_tuning_summary_path",
+        ):
+            if artifact_sources.get(key):
+                source_artifacts[key] = artifact_sources[key]
+        for key in (
+            "plot_artifacts",
+            "activity_cliffs",
+            "curation",
+            "feature_preparation",
+            "outlier_analysis",
+        ):
+            if artifact_sources.get(key):
+                source_artifacts[key] = artifact_sources[key]
         hydrated_inference_profile = _hydrate_inference_profile_from_summary(
             current_profile=current.inference_profile,
             override_profile=inference_profile,
@@ -1631,6 +1750,7 @@ class ModelRegistryToolkit(Toolkit):
         )
         resolved_model_path = materialized.get("model_path", current.model_path)
         resolved_metadata_path = materialized.get("metadata_path", current.metadata_path)
+        persisted_artifact_sources = materialized.get("artifacts") or artifact_sources
         requested_status = status or current.status
         if summary_payload.get("metrics_status") == "not_evaluated":
             requested_status = "workflow_demo"
@@ -1674,6 +1794,7 @@ class ModelRegistryToolkit(Toolkit):
             training_data_summary={
                 **current.training_data_summary,
                 **(training_data_summary or {}),
+                "artifact_sources": persisted_artifact_sources,
                 "trained_at": trained_at.isoformat(),
                 "trained_date": trained_at.strftime("%d/%m/%Y"),
                 "trained_time": trained_at.strftime("%H:%M:%S"),
@@ -1780,6 +1901,68 @@ class ModelRegistryToolkit(Toolkit):
             payload=response_payload,
         )
         return response_payload
+
+    def register_and_persist_candidates(
+        self,
+        candidate_registry_payloads: List[Dict[str, Any]],
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Persist every training candidate sequentially from its exact payload.
+
+        This is the lossless counterpart to asking an LLM to alternate
+        ``register_model`` and ``persist_registered_model`` calls.  In
+        particular, repeated holdout and CV candidates can share a human
+        label such as ``baseline`` while still requiring distinct model paths
+        and provenance.
+        """
+        if agent is None:
+            raise ValueError("Agent is required to persist training candidates")
+        if not isinstance(candidate_registry_payloads, list) or not candidate_registry_payloads:
+            raise ValueError("candidate_registry_payloads must be a non-empty list.")
+
+        persisted_candidates: List[Dict[str, Any]] = []
+        for index, candidate in enumerate(candidate_registry_payloads, start=1):
+            if not isinstance(candidate, Mapping):
+                raise ValueError(f"Candidate {index} must be an object.")
+            registry_payload = candidate.get("registry_payload", candidate)
+            if not isinstance(registry_payload, Mapping):
+                raise ValueError(f"Candidate {index} has no registry_payload object.")
+            payload = dict(registry_payload)
+            required = ("model_id", "model_path", "task_type")
+            missing = [key for key in required if not payload.get(key)]
+            if missing:
+                raise ValueError(
+                    f"Candidate {index} registry_payload is missing required field(s): "
+                    + ", ".join(missing)
+                )
+            registered = self.register_model(agent=agent, **payload)
+            if not registered.get("registered"):
+                raise ValueError(
+                    f"Candidate {index} could not be registered: "
+                    f"{registered.get('error') or 'unknown registration error'}"
+                )
+            persisted = self.persist_registered_model(
+                model_id=str(registered["model_id"]),
+                agent=agent,
+            )
+            if not persisted.get("persisted"):
+                raise ValueError(f"Candidate {index} could not be persisted.")
+            persisted_candidates.append(
+                {
+                    "rank": candidate.get("rank", index),
+                    "candidate_id": candidate.get("candidate_id"),
+                    "split_label": candidate.get("split_label"),
+                    "model_id": persisted.get("model_id"),
+                    "model_root": persisted.get("model_root"),
+                    "model_path": persisted.get("model_path"),
+                    "metadata_path": persisted.get("metadata_path"),
+                }
+            )
+        return {
+            "persisted": True,
+            "candidate_count": len(persisted_candidates),
+            "candidates": persisted_candidates,
+        }
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:
         """List models registered in the current session."""

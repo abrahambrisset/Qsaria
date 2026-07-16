@@ -395,6 +395,9 @@ def _fake_lightgbm_module():
             calls["fit_kwargs"] = kwargs
             return self
 
+        def predict(self, features):
+            return [0.5 for _ in range(len(features))]
+
     def early_stopping(*, stopping_rounds, verbose):
         calls["early_stopping"] += 1
         return {
@@ -454,6 +457,86 @@ def test_lightgbm_fit_with_validation_uses_early_stopping(monkeypatch):
     assert calls["early_stopping"] == 1
     assert "eval_set" in calls["fit_kwargs"]
     assert calls["fit_kwargs"]["callbacks"][1]["callback"] == "early_stopping"
+
+
+def test_lightgbm_final_refit_preserves_explicit_external_test(monkeypatch, tmp_path):
+    """Outlier-filtered refits retain their untouched external test split."""
+    backend = LightGBMBackend()
+    fake_lgb, _ = _fake_lightgbm_module()
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_import_lightgbm", lambda: fake_lgb)
+    monkeypatch.setattr(
+        "cs_copilot.tools.prediction.lightgbm_backend.pickle.dump", lambda *_args, **_kwargs: None
+    )
+    train_csv = tmp_path / "training.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO" for _ in range(12)],
+            "feature_a": list(range(12)),
+            "pEC50": [float(index) for index in range(12)],
+        }
+    ).to_csv(train_csv, index=False)
+
+    result = backend.train_model(
+        train_csv=str(train_csv),
+        output_dir=str(tmp_path / "filtered"),
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+        extra_args={
+            "feature_columns": ["feature_a"],
+            "final_refit": True,
+            "refit_on_train_validation": True,
+            "split_payload": [{"train": list(range(10)), "test": [10, 11]}],
+        },
+    )
+
+    assert result["metrics_status"] == "evaluated"
+    assert result["evaluation_required"] is False
+    assert result["test_predictions_path"]
+    assert Path(result["test_predictions_path"]).exists()
+    assert result["effective_split_payload"][0]["test"] == [10, 11]
+
+
+def test_lightgbm_final_refit_without_external_test_is_allowed(monkeypatch, tmp_path):
+    """A CV final refit may train on all development rows without a test set."""
+    backend = LightGBMBackend()
+    fake_lgb, _ = _fake_lightgbm_module()
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_import_lightgbm", lambda: fake_lgb)
+    monkeypatch.setattr(
+        "cs_copilot.tools.prediction.lightgbm_backend.pickle.dump", lambda *_args, **_kwargs: None
+    )
+    train_csv = tmp_path / "development.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO" for _ in range(10)],
+            "feature_a": list(range(10)),
+            "pEC50": [float(index) for index in range(10)],
+        }
+    ).to_csv(train_csv, index=False)
+
+    result = backend.train_model(
+        train_csv=str(train_csv),
+        output_dir=str(tmp_path / "cv_final_refit"),
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+        ),
+        extra_args={
+            "feature_columns": ["feature_a"],
+            "final_refit": True,
+            "refit_on_train_validation": True,
+            "split_payload": [{"train": list(range(10))}],
+        },
+    )
+
+    assert result["metrics_status"] == "not_evaluated"
+    assert result["evaluation_required"] is True
+    assert result["test_predictions_path"] is None
 
 
 def test_lightgbm_predict_featurizes_smiles_for_morgan_model(tmp_path):
@@ -1048,6 +1131,190 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     )
     assert result["status_reason"]
     assert "workflow_demo" in result["status_reason"]
+
+
+def test_model_registry_persists_variant_specific_outlier_artifacts(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal_models"
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    campaign_dir = tmp_path / "campaign"
+    filtered_dir = campaign_dir / "outlier_filtered"
+    filtered_model_dir = filtered_dir / "model_0"
+    filtered_model_dir.mkdir(parents=True)
+    filtered_model = filtered_model_dir / "best.pkl"
+    filtered_model.write_text("filtered-model")
+    filtered_predictions = filtered_model_dir / "test_predictions.csv"
+    filtered_predictions.write_text("prediction\n2.0\n")
+    baseline_predictions = campaign_dir / "model_0" / "test_predictions.csv"
+    baseline_predictions.parent.mkdir(parents=True)
+    baseline_predictions.write_text("prediction\n1.0\n")
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\n")
+    campaign_summary = campaign_dir / "cs_copilot_training_summary.json"
+    campaign_summary.write_text(
+        json.dumps(
+            {
+                "train_csv": str(train_csv),
+                "trained_at": "2026-07-15T12:00:00+02:00",
+                "validation_protocol": "random_holdout",
+                "representation_name": "rdkit_all",
+                "test_predictions_path": str(baseline_predictions),
+            }
+        )
+        + "\n"
+    )
+    tuning_summary = campaign_dir / "hyperparameter_tuning_summary.json"
+    tuning_summary.write_text(json.dumps({"engine": "optuna_tpe", "best_trial": {}}) + "\n")
+    analysis_dir = campaign_dir / "outlier_analysis"
+    plots_dir = analysis_dir / "plots"
+    plots_dir.mkdir(parents=True)
+    analysis_summary = analysis_dir / "outlier_analysis_summary.json"
+    selection_csv = analysis_dir / "outlier_selection_predictions.csv"
+    filtered_csv = analysis_dir / "outlier_filtered_development.csv"
+    comparison_csv = analysis_dir / "outlier_variant_comparison.csv"
+    observed_plot = plots_dir / "outlier_selection_observed_vs_predicted.png"
+    residual_plot = plots_dir / "outlier_selection_residuals_vs_observed.png"
+    for path in (analysis_summary, selection_csv, filtered_csv, comparison_csv, observed_plot, residual_plot):
+        path.write_text(path.name)
+    outlier_analysis = {
+        "enabled": True,
+        "selected_count": 1,
+        "summary_path": str(analysis_summary),
+        "selection_predictions_path": str(selection_csv),
+        "filtered_development_path": str(filtered_csv),
+        "comparison_path": str(comparison_csv),
+        "plot_artifacts": {
+            "outlier_selection_observed_vs_predicted": str(observed_plot),
+            "outlier_selection_residuals_vs_observed": str(residual_plot),
+        },
+    }
+
+    class FakeBackend:
+        backend_name = "lightgbm"
+        MODEL_EXTENSIONS = (".pkl",)
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        catalog=PredictionModelCatalog.load(str(catalog_path)),
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    toolkit.register_model(
+        model_id="filtered_session_model",
+        model_path=str(filtered_model),
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["pEC50"],
+        known_metrics={"test": {"rmse": 0.3}},
+        training_data_summary={
+            "validation_protocol": "random_holdout_outlier_filtered",
+            "metrics_status": "evaluated",
+            "outlier_variant": "outlier_filtered",
+            "outlier_analysis": outlier_analysis,
+            "hyperparameter_tuning": {"engine": "optuna_tpe"},
+            "hyperparameter_tuning_summary_path": str(tuning_summary),
+            "artifact_sources": {
+                "training_summary_path": str(campaign_summary),
+                "test_predictions_path": str(filtered_predictions),
+                "hyperparameter_tuning_summary_path": str(tuning_summary),
+                "outlier_analysis": outlier_analysis,
+            },
+        },
+        agent=agent,
+    )
+
+    persisted = toolkit.persist_registered_model(
+        model_id="filtered_session_model",
+        agent=agent,
+    )
+
+    metadata = json.loads(Path(persisted["metadata_path"]).read_text())
+    root = Path(persisted["model_root"])
+    assert (root / metadata["artifacts"]["test_predictions_path"]).read_text() == "prediction\n2.0\n"
+    assert metadata["known_metrics"] == {"test": {"rmse": 0.3}}
+    assert metadata["outlier_analysis"]["selected_count"] == 1
+    assert (root / metadata["outlier_analysis"]["summary_path"]).exists()
+    assert (root / metadata["outlier_analysis"]["comparison_path"]).exists()
+    assert (root / metadata["artifacts"]["hyperparameter_tuning_summary_path"]).exists()
+    assert metadata["hyperparameter_tuning_summary_path"] == metadata["artifacts"][
+        "hyperparameter_tuning_summary_path"
+    ]
+
+
+def test_model_registry_batch_persistence_uses_each_exact_candidate_payload(monkeypatch, tmp_path):
+    class FakeBackend:
+        backend_name = "lightgbm"
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    calls = []
+
+    def fake_register_model(*, agent, **payload):
+        calls.append(("register", payload))
+        return {"registered": True, "model_id": payload["model_id"]}
+
+    def fake_persist_registered_model(*, model_id, agent):
+        calls.append(("persist", {"model_id": model_id}))
+        return {
+            "persisted": True,
+            "model_id": f"catalog_{model_id}",
+            "model_root": str(tmp_path / model_id),
+            "model_path": str(tmp_path / model_id / "best.pkl"),
+            "metadata_path": str(tmp_path / model_id / "metadata.json"),
+        }
+
+    monkeypatch.setattr(toolkit, "register_model", fake_register_model)
+    monkeypatch.setattr(toolkit, "persist_registered_model", fake_persist_registered_model)
+    agent = SimpleNamespace(session_state={})
+    candidates = [
+        {
+            "rank": 1,
+            "candidate_id": "repeat_1_baseline",
+            "split_label": "repeat_1_baseline",
+            "registry_payload": {
+                "model_id": "session_repeat_1_baseline",
+                "model_path": str(tmp_path / "repeat_1_baseline.pkl"),
+                "task_type": "regression",
+                "training_data_summary": {"outlier_variant": "repeat_1_baseline"},
+            },
+        },
+        {
+            "rank": 2,
+            "candidate_id": "repeat_2_outlier_filtered",
+            "split_label": "repeat_2_outlier_filtered",
+            "registry_payload": {
+                "model_id": "session_repeat_2_outlier_filtered",
+                "model_path": str(tmp_path / "repeat_2_outlier_filtered.pkl"),
+                "task_type": "regression",
+                "training_data_summary": {"outlier_variant": "repeat_2_outlier_filtered"},
+            },
+        },
+    ]
+
+    result = toolkit.register_and_persist_candidates(
+        candidate_registry_payloads=candidates,
+        agent=agent,
+    )
+
+    assert result["candidate_count"] == 2
+    assert [name for name, _ in calls] == ["register", "persist", "register", "persist"]
+    assert calls[0][1]["training_data_summary"]["outlier_variant"] == "repeat_1_baseline"
+    assert calls[2][1]["training_data_summary"]["outlier_variant"] == "repeat_2_outlier_filtered"
+    assert [item["model_id"] for item in result["candidates"]] == [
+        "catalog_session_repeat_1_baseline",
+        "catalog_session_repeat_2_outlier_filtered",
+    ]
 
 
 def test_model_registry_persistence_copies_modern_applicability_domain(monkeypatch, tmp_path):

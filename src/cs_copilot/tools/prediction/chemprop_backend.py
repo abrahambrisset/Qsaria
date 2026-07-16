@@ -1036,10 +1036,17 @@ class ChempropBackend(PredictionBackend):
                 progress_callback=progress_callback,
             )
         completed_at = datetime.now().astimezone()
+        # Chemprop 2.2.x writes the winning search configuration at this exact
+        # location.  Expose the path while the caller still owns the transient
+        # HPO directory instead of making it infer Ray's internal layout.
+        # The file itself remains temporary and is never persisted as a model
+        # artifact by this backend.
+        best_config_path = output_path / "best_config.toml"
         return {
             "backend": self.backend_name,
             "command": args,
             "output_dir": str(output_path),
+            "best_config_path": str(best_config_path) if best_config_path.is_file() else None,
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
             "started_at": started_at.isoformat(),

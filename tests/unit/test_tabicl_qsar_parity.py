@@ -256,7 +256,7 @@ def test_random_train_test_split_payload_has_no_hidden_validation():
     assert split["metadata"]["split_hash"] == second[0]["metadata"]["split_hash"]
 
 
-def test_repeated_kfold_split_payloads_cover_each_repeat_once_without_validation():
+def test_repeated_kfold_split_payloads_cover_each_repeat_once_as_validation():
     df = _sample_tabular_df()
 
     payloads = build_repeated_kfold_split_payloads(
@@ -265,20 +265,21 @@ def test_repeated_kfold_split_payloads_cover_each_repeat_once_without_validation
         n_repeats=2,
         random_state=42,
     )
-    repeat_test_indices = {1: [], 2: []}
+    repeat_validation_indices = {1: [], 2: []}
 
     assert len(payloads) == 8
     for label, payload in payloads.items():
         split = payload[0]
         metadata = split["metadata"]
         assert label == f"cv_repeat_{metadata['cv_repeat']}_fold_{metadata['cv_fold']}"
-        assert "val" not in split
-        assert sorted(split["train"] + split["test"]) == list(range(len(df)))
-        assert set(split["train"]).isdisjoint(split["test"])
-        repeat_test_indices[int(metadata["cv_repeat"])].extend(split["test"])
+        assert "test" not in split
+        assert sorted(split["train"] + split["val"]) == list(range(len(df)))
+        assert set(split["train"]).isdisjoint(split["val"])
+        assert metadata["has_validation"] is True
+        repeat_validation_indices[int(metadata["cv_repeat"])].extend(split["val"])
 
-    assert sorted(repeat_test_indices[1]) == list(range(len(df)))
-    assert sorted(repeat_test_indices[2]) == list(range(len(df)))
+    assert sorted(repeat_validation_indices[1]) == list(range(len(df)))
+    assert sorted(repeat_validation_indices[2]) == list(range(len(df)))
     assert payloads == build_repeated_kfold_split_payloads(
         df=df,
         n_splits=4,

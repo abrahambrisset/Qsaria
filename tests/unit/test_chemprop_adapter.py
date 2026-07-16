@@ -371,12 +371,13 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
         captured["args"] = args
         captured["kwargs"] = kwargs
         captured["working_dir_contents"] = list(kwargs["cwd"].iterdir())
+        (kwargs["output_dir"] / "best_config.toml").write_text("depth = [4]\n")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
     output_dir = tmp_path / "hpopt_output"
 
-    backend.hpopt_model(
+    result = backend.hpopt_model(
         train_csv=str(train_csv),
         output_dir=str(output_dir),
         task=_task(),
@@ -407,6 +408,7 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
     assert captured["working_dir_contents"] == []
     assert captured["kwargs"]["total_epochs"] == 30
     assert captured["kwargs"]["total_trials"] == 25
+    assert result["best_config_path"] == str(output_dir / "best_config.toml")
 
 
 def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):

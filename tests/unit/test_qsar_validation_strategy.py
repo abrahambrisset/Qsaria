@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pandas as pd
+import pytest
+
+from cs_copilot.tools.prediction.qsar_splitters import build_repeated_kfold_split_payloads
 from cs_copilot.tools.prediction.qsar_validation_strategy import resolve_validation_strategy
 
 
@@ -249,6 +253,52 @@ def test_cross_validation_accepts_fold_aliases_and_repeats():
     assert policy["split_runs"][-1]["label"] == "cv_repeat_5_fold_5"
     assert policy["validation_strategy"]["n_folds"] == 5
     assert policy["validation_strategy"]["n_repeats"] == 5
+
+
+def test_cross_validation_payload_uses_validation_not_test_for_inner_fold():
+    payloads = build_repeated_kfold_split_payloads(
+        df=pd.DataFrame({"x": range(20)}),
+        n_splits=5,
+        n_repeats=1,
+        random_state=7,
+    )
+
+    first = payloads["cv_repeat_1_fold_1"][0]
+    assert first["train"]
+    assert first["val"]
+    assert "test" not in first
+    assert set(first["train"]).isdisjoint(first["val"])
+
+
+def test_cross_validation_outer_test_is_fixed_and_absent_from_inner_train_validation():
+    payloads = build_repeated_kfold_split_payloads(
+        df=pd.DataFrame({"x": range(30)}),
+        n_splits=3,
+        n_repeats=1,
+        random_state=11,
+        outer_test_size=0.2,
+    )
+
+    folds = [payload[0] for payload in payloads.values()]
+    outer_test = folds[0]["test"]
+    assert all(fold["test"] == outer_test for fold in folds)
+    assert all(set(outer_test).isdisjoint(fold["train"]) for fold in folds)
+    assert all(set(outer_test).isdisjoint(fold["val"]) for fold in folds)
+
+
+@pytest.mark.parametrize("alias", ["test_size", "test_fold", "test_fraction"])
+def test_cross_validation_rejects_ambiguous_outer_test_aliases(alias):
+    with pytest.raises(ValueError, match="outer_test_size"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={
+                "type": "cross_validation",
+                "split_family": "random",
+                "n_folds": 3,
+                alias: 0.1,
+            },
+            training_profile="heavy_validation",
+        )
 
 
 def test_full_train_strategy_creates_single_final_refit_run():

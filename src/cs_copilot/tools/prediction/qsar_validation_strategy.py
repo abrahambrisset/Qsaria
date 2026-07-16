@@ -364,6 +364,19 @@ def resolve_validation_strategy(
         family = _infer_split_family(strategy)
         if family != "random":
             raise ValueError("cross_validation currently supports split_family='random' only.")
+        # A CV fold is always an inner validation set.  A separate external
+        # test is intentionally named `outer_test_size`; accepting familiar
+        # holdout aliases would silently produce a CV with no external test.
+        invalid_outer_test_aliases = {
+            key: strategy[key]
+            for key in ("test_size", "test_fold", "test_fraction")
+            if key in strategy
+        }
+        if invalid_outer_test_aliases:
+            raise ValueError(
+                "cross_validation uses `outer_test_size` for a fixed external test; "
+                "do not use " + ", ".join(sorted(invalid_outer_test_aliases)) + "."
+            )
         n_folds = _coerce_positive_int(
             strategy.get("n_folds", strategy.get("folds", strategy.get("n_splits"))),
             default=5,
@@ -376,6 +389,20 @@ def resolve_validation_strategy(
             name="n_repeats",
             minimum=1,
         )
+        raw_outer_test_size = strategy.get("outer_test_size")
+        if raw_outer_test_size in (None, 0, 0.0):
+            outer_test_size = None
+        else:
+            try:
+                outer_test_size = float(raw_outer_test_size)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "validation_strategy.outer_test_size must be a number strictly between 0 and 1."
+                ) from exc
+            if not 0.0 < outer_test_size < 1.0:
+                raise ValueError(
+                    "validation_strategy.outer_test_size must be strictly between 0 and 1."
+                )
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name="cross_validation",
             run_count=1,
@@ -416,6 +443,7 @@ def resolve_validation_strategy(
                 "n_folds": n_folds,
                 "n_repeats": n_repeats,
                 "seed": seed,
+                "outer_test_size": outer_test_size,
                 "final_refit": bool(strategy.get("final_refit", True)),
             },
             aggregation="out_of_fold_mean_std",

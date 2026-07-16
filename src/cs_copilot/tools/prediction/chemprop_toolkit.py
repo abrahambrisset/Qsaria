@@ -6,7 +6,9 @@ Internal toolkit for Chemprop-specific QSAR training flows.
 
 from __future__ import annotations
 
+import ast
 import json
+import logging
 import math
 import os
 import shutil
@@ -40,6 +42,15 @@ from .hyperparameter_tuning import (
     HyperparameterTuningError,
     normalize_tuning_config,
     tuning_metadata_for_catalog,
+)
+from .outlier_analysis import (
+    attach_activity_cliff_annotations,
+    attach_ad_annotations,
+    normalize_outlier_analysis_config,
+    selection_predictions_from_frame,
+    select_outliers,
+    write_outlier_analysis_artifacts,
+    write_outlier_variant_comparison,
 )
 from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
@@ -79,6 +90,9 @@ from .training_orchestration import (
     strip_unnamed_columns,
     write_training_summary,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -992,6 +1006,7 @@ class ChempropToolkit(Toolkit):
             split_payload=split_payload,
             split_label=split_label,
             seed=seed,
+            allow_empty_test=bool(train_args.get("final_refit")),
         )
         backend_train_args = {
             key: value
@@ -1222,7 +1237,58 @@ class ChempropToolkit(Toolkit):
                 if selected:
                     return selected
 
-        candidates = sorted(
+        def load_candidate(path: Path) -> Optional[Dict[str, Any]]:
+            """Read either strict TOML/JSON or ConfigArgParse's native config.
+
+            Chemprop calls ConfigArgParse's ``write_config_file`` for
+            ``best_config.toml``.  That output is a flat ``key = value``
+            configuration file and can contain unquoted paths/lists, so its
+            filename does not guarantee strict TOML syntax.  The fallback only
+            reads declared scalar/list values; it never evaluates arbitrary
+            code or imports the temporary configuration.
+            """
+            try:
+                with path.open("rb") as fh:
+                    payload = tomllib.load(fh) if path.suffix == ".toml" else json.load(fh)
+            except (OSError, ValueError, tomllib.TOMLDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+
+            if path.suffix != ".toml":
+                return None
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return None
+
+            flat_payload: Dict[str, Any] = {}
+            for raw_line in lines:
+                line = raw_line.strip()
+                if not line or line.startswith(("#", ";")) or "=" not in line:
+                    continue
+                raw_key, raw_value = line.split("=", 1)
+                key = raw_key.strip()
+                if not key or not key.replace("_", "").replace("-", "").isalnum():
+                    continue
+                value = raw_value.strip()
+                try:
+                    flat_payload[key] = ast.literal_eval(value)
+                except (SyntaxError, ValueError):
+                    # The native format permits bare strings such as data
+                    # paths.  They are irrelevant to selection but retaining
+                    # them lets the same parser handle all flat config fields.
+                    flat_payload[key] = value.strip("\"'")
+            return flat_payload or None
+
+        explicit_best_config = backend_result.get("best_config_path")
+        candidates: List[Path] = []
+        if isinstance(explicit_best_config, (str, Path)):
+            hinted_path = Path(explicit_best_config).expanduser()
+            if hinted_path.is_file():
+                candidates.append(hinted_path)
+
+        discovered_candidates = sorted(
             [
                 *hpopt_output_dir.rglob("*best*.toml"),
                 *hpopt_output_dir.rglob("*best*.json"),
@@ -1231,13 +1297,15 @@ class ChempropToolkit(Toolkit):
             ],
             key=lambda path: (len(path.parts), path.name),
         )
+        for path in discovered_candidates:
+            if path not in candidates:
+                candidates.append(path)
+
+        unreadable_candidates: List[str] = []
         for path in candidates:
-            try:
-                with path.open("rb") as fh:
-                    payload = tomllib.load(fh) if path.suffix == ".toml" else json.load(fh)
-            except (OSError, ValueError, tomllib.TOMLDecodeError):
-                continue
+            payload = load_candidate(path)
             if not isinstance(payload, dict):
+                unreadable_candidates.append(path.name)
                 continue
             containers = [payload]
             for key in ("best_config", "best_params", "best_hyperparameters", "config"):
@@ -1248,9 +1316,18 @@ class ChempropToolkit(Toolkit):
                 selected = select_declared_parameters(item)
                 if selected:
                     return selected
+        requested_display = ", ".join(requested_parameters)
+        checked_display = ", ".join(path.name for path in candidates) or "no candidate config file"
+        unreadable_display = (
+            f" Unreadable files: {', '.join(unreadable_candidates)}."
+            if unreadable_candidates
+            else ""
+        )
         raise HyperparameterTuningError(
-            "Chemprop hpopt completed but did not expose a readable winning architecture. "
-            "No final model was trained, so the test set remains untouched."
+            "Chemprop hpopt completed, but its winning configuration did not contain the "
+            f"requested Qsaria architecture parameters ({requested_display}). Checked: "
+            f"{checked_display}.{unreadable_display} No final model was trained, so the "
+            "test set remains untouched."
         )
 
     def _run_chemprop_hpopt(
@@ -1637,6 +1714,207 @@ class ChempropToolkit(Toolkit):
             similarity_threshold_percentile=similarity_threshold_percentile,
         )
 
+    def _run_outlier_refits(
+        self,
+        *,
+        train_csv: str,
+        source_df: pd.DataFrame,
+        task: PredictionTaskSpec,
+        split_payload: List[Dict[str, Any]],
+        selection_run: Dict[str, Any],
+        output_dir: Path,
+        train_args: Dict[str, Any],
+        selected_parameters: Dict[str, Any],
+        activity_args: Dict[str, Any],
+        applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
+        selection_fraction: float,
+        fold_label: str,
+        repeat_index: Optional[int] = None,
+        baseline_run: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Apply the shared outlier policy to one Chemprop validation fit.
+
+        Chemprop supplies its own temporary prediction CSV and embedding-based
+        AD.  The common module still owns row alignment, eligibility, APE
+        ordering and artifacts, so the scientific decision matches tabular
+        backends exactly.
+        """
+        split = split_payload[0]
+        train_indices = [int(value) for value in split.get("train") or []]
+        validation_indices = [
+            int(value) for value in (split.get("val") or split.get("validation") or [])
+        ]
+        test_indices = [int(value) for value in split.get("test") or []]
+        if not train_indices or not validation_indices:
+            raise ValueError("Outlier analysis requires a non-empty train and validation split.")
+        target_column = task.target_columns[0]
+        validation_path = selection_run.get("validation_predictions_path")
+        if not validation_path or not Path(str(validation_path)).exists():
+            raise ValueError("Chemprop selection fit did not produce validation predictions.")
+        selection = selection_predictions_from_frame(
+            pd.read_csv(Path(str(validation_path))),
+            source_row_indices=validation_indices,
+            target_column=target_column,
+            fold_label=fold_label,
+            repeat_index=repeat_index,
+        )
+        analysis_dir = output_dir / "outlier_analysis"
+        development_indices = [*train_indices, *validation_indices]
+        development_frame = source_df.iloc[development_indices].copy()
+        development_frame.index = development_indices
+
+        # This selection model was fitted only on its train indices.  Reuse its
+        # temporary embedding AD to score the validation rows, never the test.
+        selection_ad = self._build_applicability_domain(
+            train_csv=train_csv,
+            primary_run=selection_run,
+            primary_output_dir=Path(str(selection_run.get("output_dir") or output_dir)),
+            model_id_hint="chemprop_outlier_selection",
+            task=task,
+            prediction_artifact_paths={"validation": validation_path},
+            applicability_domain_methods=applicability_domain_methods,
+            similarity_top_k_neighbors=similarity_top_k_neighbors,
+            similarity_threshold_percentile=similarity_threshold_percentile,
+        )
+        statuses: Optional[pd.Series] = None
+        scores_path = selection_ad.get("scores_validation_path")
+        if scores_path and Path(str(scores_path)).exists():
+            scores = pd.read_csv(Path(str(scores_path)))
+            if "ad_status" in scores.columns and len(scores) == len(validation_indices):
+                statuses = scores["ad_status"]
+        selection = attach_ad_annotations(
+            selection,
+            ad_statuses=statuses.tolist() if statuses is not None else None,
+        )
+
+        ac_annotations: Optional[pd.DataFrame] = None
+        if task.task_type == "regression":
+            ac_input = development_frame.drop(columns=["source_row_index"], errors="ignore").copy()
+            ac_input.insert(0, "source_row_index", ac_input.index)
+            ac_source = analysis_dir / "development_for_selection.csv"
+            ac_source.parent.mkdir(parents=True, exist_ok=True)
+            ac_input.to_csv(ac_source, index=False)
+            try:
+                ac_context = prepare_activity_cliff_context(
+                    train_csv=str(ac_source),
+                    output_dir=str(analysis_dir / "activity_cliffs_development"),
+                    smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
+                    target_column=target_column,
+                    **activity_args,
+                )
+                annotated_path = ac_context.get("annotated_training_csv")
+                if annotated_path and Path(str(annotated_path)).exists():
+                    ac_annotations = pd.read_csv(annotated_path)
+            except Exception as exc:
+                logger.warning("Development-only Activity Cliff annotations unavailable: %s", exc)
+        selection = attach_activity_cliff_annotations(selection, annotations=ac_annotations)
+        selected_rows, selection_summary = select_outliers(
+            selection,
+            task_type=task.task_type,
+            selection_fraction=selection_fraction,
+        )
+        artifacts = write_outlier_analysis_artifacts(
+            output_dir=analysis_dir,
+            selection_frame=selected_rows,
+            selection_summary=selection_summary,
+            development_frame=development_frame,
+            extra_summary={
+                "fold_label": fold_label,
+                "repeat_index": repeat_index,
+                "selection_model": "temporary_train_only_fit",
+                "activity_cliff_scope": "development_only",
+                "test_rows_used_for_selection": 0,
+            },
+        )
+        selected_indices = [
+            int(value)
+            for value in selected_rows.loc[
+                selected_rows["selected_for_removal"].astype(bool), "source_row_index"
+            ].tolist()
+        ]
+
+        def _fit_variant(variant_id: str, train_indices_for_variant: List[int]) -> Dict[str, Any]:
+            variant_payload = [{
+                "train": train_indices_for_variant,
+                **({"test": test_indices} if test_indices else {}),
+                "metadata": {
+                    **dict(split.get("metadata") or {}),
+                    "refit_on_train_validation": True,
+                    "outlier_variant": variant_id,
+                    "removed_source_row_indices": selected_indices if variant_id == "outlier_filtered" else [],
+                },
+            }]
+            run = self._train_single_run(
+                train_csv=train_csv,
+                task=task,
+                output_dir=str(output_dir / "outlier_variants" / variant_id),
+                train_args={
+                    **train_args,
+                    **selected_parameters,
+                    "split_type": "final_refit",
+                    "split_sizes": [1.0] if not test_indices else [0.9, 0.1],
+                    "final_refit": True,
+                },
+                split_payload=variant_payload,
+                split_label=variant_id,
+                seed=int(train_args.get("data_seed") or train_args.get("random_state") or 0),
+            )
+            run["outlier_variant"] = variant_id
+            run["outlier_selected_count"] = len(selected_indices)
+            run["split_payload"] = variant_payload
+            return run
+
+        variants: List[Dict[str, Any]] = []
+        if baseline_run is None:
+            if progress_callback is not None:
+                progress_callback("Training baseline refit", {"detail": "train + validation"})
+            baseline_run = _fit_variant("baseline", development_indices)
+        baseline_run = dict(baseline_run)
+        baseline_run["outlier_variant"] = "baseline"
+        baseline_run["outlier_selected_count"] = len(selected_indices)
+        variants.append({"variant_id": "baseline", "run": baseline_run})
+        if selected_indices:
+            filtered_indices = [value for value in development_indices if value not in set(selected_indices)]
+            try:
+                if progress_callback is not None:
+                    progress_callback(
+                        "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
+                    )
+                variants.append(
+                    {"variant_id": "outlier_filtered", "run": _fit_variant("outlier_filtered", filtered_indices)}
+                )
+            except Exception as exc:
+                variants.append({"variant_id": "outlier_filtered", "status": "failed", "reason": str(exc)})
+        comparison_path = write_outlier_variant_comparison(
+            output_dir=analysis_dir,
+            variants=variants,
+            selected_count=len(selected_indices),
+        )
+        return {
+            "summary": {
+                **selection_summary,
+                "enabled": True,
+                "artifacts": artifacts,
+                "summary_path": artifacts.get("summary_path"),
+                "selection_predictions_path": artifacts.get("selection_predictions_path"),
+                "filtered_development_path": artifacts.get("filtered_development_path"),
+                "plot_artifacts": {
+                    key: value for key, value in artifacts.items() if key.startswith("outlier_selection_")
+                },
+                "comparison_path": comparison_path,
+                "test_comparison_policy": "descriptive_only_no_automatic_winner",
+                "selected_source_row_indices": selected_indices,
+                "variants": [
+                    {"variant_id": item["variant_id"], "status": item.get("status", "completed"), "reason": item.get("reason")}
+                    for item in variants
+                ],
+            },
+            "variants": variants,
+        }
+
     def describe_backend(
         self,
         backend_name: Optional[str] = None,
@@ -1815,6 +2093,7 @@ class ChempropToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1843,6 +2122,11 @@ class ChempropToolkit(Toolkit):
             hyperparameter_tuning
             if hyperparameter_tuning is not None
             else cleaned_extra_args.pop("hyperparameter_tuning", None)
+        )
+        requested_outlier_analysis = (
+            outlier_analysis
+            if outlier_analysis is not None
+            else cleaned_extra_args.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
@@ -1881,6 +2165,18 @@ class ChempropToolkit(Toolkit):
             base_seed=training_policy["extra_args"].get("data_seed")
             or training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
+        )
+        has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
+        if not has_validation:
+            has_validation = any(
+                len(run.get("split_sizes") or []) == 3
+                for run in protocol_policy.get("split_runs") or []
+            )
+        outlier_config, outlier_skip_reason = normalize_outlier_analysis_config(
+            requested_outlier_analysis,
+            has_validation=has_validation,
+            target_count=len(target_columns or []),
+            activity_cliff_feedback=bool(activity_args.get("activity_cliff_feedback")),
         )
         protocol_override_note = self._apply_protocol_training_overrides(
             training_policy=training_policy,
@@ -2019,6 +2315,7 @@ class ChempropToolkit(Toolkit):
                 random_state=int(
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
+                outer_test_size=cv_strategy.get("outer_test_size"),
             )
 
         tunable_architecture_parameters = {
@@ -2033,13 +2330,7 @@ class ChempropToolkit(Toolkit):
             for key, value in cleaned_extra_args.items()
             if key in tunable_architecture_parameters
         }
-        hpo_eligible = (
-            len(protocol_policy["split_runs"]) == 1
-            and not is_cv_protocol
-            and len(protocol_policy["split_runs"][0].get("split_sizes") or []) == 3
-            and protocol_policy["split_runs"][0].get("backend_split_type")
-            not in {"final_refit", "full_train"}
-        )
+        hpo_eligible = has_validation
         tuning_config = normalize_tuning_config(
             requested_hyperparameter_tuning,
             backend_name="chemprop",
@@ -2083,6 +2374,9 @@ class ChempropToolkit(Toolkit):
                         seed=int(split_run["seed"]),
                     )
 
+                selection_split_payload = split_payload
+                selected_parameters: Dict[str, Any] = {}
+                selection_train_args = dict(run_args)
                 if tuning_config is not None:
                     if tuning_config.parameters:
                         publish_active_progress(
@@ -2104,6 +2398,7 @@ class ChempropToolkit(Toolkit):
                         selected_parameters = dict(
                             (tuning_summary.get("best_trial") or {}).get("params") or {}
                         )
+                        selection_train_args.update(selected_parameters)
                     else:
                         tuning_summary = {
                             "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
@@ -2195,11 +2490,128 @@ class ChempropToolkit(Toolkit):
                 single_result["output_dir"] = str(run_output_dir)
                 single_result["validation_protocol"] = protocol_policy["protocol"]
                 single_result["split_payload"] = split_payload
+                single_result["selection_split_payload"] = selection_split_payload
+                single_result["selected_hyperparameters"] = selected_parameters
+                single_result["selection_train_args"] = selection_train_args
                 split_results.append(single_result)
 
                 if split_run.get("primary") or primary_run is None:
                     primary_run = single_result
                     primary_output_dir = run_output_dir
+
+            outlier_study: Dict[str, Any] = {
+                "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+                "status": "skipped" if outlier_skip_reason else "pending",
+                "reason": outlier_skip_reason,
+                "config": outlier_config.as_dict(),
+                "studies": [],
+            }
+            outlier_variants: List[Dict[str, Any]] = []
+            if outlier_config.enabled and outlier_skip_reason is None:
+                for split_result in split_results:
+                    selection_payload = split_result.get("selection_split_payload") or []
+                    selection_split = selection_payload[0] if selection_payload else {}
+                    validation_indices = selection_split.get("val") or selection_split.get("validation") or []
+                    if not validation_indices:
+                        outlier_study["studies"].append(
+                            {
+                                "split_label": split_result.get("strategy_label"),
+                                "status": "skipped",
+                                "reason": "No validation rows are available for selection.",
+                            }
+                        )
+                        continue
+                    publish_active_progress(
+                        "Identifying validation outliers",
+                        {"detail": str(split_result.get("strategy_label") or "holdout")},
+                    )
+                    selection_run = split_result
+                    selection_path = selection_run.get("validation_predictions_path")
+                    # Native hpopt returns only the winning parameter set, not
+                    # a durable best-trial model. Fit that selected architecture
+                    # once on train-only data solely to obtain row-level
+                    # validation predictions and train-only AD scores.
+                    if not selection_path or not Path(str(selection_path)).exists():
+                        with tempfile.TemporaryDirectory(prefix="qsaria_chemprop_outlier_selection_") as temporary_dir:
+                            selection_run = self._train_single_run(
+                                train_csv=local_train_csv,
+                                task=task,
+                                output_dir=temporary_dir,
+                                train_args=dict(split_result.get("selection_train_args") or {}),
+                                split_payload=selection_payload,
+                                split_label="outlier_selection",
+                                seed=split_result.get("seed"),
+                                progress_callback=publish_chemprop_progress,
+                            )
+                            study = self._run_outlier_refits(
+                                train_csv=local_train_csv,
+                                source_df=split_source_df,
+                                task=task,
+                                split_payload=selection_payload,
+                                selection_run=selection_run,
+                                output_dir=Path(str(split_result.get("output_dir") or root_output_path)),
+                                train_args=dict(split_result.get("selection_train_args") or {}),
+                                selected_parameters=dict(split_result.get("selected_hyperparameters") or {}),
+                                activity_args=activity_args,
+                                applicability_domain_methods=requested_ad_methods,
+                                similarity_top_k_neighbors=requested_similarity_top_k,
+                                similarity_threshold_percentile=requested_similarity_percentile,
+                                selection_fraction=outlier_config.selection_fraction,
+                                fold_label=str(split_result.get("strategy_label") or "holdout"),
+                                repeat_index=split_result.get("repeat_index"),
+                                baseline_run=split_result if tuning_config is not None else None,
+                                progress_callback=publish_active_progress,
+                            )
+                    else:
+                        study = self._run_outlier_refits(
+                            train_csv=local_train_csv,
+                            source_df=split_source_df,
+                            task=task,
+                            split_payload=selection_payload,
+                            selection_run=selection_run,
+                            output_dir=Path(str(split_result.get("output_dir") or root_output_path)),
+                            train_args=dict(split_result.get("selection_train_args") or {}),
+                            selected_parameters=dict(split_result.get("selected_hyperparameters") or {}),
+                            activity_args=activity_args,
+                            applicability_domain_methods=requested_ad_methods,
+                            similarity_top_k_neighbors=requested_similarity_top_k,
+                            similarity_threshold_percentile=requested_similarity_percentile,
+                            selection_fraction=outlier_config.selection_fraction,
+                            fold_label=str(split_result.get("strategy_label") or "holdout"),
+                            repeat_index=split_result.get("repeat_index"),
+                            baseline_run=None,
+                            progress_callback=publish_active_progress,
+                        )
+                    study_summary = dict(study["summary"])
+                    study_summary["split_label"] = split_result.get("strategy_label")
+                    outlier_study["studies"].append(study_summary)
+                    for variant in study["variants"]:
+                        run = variant.get("run")
+                        if isinstance(run, dict):
+                            run_output_dir = Path(str(run.get("output_dir") or root_output_path))
+                            run["applicability_domain"] = self._build_applicability_domain(
+                                train_csv=local_train_csv,
+                                primary_run=run,
+                                primary_output_dir=run_output_dir,
+                                model_id_hint=f"{Path(resolved_output_dir).name}_{variant.get('variant_id')}",
+                                task=task,
+                                prediction_artifact_paths={"test": run.get("test_predictions_path")},
+                                applicability_domain_methods=requested_ad_methods,
+                                similarity_top_k_neighbors=requested_similarity_top_k,
+                                similarity_threshold_percentile=requested_similarity_percentile,
+                            )
+                        variant["split_label"] = split_result.get("strategy_label")
+                        variant["repeat_index"] = split_result.get("repeat_index")
+                        variant["variant_id"] = (
+                            f"{safe_slug(str(split_result.get('strategy_label') or 'holdout'))}_"
+                            f"{variant.get('variant_id')}"
+                        )
+                        outlier_variants.append(variant)
+                if outlier_variants:
+                    outlier_study["status"] = "completed"
+                elif not outlier_study["studies"]:
+                    outlier_study["status"] = "skipped"
+                    outlier_study["reason"] = "Selection validation predictions are unavailable."
 
             if primary_run is None or primary_output_dir is None:
                 raise ValueError("Training protocol did not produce a primary run.")
@@ -2215,7 +2627,13 @@ class ChempropToolkit(Toolkit):
                 )
             if is_cv_protocol and protocol_policy.get("final_refit", True):
                 final_refit_output_dir = root_output_path / "final_refit"
-                final_split_payload = build_full_train_split_payload(df=split_source_df)
+                cv_outer_test_indices = list(
+                    ((next(iter(cv_split_payloads.values()), [{}]) or [{}])[0]).get("test") or []
+                )
+                final_split_payload = build_full_train_split_payload(
+                    df=split_source_df,
+                    test_indices=cv_outer_test_indices or None,
+                )
                 final_args = {
                     **{
                         key: value
@@ -2223,7 +2641,7 @@ class ChempropToolkit(Toolkit):
                         if key != "seed_policy"
                     },
                     "split_type": "final_refit",
-                    "split_sizes": [1.0],
+                    "split_sizes": [1.0] if not cv_outer_test_indices else [0.9, 0.1],
                     "data_seed": protocol_policy["seed_policy"]["model_seed"],
                     "final_refit": True,
                 }
@@ -2250,6 +2668,23 @@ class ChempropToolkit(Toolkit):
 
             final_primary_run = final_refit_run or primary_run
             final_primary_output_dir = final_refit_output_dir or primary_output_dir
+            if outlier_variants and not is_cv_protocol:
+                primary_label = primary_run.get("strategy_label")
+                baseline_variant = next(
+                    (
+                        item
+                        for item in outlier_variants
+                        if item.get("split_label") == primary_label
+                        and str(item.get("variant_id", "")).endswith("_baseline")
+                        and isinstance(item.get("run"), dict)
+                    ),
+                    None,
+                )
+                if baseline_variant is not None:
+                    final_primary_run = baseline_variant["run"]
+                    final_primary_output_dir = Path(
+                        str(final_primary_run.get("output_dir") or final_primary_output_dir)
+                    )
 
             if prediction_state is not None:
                 prediction_state["training_runs"].append(
@@ -2409,7 +2844,18 @@ class ChempropToolkit(Toolkit):
                     "metrics": result.get("metrics") or {},
                 }
             result["activity_cliffs"] = activity_cliffs
-            result["plot_artifacts"] = plot_artifacts
+            result["plot_artifacts"] = {
+                **plot_artifacts,
+                **{
+                    key: value
+                    for study in outlier_study.get("studies") or []
+                    for key, value in (study.get("plot_artifacts") or {}).items()
+                },
+            }
+            result["outlier_analysis"] = outlier_study
+            result["outlier_model_variants"] = outlier_variants
+            if outlier_variants:
+                result["catalog_model_policy"] = "outlier_variants_no_test_winner"
             result["trained_at"] = trained_at.isoformat()
             result["trained_date"] = trained_at.strftime("%d/%m/%Y")
             result["trained_time"] = trained_at.strftime("%H:%M:%S")

@@ -236,7 +236,12 @@ def build_tuning_progress_plot(
     figure, axes = plt.subplots(rows, columns, figsize=(6.6 * columns, 4.2 * rows), squeeze=False)
     trial_numbers = [int(trial.get("number", index)) + 1 for index, trial in enumerate(trials)]
 
-    for axis, (metric, subset, direction) in zip(axes.flat, panels, strict=True):
+    # ``plt.subplots`` fills a rectangular grid.  For an odd number of panels
+    # (for example the five classification metrics), that grid has one spare
+    # axis.  Pair only the populated axes here; the spare axes are deliberately
+    # hidden below.
+    populated_axes = list(axes.flat)[: len(panels)]
+    for axis, (metric, subset, direction) in zip(populated_axes, panels, strict=True):
         values = [
             _trial_metric_value(trial, metric=metric, subset=subset)
             for trial in trials
@@ -621,7 +626,8 @@ def normalize_tuning_config(
     if not eligible:
         if explicitly_requested:
             raise HyperparameterTuningError(
-                "Hyperparameter tuning V1 requires a single holdout split with train, validation, and test."
+                "Hyperparameter tuning requires a single holdout or cross-validation fold "
+                "with a real validation split. Full-train and test-only holdouts do not provide one."
             )
         return None
 

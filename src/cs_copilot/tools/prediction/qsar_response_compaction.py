@@ -56,6 +56,7 @@ def compact_training_data_summary_for_response(summary: Optional[Dict[str, Any]]
             "dataset_name",
             "validation_protocol",
             "validation_strategy_type",
+            "validation_strategy",
             "metrics_status",
             "evaluation_required",
             "seed_policy_report",
@@ -68,6 +69,14 @@ def compact_training_data_summary_for_response(summary: Optional[Dict[str, Any]]
             "feature_preparation",
             "feature_preparation_durations",
             "activity_cliffs",
+            # These fields are small but essential when the payload describes
+            # one member of an outlier-analysis variant set.  Omitting them
+            # forces the registry agent to reconstruct provenance and makes
+            # baseline/filtered candidates indistinguishable in its context.
+            "outlier_analysis",
+            "outlier_variant",
+            "catalog_model_policy",
+            "artifact_sources",
         )
         if summary.get(key) is not None
     }

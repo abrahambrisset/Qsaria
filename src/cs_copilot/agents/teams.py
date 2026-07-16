@@ -279,6 +279,7 @@ def get_qsar_agent_team(
             "Before routing, determine REPORT_LANGUAGE from the latest user message and include it in every handoff.",
             "Only `qsar_report` may draft the final user-facing answer.",
             "When `qsar_report` has produced a final answer, return that answer verbatim without adding a preface, summary, duplication, or extra conclusion.",
+            "If any QSAR training tool fails, treat that exact training request as terminal: route its error to qsar_report and do not delegate another training attempt with modified split, fold, test, backend, or representation arguments unless the user explicitly requests a retry.",
             "If any QSAR member returns `status=blocked_failed_external_evaluation`, treat it as terminal: do not call more tools, do not retry prediction, do not inspect dataframes, and route only that result to `qsar_report`.",
             "For blocked workflows, stop early and summarize only completed steps, blockers, files, and next steps.",
         ],

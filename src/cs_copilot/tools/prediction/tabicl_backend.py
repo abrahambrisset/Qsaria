@@ -531,7 +531,7 @@ class TabICLBackend(PredictionBackend):
                 "TabICL requires at least 10 rows after target cleanup."
             )
 
-        if final_refit:
+        if final_refit and split_payload is None:
             split_payload = build_full_train_split_payload(df=working)
         elif split_payload is None:
             split_payload = build_qsar_split_payload(
@@ -555,9 +555,9 @@ class TabICLBackend(PredictionBackend):
         train_indices = [int(idx) for idx in (split_map.get("train") or [])]
         val_indices = [int(idx) for idx in (split_map.get("val") or [])]
         test_indices = [int(idx) for idx in (split_map.get("test") or [])]
-        if not train_indices or (not final_refit and not test_indices):
+        if not train_indices or (not final_refit and not (val_indices or test_indices)):
             raise InvalidPredictionInputError(
-                "TabICL split payload must provide non-empty train/test indices."
+                "TabICL split payload must provide non-empty train and validation or test indices."
             )
         train_df = working.iloc[train_indices].reset_index(drop=True)
         val_df = working.iloc[val_indices].reset_index(drop=True)
@@ -875,8 +875,8 @@ class TabICLBackend(PredictionBackend):
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
             "checkpoint_present_after_run": checkpoint_path.exists(),
             "metrics": metrics_payload,
-            "metrics_status": "not_evaluated" if final_refit else "evaluated",
-            "evaluation_required": bool(final_refit),
+            "metrics_status": "not_evaluated" if final_refit and not test_indices else "evaluated",
+            "evaluation_required": bool(final_refit and not test_indices),
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,
@@ -919,8 +919,8 @@ class TabICLBackend(PredictionBackend):
             "checkpoint_version": checkpoint_cfg["checkpoint_version"],
             "checkpoint_path": persisted_checkpoint or str(checkpoint_path),
             "metrics": metrics_payload,
-            "metrics_status": "not_evaluated" if final_refit else "evaluated",
-            "evaluation_required": bool(final_refit),
+            "metrics_status": "not_evaluated" if final_refit and not test_indices else "evaluated",
+            "evaluation_required": bool(final_refit and not test_indices),
             "class_labels": [json_safe_label(label) for label in class_labels],
             "class_count": len(class_labels) if task_is_classification else None,
             "label_mapping": class_mapping,

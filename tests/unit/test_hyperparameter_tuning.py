@@ -213,6 +213,53 @@ def test_tuning_progress_plot_persists_trial_metrics_and_incumbent(tmp_path):
     assert (tmp_path / "plots" / "hyperparameter_tuning_progress.png").exists()
 
 
+def test_tuning_progress_plot_supports_odd_number_of_classification_panels(tmp_path):
+    """A 3x2 figure must keep its sixth axis empty rather than failing strict zip."""
+    summary = {
+        "engine": "optuna_tpe",
+        "objective": {
+            "metric": "balanced_accuracy",
+            "subset": "in_domain",
+            "direction": "maximize",
+        },
+        "trials": [
+            {
+                "number": 0,
+                "state": "complete",
+                "objective": 0.71,
+                "metrics": {
+                    "all": {
+                        "balanced_accuracy": 0.72,
+                        "roc_auc": 0.75,
+                        "f1_macro": 0.70,
+                        "accuracy": 0.74,
+                    },
+                    "in_domain": {"balanced_accuracy": 0.71},
+                },
+            },
+            {
+                "number": 1,
+                "state": "complete",
+                "objective": 0.76,
+                "metrics": {
+                    "all": {
+                        "balanced_accuracy": 0.77,
+                        "roc_auc": 0.79,
+                        "f1_macro": 0.75,
+                        "accuracy": 0.78,
+                    },
+                    "in_domain": {"balanced_accuracy": 0.76},
+                },
+            },
+        ],
+    }
+
+    plot_path = build_tuning_progress_plot(summary, output_dir=tmp_path / "plots")
+
+    assert plot_path is not None
+    assert (tmp_path / "plots" / "hyperparameter_tuning_progress.png").exists()
+
+
 def test_running_mean_preserves_trial_alignment_and_ignores_missing_scores():
     assert _running_mean([1.0, None, 3.0, 2.0]) == [1.0, 1.0, 2.0, 2.0]
 
@@ -697,4 +744,33 @@ def test_chemprop_hpopt_normalizes_native_kebab_case_best_config(tmp_path):
         "ffn_hidden_dim": 300,
         "ffn_num_layers": 2,
         "dropout": 0.1,
+    }
+
+
+def test_chemprop_hpopt_reads_configargparse_winning_config_from_backend_path(tmp_path):
+    """Chemprop writes a ConfigArgParse file named `.toml`, not strict TOML."""
+    best_config = tmp_path / "best_config.toml"
+    best_config.write_text(
+        "# Chemprop hyperparameter configuration\n"
+        "data_path = /tmp/development_source.csv\n"
+        "smiles_columns = [smiles]\n"
+        "depth = [5]\n"
+        "message_hidden_dim = [900]\n"
+        "ffn_hidden_dim = 1200\n"
+        "ffn_num_layers = 2\n"
+        "dropout = 0.15\n"
+    )
+
+    selected = ChempropToolkit._extract_hpopt_parameters(
+        tmp_path,
+        ["depth", "message_hidden_dim", "ffn_hidden_dim", "ffn_num_layers", "dropout"],
+        {"best_config_path": str(best_config)},
+    )
+
+    assert selected == {
+        "depth": [5],
+        "message_hidden_dim": [900],
+        "ffn_hidden_dim": 1200,
+        "ffn_num_layers": 2,
+        "dropout": 0.15,
     }

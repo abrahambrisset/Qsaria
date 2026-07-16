@@ -7,6 +7,7 @@ from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
     _compact_registry_payload,
+    _compact_training_tool_result,
     _resolve_existing_training_csv,
 )
 
@@ -88,6 +89,107 @@ def test_registry_payload_response_preserves_tuning_provenance(tmp_path):
 
     assert training_summary["hyperparameter_tuning"] == tuning
     assert training_summary["hyperparameter_tuning_summary_path"] == str(tuning_summary_path)
+
+
+def test_outlier_variants_are_exposed_as_independent_catalog_candidates(tmp_path):
+    toolkit = QSARTrainingToolkit()
+    baseline = tmp_path / "baseline.pkl"
+    filtered = tmp_path / "filtered.pkl"
+    baseline_test = tmp_path / "baseline_test_predictions.csv"
+    filtered_test = tmp_path / "filtered_test_predictions.csv"
+    baseline.write_text("baseline")
+    filtered.write_text("filtered")
+    baseline_test.write_text("prediction\n1.0\n")
+    filtered_test.write_text("prediction\n2.0\n")
+    result = {
+        "representation_name": "rdkit_all",
+        "validation_protocol": "standard_qsar",
+        "outlier_analysis": {
+            "selected_count": 2,
+            "test_comparison_policy": "descriptive_only_no_automatic_winner",
+        },
+        "outlier_model_variants": [
+            {
+                "variant_id": "baseline",
+                "run": {
+                    "model_path": str(baseline),
+                    "metrics": {"test": {"rmse": 0.4}},
+                    "test_predictions_path": str(baseline_test),
+                    "applicability_domain": {"available": True},
+                },
+            },
+            {
+                "variant_id": "outlier_filtered",
+                "run": {
+                    "model_path": str(filtered),
+                    "metrics": {"test": {"rmse": 0.3}},
+                    "test_predictions_path": str(filtered_test),
+                    "applicability_domain": {"available": True},
+                },
+            },
+        ],
+    }
+
+    payloads = toolkit._split_registry_payloads(
+        backend_name="lightgbm",
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["Y"],
+        result=result,
+    )
+
+    assert [item["split_label"] for item in payloads] == ["baseline", "outlier_filtered"]
+    assert all(
+        item["registry_payload"]["training_data_summary"]["outlier_analysis"]["selected_count"] == 2
+        for item in payloads
+    )
+    assert (
+        payloads[0]["registry_payload"]["training_data_summary"]["artifact_sources"]
+        ["test_predictions_path"]
+        == str(baseline_test)
+    )
+    assert (
+        payloads[1]["registry_payload"]["training_data_summary"]["artifact_sources"]
+        ["test_predictions_path"]
+        == str(filtered_test)
+    )
+
+
+def test_compacted_candidate_payload_keeps_outlier_variant_provenance(tmp_path):
+    model_path = tmp_path / "filtered.pkl"
+    model_path.write_text("filtered")
+    result = {
+        "candidate_registry_payloads": [
+            {
+                "candidate_id": "repeat_2_outlier_filtered",
+                "split_label": "repeat_2_outlier_filtered",
+                "registry_payload": {
+                    "model_id": "filtered_candidate",
+                    "model_path": str(model_path),
+                    "task_type": "regression",
+                    "training_data_summary": {
+                        "validation_strategy": {"type": "repeated_holdout"},
+                        "outlier_variant": "repeat_2_outlier_filtered",
+                        "outlier_analysis": {"selected_count": 3},
+                        "catalog_model_policy": "outlier_variants_no_test_winner",
+                        "artifact_sources": {
+                            "test_predictions_path": str(tmp_path / "test_predictions.csv")
+                        },
+                    },
+                },
+            }
+        ]
+    }
+
+    compact = _compact_training_tool_result(result)
+    summary = compact["candidate_registry_payloads"][0]["registry_payload"][
+        "training_data_summary"
+    ]
+
+    assert summary["outlier_variant"] == "repeat_2_outlier_filtered"
+    assert summary["outlier_analysis"] == {"selected_count": 3}
+    assert summary["validation_strategy"] == {"type": "repeated_holdout"}
+    assert summary["artifact_sources"]["test_predictions_path"].endswith("test_predictions.csv")
 
 
 def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monkeypatch):

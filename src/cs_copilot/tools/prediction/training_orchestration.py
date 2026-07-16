@@ -827,7 +827,12 @@ def build_cross_validation_artifacts(
 ) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     for split_result in split_results:
-        predictions_path = split_result.get("test_predictions_path")
+        # A CV fold is train/validation.  Only an explicit outer test remains
+        # a test set, so OOF aggregation reads validation predictions first.
+        predictions_path = (
+            split_result.get("validation_predictions_path")
+            or split_result.get("test_predictions_path")
+        )
         split_payload = split_result.get("split_payload") or []
         if not predictions_path or not split_payload:
             continue
@@ -836,13 +841,21 @@ def build_cross_validation_artifacts(
             continue
         frame = pd.read_csv(path)
         true_col, pred_col = _prediction_columns(frame, target_column)
-        test_indices = [int(idx) for idx in ((split_payload[0] or {}).get("test") or [])]
-        if not true_col or not pred_col or len(frame) != len(test_indices):
+        validation_indices = [
+            int(idx)
+            for idx in (
+                (split_payload[0] or {}).get("val")
+                or (split_payload[0] or {}).get("validation")
+                or (split_payload[0] or {}).get("test")
+                or []
+            )
+        ]
+        if not true_col or not pred_col or len(frame) != len(validation_indices):
             continue
         metadata = (split_payload[0] or {}).get("metadata") or {}
         repeat_index = int(metadata.get("cv_repeat") or split_result.get("repeat_index") or 1)
         fold_index = int(metadata.get("cv_fold") or split_result.get("fold_index") or 1)
-        for row_index, source_row_index in enumerate(test_indices):
+        for row_index, source_row_index in enumerate(validation_indices):
             y_true = pd.to_numeric(
                 pd.Series([frame.iloc[row_index][true_col]]), errors="coerce"
             ).iloc[0]

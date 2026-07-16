@@ -36,12 +36,23 @@ from .hyperparameter_tuning import (
     tuning_sampler_metadata,
 )
 from .lightgbm_backend import LightGBMBackend
+from .outlier_analysis import (
+    OutlierAnalysisConfig,
+    attach_activity_cliff_annotations,
+    attach_ad_annotations,
+    deduplicate_parameter_configurations,
+    normalize_outlier_analysis_config,
+    select_outliers,
+    selection_predictions_from_frame,
+    write_outlier_analysis_artifacts,
+    write_outlier_variant_comparison,
+)
+from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
-from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -132,6 +143,536 @@ class LightGBMToolkit(Toolkit):
             seed_policy_mode=seed_policy_mode,
             base_seed=base_seed,
         )
+
+    def _run_outlier_refits(
+        self,
+        *,
+        train_csv: str,
+        split_source_df: pd.DataFrame,
+        task: PredictionTaskSpec,
+        split_payload: List[Dict[str, Any]],
+        selection_prediction_frame: pd.DataFrame,
+        output_dir: Path,
+        base_args: Dict[str, Any],
+        selected_parameters: Dict[str, Any],
+        feature_columns: List[str],
+        representation_name: Optional[str],
+        activity_args: Dict[str, Any],
+        applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
+        selection_fraction: float,
+        baseline_run: Optional[Dict[str, Any]] = None,
+        fit_variants: bool = True,
+        progress_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
+        fold_label: str = "selection",
+        repeat_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Select validation outliers and, when requested, train final variants.
+
+        The selected model has already been fitted only on its train rows.  It
+        is intentionally passed as a frame rather than persisted as another
+        model artifact.
+        """
+        split = split_payload[0]
+        train_indices = [int(index) for index in split.get("train") or []]
+        validation_indices = [
+            int(index) for index in (split.get("val") or split.get("validation") or [])
+        ]
+        test_indices = [int(index) for index in split.get("test") or []]
+        if not train_indices or not validation_indices:
+            raise ValueError("Outlier analysis requires fixed non-empty train and validation indices.")
+        target_column = task.target_columns[0]
+        selection = selection_predictions_from_frame(
+            selection_prediction_frame,
+            source_row_indices=validation_indices,
+            target_column=target_column,
+            fold_label=fold_label,
+            repeat_index=repeat_index,
+        )
+
+        outlier_root = output_dir / "outlier_analysis"
+        development_indices = [*train_indices, *validation_indices]
+        development_frame = split_source_df.iloc[development_indices].copy()
+        development_frame.index = development_indices
+
+        # Build the selection AD from train only.  It is an in-memory/temporary
+        # diagnostic and never reuses final-model AD artifacts.
+        with tempfile.TemporaryDirectory(prefix="qsaria_outlier_lightgbm_") as temporary_dir:
+            temporary_ad = fit_modern_applicability_domain(
+                feature_frame=split_source_df.iloc[train_indices][feature_columns].reset_index(drop=True),
+                feature_columns=feature_columns,
+                output_dir=Path(temporary_dir) / "applicability_domain",
+                model_id="lightgbm_outlier_selection",
+                feature_space=representation_name or "tabular",
+                representation_name=representation_name,
+                methods=applicability_domain_methods,
+                random_state=int(base_args.get("random_state") or 0),
+                all_feature_frame=split_source_df[feature_columns],
+                train_indices=train_indices,
+                split_indices=split,
+                similarity_top_k_neighbors=similarity_top_k_neighbors,
+                similarity_threshold_percentile=similarity_threshold_percentile,
+            )
+            validation_ad = score_modern_applicability_domain(
+                feature_frame=split_source_df.iloc[validation_indices][feature_columns].reset_index(drop=True),
+                applicability_domain=temporary_ad,
+                row_indices=validation_indices,
+            )
+            statuses = _ad_status_series(validation_ad)
+        selection = attach_ad_annotations(
+            selection,
+            ad_statuses=statuses.tolist() if statuses is not None else None,
+        )
+
+        # Activity cliffs used for removal are computed on development data
+        # only.  The already existing full-dataset AC report is descriptive.
+        ac_annotations: Optional[pd.DataFrame] = None
+        if task.task_type == "regression":
+            ac_source = outlier_root / "development_for_selection.csv"
+            ac_source.parent.mkdir(parents=True, exist_ok=True)
+            ac_input = development_frame.copy()
+            ac_input = ac_input.drop(columns=["source_row_index"], errors="ignore")
+            ac_input.insert(0, "source_row_index", ac_input.index)
+            ac_input.to_csv(ac_source, index=False)
+            try:
+                ac_context = prepare_activity_cliff_context(
+                    train_csv=str(ac_source),
+                    output_dir=str(outlier_root / "activity_cliffs_development"),
+                    smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
+                    target_column=target_column,
+                    **activity_args,
+                )
+                annotated_path = ac_context.get("annotated_training_csv")
+                if annotated_path and Path(str(annotated_path)).exists():
+                    ac_annotations = pd.read_csv(annotated_path)
+            except Exception as exc:
+                logger.warning("Development-only Activity Cliff selection annotations unavailable: %s", exc)
+        selection = attach_activity_cliff_annotations(selection, annotations=ac_annotations)
+        selected_rows, selection_summary = select_outliers(
+            selection,
+            task_type=task.task_type,
+            selection_fraction=selection_fraction,
+        )
+        artifacts = write_outlier_analysis_artifacts(
+            output_dir=outlier_root,
+            selection_frame=selected_rows,
+            selection_summary=selection_summary,
+            development_frame=development_frame,
+            extra_summary={
+                "fold_label": fold_label,
+                "repeat_index": repeat_index,
+                "selection_model": "temporary_train_only_fit",
+                "activity_cliff_scope": "development_only",
+                "test_rows_used_for_selection": 0,
+            },
+        )
+        selected_indices = [
+            int(value)
+            for value in selected_rows.loc[
+                selected_rows["selected_for_removal"].astype(bool), "source_row_index"
+            ].tolist()
+        ]
+
+        # CV first needs the OOF selection rows from every fold.  It must not
+        # create a fold-local final model before those rows are pooled: that
+        # would be both wasteful and scientifically different from the
+        # protocol's one-list-per-repeat policy.
+        if not fit_variants:
+            return {
+                "summary": {
+                    **selection_summary,
+                    "enabled": True,
+                    "artifacts": artifacts,
+                    "summary_path": artifacts.get("summary_path"),
+                    "selection_predictions_path": artifacts.get("selection_predictions_path"),
+                    "filtered_development_path": artifacts.get("filtered_development_path"),
+                    "plot_artifacts": {
+                        key: value
+                        for key, value in artifacts.items()
+                        if key.startswith("outlier_selection_")
+                    },
+                    "comparison_path": None,
+                    "test_comparison_policy": "descriptive_only_no_automatic_winner",
+                    "selected_source_row_indices": selected_indices,
+                    "variants": [],
+                },
+                "variants": [],
+            }
+
+        final_payload = [
+            {
+                "train": development_indices,
+                **({"test": test_indices} if test_indices else {}),
+                "metadata": {
+                    **dict(split.get("metadata") or {}),
+                    "refit_on_train_validation": True,
+                    "outlier_variant": "baseline",
+                },
+            }
+        ]
+        if baseline_run is None:
+            if progress_callback is not None:
+                progress_callback("Training baseline refit", {"detail": "train + validation"})
+            baseline_run = self.backend.train_model(
+                train_csv=train_csv,
+                output_dir=str(output_dir / "baseline"),
+                task=task,
+                extra_args={
+                    **base_args,
+                    **selected_parameters,
+                    "split_payload": final_payload,
+                    "final_refit": True,
+                    "refit_on_train_validation": True,
+                    "early_stopping_rounds": 0,
+                },
+            )
+        baseline_run = dict(baseline_run)
+        baseline_run["outlier_variant"] = "baseline"
+        baseline_run["outlier_selected_count"] = len(selected_indices)
+
+        variants = [{"variant_id": "baseline", "run": baseline_run}]
+        if selected_indices:
+            filtered_train = [index for index in development_indices if index not in set(selected_indices)]
+            filtered_payload = [
+                {
+                    "train": filtered_train,
+                    **({"test": test_indices} if test_indices else {}),
+                    "metadata": {
+                        **dict(split.get("metadata") or {}),
+                        "refit_on_train_validation": True,
+                        "outlier_variant": "outlier_filtered",
+                        "removed_source_row_indices": selected_indices,
+                    },
+                }
+            ]
+            if progress_callback is not None:
+                progress_callback("Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"})
+            try:
+                filtered_run = self.backend.train_model(
+                    train_csv=train_csv,
+                    output_dir=str(output_dir / "outlier_filtered"),
+                    task=task,
+                    extra_args={
+                        **base_args,
+                        **selected_parameters,
+                        "split_payload": filtered_payload,
+                        "final_refit": True,
+                        "refit_on_train_validation": True,
+                        "early_stopping_rounds": 0,
+                    },
+                )
+                filtered_run["outlier_variant"] = "outlier_filtered"
+                filtered_run["outlier_selected_count"] = len(selected_indices)
+                variants.append({"variant_id": "outlier_filtered", "run": filtered_run})
+            except Exception as exc:
+                variants.append(
+                    {
+                        "variant_id": "outlier_filtered",
+                        "status": "failed",
+                        "reason": str(exc),
+                    }
+                )
+
+        comparison_path = write_outlier_variant_comparison(
+            output_dir=outlier_root,
+            variants=variants,
+            selected_count=len(selected_indices),
+        )
+
+        return {
+            "summary": {
+                **selection_summary,
+                "enabled": True,
+                "artifacts": artifacts,
+                "summary_path": artifacts.get("summary_path"),
+                "selection_predictions_path": artifacts.get("selection_predictions_path"),
+                "filtered_development_path": artifacts.get("filtered_development_path"),
+                "plot_artifacts": {
+                    key: value
+                    for key, value in artifacts.items()
+                    if key.startswith("outlier_selection_")
+                },
+                "comparison_path": comparison_path,
+                "test_comparison_policy": "descriptive_only_no_automatic_winner",
+                "selected_source_row_indices": selected_indices,
+                "variants": [
+                    {
+                        "variant_id": item["variant_id"],
+                        "status": item.get("status", "completed"),
+                        "reason": item.get("reason"),
+                    }
+                    for item in variants
+                ],
+            },
+            "variants": variants,
+        }
+
+    def _run_cross_validation_outlier_variants(
+        self,
+        *,
+        train_csv: str,
+        source_df: pd.DataFrame,
+        task: PredictionTaskSpec,
+        tuned_splits: List[Dict[str, Any]],
+        output_dir: Path,
+        training_policy: Dict[str, Any],
+        feature_columns: List[str],
+        categorical_feature_columns: List[str],
+        representation_name: Optional[str],
+        applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
+        selection_fraction: float,
+        progress_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Pool OOF selection rows per repeat and train CV final variants.
+
+        Individual fold studies are needed to find their own HPO configuration,
+        but the V1 removal policy is applied once to the pooled OOF rows of a
+        repeat.  Each unique winning configuration is then refit on the full
+        development subset, both with and without the same pooled removals.
+        """
+        per_repeat: Dict[int, List[Dict[str, Any]]] = {}
+        for item in tuned_splits:
+            per_repeat.setdefault(int(item.get("repeat_index") or 1), []).append(item)
+
+        all_variants: List[Dict[str, Any]] = []
+        repeat_summaries: List[Dict[str, Any]] = []
+        for repeat_index, fold_results in sorted(per_repeat.items()):
+            selection_frames: List[pd.DataFrame] = []
+            development_indices: set[int] = set()
+            outer_test_indices: set[int] = set()
+            configuration_inputs: List[Dict[str, Any]] = []
+            for fold_result in fold_results:
+                analysis = fold_result.get("outlier_analysis") or {}
+                selection_path = analysis.get("selection_predictions_path")
+                if selection_path and Path(str(selection_path)).exists():
+                    selection_frames.append(pd.read_csv(Path(str(selection_path))))
+                split = (fold_result.get("selection_split_payload") or [{}])[0]
+                development_indices.update(int(value) for value in split.get("train") or [])
+                development_indices.update(
+                    int(value) for value in (split.get("val") or split.get("validation") or [])
+                )
+                outer_test_indices.update(int(value) for value in split.get("test") or [])
+                configuration_inputs.append(
+                    {
+                        "parameters": (
+                            (fold_result.get("hyperparameter_tuning") or {})
+                            .get("best_trial", {})
+                            .get("params", {})
+                        ),
+                        "fold_label": fold_result.get("strategy_label"),
+                        "repeat_index": repeat_index,
+                        "trial_number": (
+                            (fold_result.get("hyperparameter_tuning") or {})
+                            .get("best_trial", {})
+                            .get("number")
+                        ),
+                        "objective": (
+                            (fold_result.get("hyperparameter_tuning") or {})
+                            .get("best_trial", {})
+                            .get("objective")
+                        ),
+                    }
+                )
+            if not selection_frames or not development_indices:
+                repeat_summaries.append(
+                    {
+                        "repeat_index": repeat_index,
+                        "status": "skipped",
+                        "reason": "OOF selection predictions are unavailable.",
+                    }
+                )
+                continue
+            pooled_rows, selection_summary = select_outliers(
+                pd.concat(selection_frames, ignore_index=True),
+                task_type=task.task_type,
+                selection_fraction=selection_fraction,
+            )
+            repeat_root = output_dir / "outlier_analysis" / f"repeat_{repeat_index}"
+            development = source_df.iloc[sorted(development_indices)].copy()
+            development.index = sorted(development_indices)
+            artifacts = write_outlier_analysis_artifacts(
+                output_dir=repeat_root,
+                selection_frame=pooled_rows,
+                selection_summary=selection_summary,
+                development_frame=development,
+                extra_summary={
+                    "repeat_index": repeat_index,
+                    "selection_model": "pooled_out_of_fold_best_models",
+                    "activity_cliff_scope": "development_only_per_fold",
+                    "test_rows_used_for_selection": 0,
+                },
+            )
+            selected_indices = [
+                int(value)
+                for value in pooled_rows.loc[
+                    pooled_rows["selected_for_removal"].astype(bool), "source_row_index"
+                ].tolist()
+            ]
+            configurations = deduplicate_parameter_configurations(configuration_inputs)
+            repeat_variants: List[Dict[str, Any]] = []
+            for configuration in configurations:
+                configuration_id = str(configuration["configuration_id"])
+                parameters = dict(configuration["parameters"])
+                source_folds = list(configuration["source_folds"])
+                outer_test_list = sorted(outer_test_indices)
+                selected_indices_for_configuration = list(selected_indices)
+                base_args = {
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key not in {"seed_policy", "split_payload", "validation_strategy"}
+                    },
+                    "feature_columns": feature_columns,
+                    "categorical_feature_columns": categorical_feature_columns,
+                    "split_type": "final_refit",
+                    "random_state": int(training_policy["extra_args"].get("random_state") or 0),
+                    "validation_protocol": "cross_validation",
+                    "final_refit": True,
+                    "refit_on_train_validation": True,
+                    "early_stopping_rounds": 0,
+                    "deterministic": True,
+                }
+
+                def _fit_variant(
+                    variant_id: str,
+                    indices: List[int],
+                    *,
+                    repeat_index: int = repeat_index,
+                    configuration_id: str = configuration_id,
+                    source_folds: List[str] = source_folds,
+                    outer_test_indices: List[int] = outer_test_list,
+                    selected_indices: List[int] = selected_indices_for_configuration,
+                    base_args: Dict[str, Any] = base_args,
+                    parameters: Dict[str, Any] = parameters,
+                ) -> Dict[str, Any]:
+                    payload = [{
+                        "train": indices,
+                        **({"test": sorted(outer_test_indices)} if outer_test_indices else {}),
+                        "metadata": {
+                            "split_type": "cross_validation_final_refit",
+                            "repeat_index": repeat_index,
+                            "source_folds": source_folds,
+                            "outlier_variant": variant_id,
+                            "removed_source_row_indices": (
+                                selected_indices if variant_id == "outlier_filtered" else []
+                            ),
+                        },
+                    }]
+                    run = self.backend.train_model(
+                        train_csv=train_csv,
+                        output_dir=str(
+                            output_dir
+                            / "cv_final_variants"
+                            / f"repeat_{repeat_index}"
+                            / configuration_id
+                            / variant_id
+                        ),
+                        task=task,
+                        extra_args={**base_args, **parameters, "split_payload": payload},
+                    )
+                    run.update(
+                        {
+                            "outlier_variant": variant_id,
+                            "outlier_selected_count": len(selected_indices),
+                            "repeat_index": repeat_index,
+                            "source_folds": source_folds,
+                            "selected_hyperparameters": parameters,
+                            "split_payload": payload,
+                            "strategy": "cross_validation_final_refit",
+                            "strategy_family": "cross_validation",
+                            "strategy_label": f"repeat_{repeat_index}_{configuration_id}_{variant_id}",
+                        }
+                    )
+                    run["applicability_domain"] = self._build_applicability_domain(
+                        train_csv=train_csv,
+                        primary_run=run,
+                        primary_output_dir=Path(str(run.get("output_dir") or output_dir)),
+                        task=task,
+                        feature_columns=feature_columns,
+                        feature_space=representation_name,
+                        prediction_artifact_paths={"test": run.get("test_predictions_path")},
+                        applicability_domain_methods=applicability_domain_methods,
+                        similarity_top_k_neighbors=similarity_top_k_neighbors,
+                        similarity_threshold_percentile=similarity_threshold_percentile,
+                    )
+                    return run
+
+                if progress_callback is not None:
+                    progress_callback(
+                        "Training baseline refit",
+                        {"detail": f"repeat {repeat_index}, {configuration_id}"},
+                    )
+                baseline = _fit_variant("baseline", sorted(development_indices))
+                repeat_variants.append(
+                    {
+                        "variant_id": f"repeat_{repeat_index}_{configuration_id}_baseline",
+                        "run": baseline,
+                        "repeat_index": repeat_index,
+                        "configuration_id": configuration_id,
+                        "source_folds": configuration["source_folds"],
+                    }
+                )
+                if selected_indices:
+                    if progress_callback is not None:
+                        progress_callback(
+                            "Training filtered refit",
+                            {"detail": f"repeat {repeat_index}, {configuration_id}"},
+                        )
+                    try:
+                        filtered = _fit_variant(
+                            "outlier_filtered",
+                            [
+                                value
+                                for value in sorted(development_indices)
+                                if value not in set(selected_indices)
+                            ],
+                        )
+                        repeat_variants.append(
+                            {
+                                "variant_id": f"repeat_{repeat_index}_{configuration_id}_outlier_filtered",
+                                "run": filtered,
+                                "repeat_index": repeat_index,
+                                "configuration_id": configuration_id,
+                                "source_folds": configuration["source_folds"],
+                            }
+                        )
+                    except Exception as exc:
+                        repeat_variants.append(
+                            {
+                                "variant_id": f"repeat_{repeat_index}_{configuration_id}_outlier_filtered",
+                                "status": "failed",
+                                "reason": str(exc),
+                                "repeat_index": repeat_index,
+                                "configuration_id": configuration_id,
+                                "source_folds": configuration["source_folds"],
+                            }
+                        )
+            comparison_path = write_outlier_variant_comparison(
+                output_dir=repeat_root,
+                variants=repeat_variants,
+                selected_count=len(selected_indices),
+            )
+            repeat_summaries.append(
+                {
+                    **selection_summary,
+                    "repeat_index": repeat_index,
+                    "status": "completed",
+                    "artifacts": artifacts,
+                    "selection_predictions_path": artifacts.get("selection_predictions_path"),
+                    "filtered_development_path": artifacts.get("filtered_development_path"),
+                    "plot_artifacts": {
+                        key: value for key, value in artifacts.items() if key.startswith("outlier_selection_")
+                    },
+                    "comparison_path": comparison_path,
+                    "selected_source_row_indices": selected_indices,
+                    "configuration_count": len(configurations),
+                }
+            )
+            all_variants.extend(repeat_variants)
+        return {"variants": all_variants, "repeat_summaries": repeat_summaries}
 
     def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
         base = {
@@ -708,9 +1249,19 @@ class LightGBMToolkit(Toolkit):
         applicability_domain_methods: Optional[List[str] | str],
         similarity_top_k_neighbors: int | str | None,
         similarity_threshold_percentile: float | str | None,
+        outlier_config: OutlierAnalysisConfig,
+        outlier_skip_reason: Optional[str],
+        activity_args: Dict[str, Any],
+        selection_only: bool = False,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        """Tune one fixed train/validation/test holdout, then refit on train+validation."""
+        """Tune one fixed validation split and optionally create its final refit.
+
+        Cross-validation passes ``selection_only=True``.  In that mode this
+        method produces only the temporary best-model validation predictions
+        and outlier-selection artifacts; the pooled OOF analysis owns every
+        final refit.
+        """
         total_started_at = project_now()
         if progress_callback is not None:
             progress_callback("Hyperparameter optimization", {"detail": "Preparing validation split"})
@@ -740,9 +1291,9 @@ class LightGBMToolkit(Toolkit):
         train_indices = [int(item) for item in split_indices.get("train") or []]
         validation_indices = [int(item) for item in split_indices.get("val") or []]
         test_indices = [int(item) for item in split_indices.get("test") or []]
-        if not train_indices or not validation_indices or not test_indices:
+        if not train_indices or not validation_indices:
             raise HyperparameterTuningError(
-                "Hyperparameter tuning V1 requires non-empty train, validation, and test splits."
+                "Hyperparameter tuning requires non-empty train and validation splits."
             )
 
         model_parameter_names = {
@@ -949,6 +1500,90 @@ class LightGBMToolkit(Toolkit):
             raise HyperparameterTuningError(summary.get("reason") or "LightGBM tuning failed.")
         best_trial = summary.get("best_trial") or {}
         selected_parameters = dict(best_trial.get("params") or fixed_model_args)
+        selection_prediction_frame: Optional[pd.DataFrame] = None
+        if outlier_config.enabled and outlier_skip_reason is None:
+            if progress_callback is not None:
+                progress_callback("Identifying validation outliers", {"detail": "fitting selected model"})
+            with tempfile.TemporaryDirectory(prefix="qsaria_lightgbm_selection_") as selection_dir:
+                selection_run = self.backend.train_model(
+                    train_csv=train_csv,
+                    output_dir=selection_dir,
+                    task=task,
+                    extra_args={
+                        **base_args,
+                        **selected_parameters,
+                        "split_payload": [{"train": train_indices, "val": validation_indices}],
+                        "persist_artifacts": False,
+                        "return_prediction_frames": True,
+                        "early_stopping_rounds": 0,
+                    },
+                )
+                candidate_frame = selection_run.get("validation_prediction_frame")
+                if not isinstance(candidate_frame, pd.DataFrame) or candidate_frame.empty:
+                    raise HyperparameterTuningError(
+                        "The selected LightGBM model did not expose validation predictions for outlier analysis."
+                    )
+                selection_prediction_frame = candidate_frame.copy()
+        if selection_only:
+            outlier_study: Dict[str, Any] = {
+                "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+                "config": outlier_config.as_dict(),
+                "status": "skipped" if outlier_skip_reason else "pending",
+                "reason": outlier_skip_reason,
+            }
+            if selection_prediction_frame is not None:
+                study = self._run_outlier_refits(
+                    train_csv=train_csv,
+                    split_source_df=split_source_df,
+                    task=task,
+                    split_payload=split_payload,
+                    selection_prediction_frame=selection_prediction_frame,
+                    output_dir=root_output_path,
+                    base_args=base_args,
+                    selected_parameters=selected_parameters,
+                    feature_columns=effective_feature_columns,
+                    representation_name=representation_name,
+                    activity_args=activity_args,
+                    applicability_domain_methods=applicability_domain_methods,
+                    similarity_top_k_neighbors=similarity_top_k_neighbors,
+                    similarity_threshold_percentile=similarity_threshold_percentile,
+                    selection_fraction=outlier_config.selection_fraction,
+                    fit_variants=False,
+                    progress_callback=progress_callback,
+                    fold_label=str(split_run.get("label") or "cross_validation_fold"),
+                    repeat_index=split_run.get("repeat_index"),
+                )
+                outlier_study = study["summary"]
+                outlier_study["status"] = "completed"
+            selection_metrics = (best_trial.get("metrics") or {}).get("all") or {}
+            return {
+                "output_dir": resolved_output_dir,
+                "strategy": "cross_validation_selection",
+                "strategy_family": "cross_validation",
+                "strategy_label": str(split_run.get("label") or "cross_validation_fold"),
+                "backend_split_type": split_run["backend_split_type"],
+                "seed": split_run["seed"],
+                "metrics": {"validation": selection_metrics},
+                "selection_validation": {
+                    "metrics": best_trial.get("metrics") or {},
+                    "diagnostics": best_trial.get("diagnostics") or {},
+                },
+                "selected_hyperparameters": selected_parameters,
+                "hyperparameter_tuning": summary,
+                "hyperparameter_tuning_summary_path": str(summary_path),
+                "catalog_hyperparameter_tuning": tuning_metadata_for_catalog(summary),
+                "plot_artifacts": {
+                    **tuning_plot_artifacts,
+                    **dict(outlier_study.get("plot_artifacts") or {}),
+                },
+                "outlier_analysis": outlier_study,
+                "validation_protocol": protocol_policy["protocol"],
+                "validation_strategy": protocol_policy.get("validation_strategy"),
+                "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
+                "seed_policy": protocol_policy["seed_policy"],
+                "training_profile": training_policy["training_profile"],
+                "compute_environment": training_policy["compute_environment"],
+            }
         final_split_payload = [
             {
                 "train": [*train_indices, *validation_indices],
@@ -960,7 +1595,7 @@ class LightGBMToolkit(Toolkit):
             }
         ]
         if progress_callback is not None:
-            progress_callback("Refitting final model", {"detail": "train + validation"})
+            progress_callback("Training baseline refit", {"detail": "train + validation"})
         final_run = self.backend.train_model(
             train_csv=train_csv,
             output_dir=resolved_output_dir,
@@ -969,6 +1604,7 @@ class LightGBMToolkit(Toolkit):
                 **base_args,
                 **selected_parameters,
                 "split_payload": final_split_payload,
+                "final_refit": True,
                 "early_stopping_rounds": 0,
                 "refit_on_train_validation": True,
             },
@@ -985,6 +1621,37 @@ class LightGBMToolkit(Toolkit):
                 "split_payload": final_split_payload,
             }
         )
+        outlier_study: Dict[str, Any] = {
+            "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+            "config": outlier_config.as_dict(),
+            "status": "skipped" if outlier_skip_reason else "pending",
+            "reason": outlier_skip_reason,
+        }
+        outlier_variants: List[Dict[str, Any]] = []
+        if selection_prediction_frame is not None:
+            study = self._run_outlier_refits(
+                train_csv=train_csv,
+                split_source_df=split_source_df,
+                task=task,
+                split_payload=split_payload,
+                selection_prediction_frame=selection_prediction_frame,
+                output_dir=root_output_path,
+                base_args=base_args,
+                selected_parameters=selected_parameters,
+                feature_columns=effective_feature_columns,
+                representation_name=representation_name,
+                activity_args=activity_args,
+                applicability_domain_methods=applicability_domain_methods,
+                similarity_top_k_neighbors=similarity_top_k_neighbors,
+                similarity_threshold_percentile=similarity_threshold_percentile,
+                selection_fraction=outlier_config.selection_fraction,
+                baseline_run=final_run,
+                progress_callback=progress_callback,
+                fold_label=str(split_run.get("label") or "holdout"),
+            )
+            outlier_study = study["summary"]
+            outlier_variants = study["variants"]
+            outlier_study["status"] = "completed"
         if progress_callback is not None:
             progress_callback("Evaluating final test set", {})
         root_artifacts = self._materialize_primary_protocol_artifacts(
@@ -1003,6 +1670,27 @@ class LightGBMToolkit(Toolkit):
             similarity_top_k_neighbors=similarity_top_k_neighbors,
             similarity_threshold_percentile=similarity_threshold_percentile,
         )
+        if outlier_variants:
+            for variant in outlier_variants:
+                run = variant.get("run")
+                if not isinstance(run, dict):
+                    continue
+                if variant.get("variant_id") == "baseline":
+                    run["applicability_domain"] = ad_summary
+                    continue
+                variant_output_dir = Path(str(run.get("output_dir") or root_output_path))
+                run["applicability_domain"] = self._build_applicability_domain(
+                    train_csv=train_csv,
+                    primary_run=run,
+                    primary_output_dir=variant_output_dir,
+                    task=task,
+                    feature_columns=effective_feature_columns,
+                    feature_space=representation_name,
+                    prediction_artifact_paths={"test": run.get("test_predictions_path")},
+                    applicability_domain_methods=applicability_domain_methods,
+                    similarity_top_k_neighbors=similarity_top_k_neighbors,
+                    similarity_threshold_percentile=similarity_threshold_percentile,
+                )
         standard_plot_artifacts = build_training_plots_if_possible(
             train_csv=train_csv,
             split_results=[final_run],
@@ -1012,7 +1700,12 @@ class LightGBMToolkit(Toolkit):
             target_column=task.target_columns[0] if task.target_columns else None,
             task_type=task.task_type,
         )
-        plot_artifacts = {**standard_plot_artifacts, **tuning_plot_artifacts}
+        outlier_plot_artifacts = dict(outlier_study.get("plot_artifacts") or {})
+        plot_artifacts = {
+            **standard_plot_artifacts,
+            **tuning_plot_artifacts,
+            **outlier_plot_artifacts,
+        }
         selection_metrics = (best_trial.get("metrics") or {}).get("all") or {}
         final_metrics = dict(final_run.get("metrics") or {})
         final_metrics["validation"] = selection_metrics
@@ -1061,6 +1754,8 @@ class LightGBMToolkit(Toolkit):
                 "catalog_hyperparameter_tuning": tuning_metadata_for_catalog(summary),
                 "plot_artifacts": plot_artifacts,
                 "applicability_domain": ad_summary,
+                "outlier_analysis": outlier_study,
+                "outlier_model_variants": outlier_variants,
                 "validation_protocol": protocol_policy["protocol"],
                 "validation_protocol_reason": protocol_policy["reason"],
                 "validation_strategy": protocol_policy.get("validation_strategy"),
@@ -1074,7 +1769,9 @@ class LightGBMToolkit(Toolkit):
                 "baseline_split_results": [final_run],
                 "validation_assessment": assess_protocol_results([final_run]),
                 "training_durations": training_durations,
-                "catalog_model_policy": "tuned_final_refit_only",
+                "catalog_model_policy": "outlier_variants_no_test_winner"
+                if outlier_variants
+                else "tuned_final_refit_only",
                 "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
                 "canonical_summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
                 "train_csv": train_csv,
@@ -1110,6 +1807,7 @@ class LightGBMToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -1143,6 +1841,11 @@ class LightGBMToolkit(Toolkit):
             hyperparameter_tuning
             if hyperparameter_tuning is not None
             else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
+        requested_outlier_analysis = (
+            outlier_analysis
+            if outlier_analysis is not None
+            else requested_extra_args.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
@@ -1214,6 +1917,18 @@ class LightGBMToolkit(Toolkit):
             base_seed=training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
+        has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
+        if not has_validation:
+            has_validation = any(
+                len(run.get("split_sizes") or normalized_split_sizes or []) == 3
+                for run in protocol_policy.get("split_runs") or []
+            )
+        outlier_config, outlier_skip_reason = normalize_outlier_analysis_config(
+            requested_outlier_analysis,
+            has_validation=has_validation,
+            target_count=len(normalized_target_columns),
+            activity_cliff_feedback=bool(activity_args.get("activity_cliff_feedback")),
+        )
         training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
@@ -1264,6 +1979,7 @@ class LightGBMToolkit(Toolkit):
                 random_state=int(
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
+                outer_test_size=cv_strategy.get("outer_test_size"),
             )
         split_runs = list(protocol_policy.get("split_runs") or [])
         single_holdout = (
@@ -1275,7 +1991,7 @@ class LightGBMToolkit(Toolkit):
             requested_hyperparameter_tuning,
             backend_name="lightgbm",
             task_type=task_type,
-            eligible=single_holdout,
+            eligible=has_validation,
             fixed_parameters={
                 key
                 for key in direct_model_args
@@ -1300,6 +2016,182 @@ class LightGBMToolkit(Toolkit):
                 raise HyperparameterTuningError(
                     "Activity-cliff feedback loops cannot be combined with hyperparameter tuning in V1."
                 )
+            if not single_holdout:
+                # Every repeated-holdout/CV fold owns a distinct validation
+                # study.  The helper below therefore receives one fixed
+                # train/validation payload at a time; no outer test is ever
+                # handed to Optuna.  A later aggregation keeps every final
+                # candidate visible rather than using test metrics to select.
+                tuned_splits: List[Dict[str, Any]] = []
+                try:
+                    for run_index, base_split_run in enumerate(split_runs, start=1):
+                        split_run = dict(base_split_run)
+                        if split_run.get("label") in cv_split_payloads:
+                            split_run["split_payload"] = cv_split_payloads[str(split_run["label"])]
+                        elif split_run.get("split_payload") is None:
+                            split_run["split_payload"] = build_qsar_split_payload(
+                                df=split_source_df,
+                                split_type=split_run["backend_split_type"],
+                                split_sizes=split_run.get("split_sizes") or normalized_split_sizes or [],
+                                random_state=int(split_run["seed"]),
+                                smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                                feature_columns=list(normalized_feature_columns or []),
+                            )
+                        split_label = str(split_run.get("label") or f"split_{run_index}")
+                        publish_active_progress(
+                            "Hyperparameter optimization",
+                            {"detail": f"fold {run_index} of {len(split_runs)}"},
+                        )
+                        tuned_split_result = self._train_tuned_holdout(
+                                train_csv=train_csv,
+                                resolved_output_dir=str(root_output_path / safe_slug(split_label)),
+                                task=task,
+                                protocol_policy=protocol_policy,
+                                training_policy=training_policy,
+                                split_source_df=split_source_df,
+                                split_run=split_run,
+                                feature_columns=list(normalized_feature_columns or []),
+                                categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+                                representation_name=representation_name,
+                                direct_model_args=direct_model_args,
+                                raw_tuning_config=requested_hyperparameter_tuning,
+                                applicability_domain_methods=requested_ad_methods,
+                                similarity_top_k_neighbors=requested_similarity_top_k,
+                                similarity_threshold_percentile=requested_similarity_percentile,
+                                outlier_config=outlier_config,
+                                outlier_skip_reason=outlier_skip_reason,
+                                activity_args=activity_args,
+                                selection_only=bool(
+                                    is_cv_protocol
+                                    and outlier_config.enabled
+                                    and outlier_skip_reason is None
+                                ),
+                                progress_callback=publish_active_progress,
+                            )
+                        tuned_split_result.update(
+                            {
+                                "strategy_label": split_label,
+                                "strategy_family": (
+                                    "cross_validation" if is_cv_protocol else "repeated_holdout"
+                                ),
+                                "repeat_index": split_run.get("repeat_index"),
+                                "fold_index": split_run.get("fold_index"),
+                                "selection_split_payload": split_run.get("split_payload"),
+                            }
+                        )
+                        tuned_splits.append(tuned_split_result)
+                except Exception:
+                    active_run_record["status"] = "failed"
+                    active_run_record["completed_at"] = project_now().isoformat()
+                    if prediction_state is not None:
+                        prediction_state["active_training_run"] = None
+                    write_active_training_marker(active_marker_path, active_run_record)
+                    raise
+                primary_tuned = tuned_splits[0]
+
+                # `baseline` and `outlier_filtered` are meaningful within a
+                # split, not across a repeated protocol.  Give every catalog
+                # candidate a stable, unique split-qualified identity before
+                # it crosses the registry boundary.
+                all_variants: List[Dict[str, Any]] = []
+                for split_result in tuned_splits:
+                    repeat_index = split_result.get("repeat_index")
+                    fold_index = split_result.get("fold_index")
+                    split_label = str(split_result.get("strategy_label") or "split")
+                    for raw_variant in split_result.get("outlier_model_variants") or []:
+                        variant = dict(raw_variant)
+                        run = variant.get("run")
+                        if isinstance(run, dict):
+                            run = dict(run)
+                            variant["run"] = run
+                        base_variant_id = str(
+                            variant.get("variant_id")
+                            or (run or {}).get("outlier_variant")
+                            or "variant"
+                        )
+                        if len(tuned_splits) > 1:
+                            identity_parts = [
+                                f"repeat_{repeat_index}" if repeat_index is not None else None,
+                                f"fold_{fold_index}" if fold_index is not None else None,
+                                base_variant_id,
+                            ]
+                            variant_id = "_".join(part for part in identity_parts if part)
+                        else:
+                            variant_id = base_variant_id
+                        variant.update(
+                            {
+                                "variant_id": variant_id,
+                                "repeat_index": repeat_index,
+                                "fold_index": fold_index,
+                                "source_split_label": split_label,
+                            }
+                        )
+                        if isinstance(run, dict):
+                            run.update(
+                                {
+                                    "outlier_variant": variant_id,
+                                    "repeat_index": repeat_index,
+                                    "fold_index": fold_index,
+                                    "source_split_label": split_label,
+                                }
+                            )
+                        all_variants.append(variant)
+                cv_outlier_result: Dict[str, Any] = {}
+                if is_cv_protocol and outlier_config.enabled and outlier_skip_reason is None:
+                    cv_outlier_result = self._run_cross_validation_outlier_variants(
+                        train_csv=train_csv,
+                        source_df=split_source_df,
+                        task=task,
+                        tuned_splits=tuned_splits,
+                        output_dir=root_output_path,
+                        training_policy=training_policy,
+                        feature_columns=list(normalized_feature_columns or []),
+                        categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+                        representation_name=representation_name,
+                        applicability_domain_methods=requested_ad_methods,
+                        similarity_top_k_neighbors=requested_similarity_top_k,
+                        similarity_threshold_percentile=requested_similarity_percentile,
+                        selection_fraction=outlier_config.selection_fraction,
+                        progress_callback=publish_active_progress,
+                    )
+                    if cv_outlier_result.get("variants"):
+                        all_variants = list(cv_outlier_result["variants"])
+                composite = dict(primary_tuned)
+                composite.update(
+                    {
+                        "output_dir": resolved_output_dir,
+                        "split_results": tuned_splits,
+                        "baseline_split_results": tuned_splits,
+                        "outlier_model_variants": all_variants,
+                        "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
+                        "validation_strategy": protocol_policy.get("validation_strategy"),
+                        "validation_protocol": protocol_policy["protocol"],
+                        "catalog_model_policy": "outlier_variants_no_test_winner",
+                        "tuning_scope": "one_study_per_validation_fold",
+                        "test_selection_policy": "no_test_metric_selects_a_candidate",
+                        "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                        "canonical_summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                    }
+                )
+                composite["outlier_analysis"] = {
+                    "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+                    "status": "completed" if all_variants else "skipped",
+                    "reason": outlier_skip_reason,
+                    "per_split": [item.get("outlier_analysis") or {} for item in tuned_splits],
+                    "per_repeat": cv_outlier_result.get("repeat_summaries") or [],
+                    "pooling_note": (
+                        "OOF selection rows are pooled once per repeat before final candidate refits."
+                        if is_cv_protocol
+                        else "Each repeated holdout owns an independent validation outlier study."
+                    ),
+                }
+                write_training_summary(Path(composite["summary_path"]), composite)
+                active_run_record["status"] = "completed"
+                active_run_record["completed_at"] = project_now().isoformat()
+                if prediction_state is not None:
+                    prediction_state["active_training_run"] = None
+                write_active_training_marker(active_marker_path, active_run_record)
+                return composite
             try:
                 tuned_result = self._train_tuned_holdout(
                     train_csv=train_csv,
@@ -1317,6 +2209,9 @@ class LightGBMToolkit(Toolkit):
                     applicability_domain_methods=requested_ad_methods,
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
+                    outlier_config=outlier_config,
+                    outlier_skip_reason=outlier_skip_reason,
+                    activity_args=activity_args,
                     progress_callback=publish_active_progress,
                 )
             except Exception:
@@ -1569,7 +2464,13 @@ class LightGBMToolkit(Toolkit):
             final_output_dir = root_output_path / "final_refit"
             final_output_dir.mkdir(parents=True, exist_ok=True)
             final_started_at = project_now()
-            final_split_payload = build_full_train_split_payload(df=split_source_df)
+            cv_outer_test_indices = list(
+                ((next(iter(cv_split_payloads.values()), [{}]) or [{}])[0]).get("test") or []
+            )
+            final_split_payload = build_full_train_split_payload(
+                df=split_source_df,
+                test_indices=cv_outer_test_indices or None,
+            )
             final_args = {
                 **{
                     key: value
@@ -1613,6 +2514,126 @@ class LightGBMToolkit(Toolkit):
 
         final_split_results = split_results
         final_primary_run = final_refit_run or primary_run
+        outlier_study: Dict[str, Any] = {
+            "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+            "status": "skipped" if outlier_skip_reason else "pending",
+            "reason": outlier_skip_reason,
+            "config": outlier_config.as_dict(),
+            "studies": [],
+        }
+        outlier_model_variants: List[Dict[str, Any]] = []
+        # The default LightGBM path is usually tuned above.  This branch also
+        # covers an explicitly disabled tuning study and repeated holdout: each
+        # already-fitted train/validation model supplies the selection
+        # prediction, then both final variants are retrained without retuning.
+        if (
+            outlier_config.enabled
+            and outlier_skip_reason is None
+            and not activity_cliffs.get("mode") == "with_feedback_loops"
+        ):
+            for split_result in split_results:
+                split_payload = split_result.get("split_payload") or []
+                split = split_payload[0] if split_payload else {}
+                validation_indices = list(split.get("val") or split.get("validation") or [])
+                prediction_path = split_result.get("validation_predictions_path")
+                if not validation_indices or not prediction_path or not Path(str(prediction_path)).exists():
+                    outlier_study["studies"].append(
+                        {
+                            "split_label": split_result.get("strategy_label"),
+                            "status": "skipped",
+                            "reason": "Selection validation predictions are unavailable.",
+                        }
+                    )
+                    continue
+                publish_active_progress(
+                    "Identifying validation outliers",
+                    {"detail": str(split_result.get("strategy_label") or "holdout")},
+                )
+                selection_frame = pd.read_csv(Path(str(prediction_path)))
+                run_output = Path(str(split_result.get("output_dir") or root_output_path))
+                base_args = {
+                    **{
+                        key: value
+                        for key, value in training_policy["extra_args"].items()
+                        if key not in {"seed_policy", "split_payload", "validation_strategy"}
+                    },
+                    "feature_columns": list(
+                        normalized_feature_columns
+                        or split_result.get("feature_columns")
+                        or []
+                    ),
+                    "categorical_feature_columns": list(normalized_categorical_feature_columns or []),
+                    "random_state": int(split_result.get("seed") or 0),
+                    "validation_protocol": protocol_policy["protocol"],
+                    "early_stopping_rounds": 0,
+                    "deterministic": True,
+                }
+                model_parameters = {
+                    key: value
+                    for key, value in direct_model_args.items()
+                    if key
+                    in {
+                        "n_estimators", "learning_rate", "num_leaves", "max_depth",
+                        "subsample", "colsample_bytree", "min_child_samples", "reg_alpha",
+                        "reg_lambda", "min_split_gain", "boosting_type",
+                    }
+                }
+                study = self._run_outlier_refits(
+                    train_csv=train_csv,
+                    split_source_df=split_source_df,
+                    task=task,
+                    split_payload=split_payload,
+                    selection_prediction_frame=selection_frame,
+                    output_dir=run_output,
+                    base_args=base_args,
+                    selected_parameters=model_parameters,
+                    feature_columns=list(
+                        normalized_feature_columns or split_result.get("feature_columns") or []
+                    ),
+                    representation_name=representation_name,
+                    activity_args=activity_args,
+                    applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
+                    selection_fraction=outlier_config.selection_fraction,
+                    progress_callback=publish_active_progress,
+                    fold_label=str(split_result.get("strategy_label") or "holdout"),
+                    repeat_index=split_result.get("repeat_index"),
+                )
+                study_summary = dict(study["summary"])
+                study_summary["split_label"] = split_result.get("strategy_label")
+                outlier_study["studies"].append(study_summary)
+                for variant in study["variants"]:
+                    variant["split_label"] = split_result.get("strategy_label")
+                    variant["repeat_index"] = split_result.get("repeat_index")
+                    variant["variant_id"] = (
+                        f"{safe_slug(str(split_result.get('strategy_label') or 'holdout'))}_"
+                        f"{variant.get('variant_id')}"
+                    )
+                    outlier_model_variants.append(variant)
+            if outlier_model_variants:
+                outlier_study["status"] = "completed"
+                primary_label = primary_run.get("strategy_label")
+                baseline_variant = next(
+                    (
+                        item
+                        for item in outlier_model_variants
+                        if item.get("split_label") == primary_label
+                        and str(item.get("variant_id", "")).endswith("_baseline")
+                        and isinstance(item.get("run"), dict)
+                    ),
+                    None,
+                )
+                if baseline_variant is not None:
+                    final_primary_run = baseline_variant["run"]
+                    final_split_results = [
+                        item["run"]
+                        for item in outlier_model_variants
+                        if isinstance(item.get("run"), dict)
+                    ]
+            elif not outlier_study["studies"]:
+                outlier_study["status"] = "skipped"
+                outlier_study["reason"] = "Selection validation predictions are unavailable."
         recommended_variant = activity_cliffs.get("recommended_variant")
         if (
             not is_cv_protocol
@@ -1656,6 +2677,27 @@ class LightGBMToolkit(Toolkit):
             similarity_top_k_neighbors=requested_similarity_top_k,
             similarity_threshold_percentile=requested_similarity_percentile,
         )
+        if outlier_model_variants:
+            for variant in outlier_model_variants:
+                run = variant.get("run")
+                if not isinstance(run, dict):
+                    continue
+                if run is final_primary_run:
+                    run["applicability_domain"] = ad_summary
+                    continue
+                run_output_dir = Path(str(run.get("output_dir") or root_output_path))
+                run["applicability_domain"] = self._build_applicability_domain(
+                    train_csv=train_csv,
+                    primary_run=run,
+                    primary_output_dir=run_output_dir,
+                    task=task,
+                    feature_columns=normalized_feature_columns or run.get("feature_columns") or [],
+                    feature_space=representation_name or run.get("representation_name"),
+                    prediction_artifact_paths={"test": run.get("test_predictions_path")},
+                    applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
+                )
         plot_artifacts: Dict[str, str] = {}
         target_column = task.target_columns[0] if task.target_columns else None
         if protocol_policy.get("validation_strategy_type") != "full_train":
@@ -1744,7 +2786,16 @@ class LightGBMToolkit(Toolkit):
         result["curation"] = curation_artifacts
         result["applicability_domain"] = ad_summary
         result["activity_cliffs"] = activity_cliffs
-        result["plot_artifacts"] = plot_artifacts
+        outlier_plots = {
+            key: value
+            for study in outlier_study.get("studies") or []
+            for key, value in (study.get("plot_artifacts") or {}).items()
+        }
+        result["plot_artifacts"] = {**plot_artifacts, **outlier_plots}
+        result["outlier_analysis"] = outlier_study
+        result["outlier_model_variants"] = outlier_model_variants
+        if outlier_model_variants:
+            result["catalog_model_policy"] = "outlier_variants_no_test_winner"
         result["trained_at"] = trained_at.isoformat()
         result["trained_date"] = trained_at.strftime("%d/%m/%Y")
         result["trained_time"] = trained_at.strftime("%H:%M:%S")

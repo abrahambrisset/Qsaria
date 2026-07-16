@@ -88,9 +88,18 @@ def _finalize_split(
     split_hash = hashlib.sha256(
         json.dumps(payload_for_hash, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
+    normalized_sizes = _normalize_split_sizes(split_sizes)
+    # Cross-validation without an outer test has an intentional train/val
+    # shape.  The public holdout parser reserves a two-element shape for
+    # train/test, but the payload itself tells us this is a validation fold.
+    if "val" in clean and "test" not in clean and len(split_sizes) == 2:
+        total = float(sum(split_sizes))
+        if total <= 0 or any(float(value) <= 0 for value in split_sizes):
+            raise InvalidPredictionInputError("Cross-validation train/validation sizes must be positive.")
+        normalized_sizes = [float(value) / total for value in split_sizes]
     clean["metadata"] = {
         "split_type": split_type,
-        "split_sizes": _normalize_split_sizes(split_sizes),
+        "split_sizes": normalized_sizes,
         "split_counts": {key: len(value) for key, value in payload_for_hash.items()},
         "has_validation": bool(clean.get("val")),
         "random_state": int(random_state),
@@ -272,7 +281,16 @@ def build_repeated_kfold_split_payloads(
     n_splits: int,
     n_repeats: int,
     random_state: int,
+    outer_test_size: Optional[float] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
+    """Build CV folds with a validation split and an optional fixed outer test.
+
+    ``test`` has a strict meaning here: it is an outer external test shared by
+    every fold.  The fold held out by :class:`RepeatedKFold` is therefore
+    materialized as ``val``.  Earlier Qsaria versions called that inner fold
+    ``test``; retaining that wording would make HPO/outlier selection appear to
+    touch an external test set.
+    """
     n_rows = len(df)
     if n_rows < n_splits:
         raise InvalidPredictionInputError("Cross-validation requires at least n_splits rows.")
@@ -281,24 +299,56 @@ def build_repeated_kfold_split_payloads(
     if n_repeats < 1:
         raise InvalidPredictionInputError("Cross-validation requires n_repeats >= 1.")
 
+    all_indices = np.arange(n_rows, dtype=int)
+    outer_indices: np.ndarray = np.array([], dtype=int)
+    development_indices = all_indices
+    if outer_test_size not in (None, 0, 0.0):
+        try:
+            outer_fraction = float(outer_test_size)
+        except (TypeError, ValueError) as exc:
+            raise InvalidPredictionInputError("outer_test_size must be a number between 0 and 1.") from exc
+        if not 0.0 < outer_fraction < 1.0:
+            raise InvalidPredictionInputError("outer_test_size must be strictly between 0 and 1.")
+        outer_count = int(round(n_rows * outer_fraction))
+        if outer_count <= 0 or outer_count >= n_rows:
+            raise InvalidPredictionInputError(
+                "outer_test_size produced an empty development or external test split."
+            )
+        rng = np.random.default_rng(int(random_state))
+        outer_indices = np.sort(rng.choice(all_indices, size=outer_count, replace=False)).astype(int)
+        development_indices = np.setdiff1d(all_indices, outer_indices, assume_unique=True)
+    if len(development_indices) < n_splits:
+        raise InvalidPredictionInputError(
+            "Cross-validation development rows must be at least n_splits after outer test isolation."
+        )
+
     payloads: Dict[str, List[Dict[str, Any]]] = {}
     splitter = RepeatedKFold(
         n_splits=int(n_splits),
         n_repeats=int(n_repeats),
         random_state=int(random_state),
     )
-    for run_index, (train_idx, test_idx) in enumerate(splitter.split(np.arange(n_rows)), start=1):
+    for run_index, (train_idx, validation_idx) in enumerate(
+        splitter.split(np.arange(len(development_indices))), start=1
+    ):
         repeat_index = ((run_index - 1) // n_splits) + 1
         fold_index = ((run_index - 1) % n_splits) + 1
         label = f"cv_repeat_{repeat_index}_fold_{fold_index}"
         assigned = {
-            "train": [int(idx) for idx in train_idx.tolist()],
-            "test": [int(idx) for idx in test_idx.tolist()],
+            "train": [int(development_indices[idx]) for idx in train_idx.tolist()],
+            "val": [int(development_indices[idx]) for idx in validation_idx.tolist()],
         }
+        if len(outer_indices):
+            assigned["test"] = [int(idx) for idx in outer_indices.tolist()]
+        split_sizes = (
+            [len(train_idx) / n_rows, len(validation_idx) / n_rows, len(outer_indices) / n_rows]
+            if len(outer_indices)
+            else [len(train_idx) / n_rows, len(validation_idx) / n_rows]
+        )
         payload = _finalize_split(
             assigned,
             split_type="cross_validation",
-            split_sizes=[len(train_idx) / n_rows, len(test_idx) / n_rows],
+            split_sizes=split_sizes,
             random_state=random_state,
         )
         payload[0]["metadata"].update(
@@ -308,30 +358,56 @@ def build_repeated_kfold_split_payloads(
                 "cv_run_index": run_index,
                 "n_splits": int(n_splits),
                 "n_repeats": int(n_repeats),
+                "outer_test_size": float(len(outer_indices) / n_rows),
+                "has_outer_test": bool(len(outer_indices)),
             }
         )
         payloads[label] = payload
     return payloads
 
 
-def build_full_train_split_payload(*, df: pd.DataFrame) -> List[Dict[str, Any]]:
+def build_full_train_split_payload(
+    *,
+    df: pd.DataFrame,
+    train_indices: Optional[List[int]] = None,
+    test_indices: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Build a final refit payload, optionally preserving a fixed outer test."""
     n_rows = len(df)
     if n_rows < 1:
         raise InvalidPredictionInputError("Final refit requires at least one row.")
-    train_indices = list(range(n_rows))
+    resolved_test = sorted({int(index) for index in (test_indices or [])})
+    resolved_train = (
+        sorted({int(index) for index in train_indices})
+        if train_indices is not None
+        else [index for index in range(n_rows) if index not in set(resolved_test)]
+    )
+    if not resolved_train:
+        raise InvalidPredictionInputError("Final refit requires at least one training row.")
+    if any(index < 0 or index >= n_rows for index in [*resolved_train, *resolved_test]):
+        raise InvalidPredictionInputError("Final refit indices must belong to the source dataset.")
+    if set(resolved_train) & set(resolved_test):
+        raise InvalidPredictionInputError("Final refit train and test indices must not overlap.")
+    payload_for_hash: Dict[str, List[int]] = {"train": resolved_train}
+    if resolved_test:
+        payload_for_hash["test"] = resolved_test
     split_hash = hashlib.sha256(
-        json.dumps({"train": train_indices}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload_for_hash, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    return [
-        {
-            "train": train_indices,
-            "metadata": {
-                "split_type": "final_refit",
-                "split_sizes": [1.0],
-                "split_counts": {"train": int(n_rows)},
-                "has_validation": False,
-                "split_hash": split_hash,
-                "final_refit": True,
-            },
-        }
-    ]
+    payload: Dict[str, Any] = {
+        "train": resolved_train,
+        "metadata": {
+            "split_type": "final_refit",
+            "split_sizes": [len(resolved_train) / n_rows, len(resolved_test) / n_rows]
+            if resolved_test
+            else [1.0],
+            "split_counts": {key: len(value) for key, value in payload_for_hash.items()},
+            "has_validation": False,
+            "has_outer_test": bool(resolved_test),
+            "split_hash": split_hash,
+            "final_refit": True,
+        },
+    }
+    if resolved_test:
+        payload["test"] = resolved_test
+    return [payload]

@@ -10,9 +10,10 @@ import json
 import logging
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 from agno.agent import Agent
@@ -25,7 +26,17 @@ from cs_copilot.tools.activity_cliffs import (
 )
 
 from .backend import PredictionExecutionError, PredictionTaskSpec
+from .applicability_domain import fit_modern_applicability_domain, score_modern_applicability_domain
 from .hyperparameter_tuning import normalize_tuning_config
+from .outlier_analysis import (
+    attach_activity_cliff_annotations,
+    attach_ad_annotations,
+    normalize_outlier_analysis_config,
+    selection_predictions_from_frame,
+    select_outliers,
+    write_outlier_analysis_artifacts,
+    write_outlier_variant_comparison,
+)
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
@@ -72,6 +83,11 @@ from .training_orchestration import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ad_status_series(applicability_domain_result: Dict[str, Any]) -> Optional[pd.Series]:
+    scores = applicability_domain_result.get("scores")
+    return scores.get("ad_status") if isinstance(scores, pd.DataFrame) else None
 
 
 def _clean_split_source_target_for_task(
@@ -134,6 +150,199 @@ class TabICLToolkit(Toolkit):
             seed_policy_mode=seed_policy_mode,
             base_seed=base_seed,
         )
+
+    def _run_outlier_refits(
+        self,
+        *,
+        train_csv: str,
+        source_df: pd.DataFrame,
+        task: PredictionTaskSpec,
+        split_payload: List[Dict[str, Any]],
+        selection_prediction_frame: pd.DataFrame,
+        output_dir: Path,
+        train_args: Dict[str, Any],
+        feature_columns: List[str],
+        representation_name: Optional[str],
+        activity_args: Dict[str, Any],
+        applicability_domain_methods: Optional[List[str] | str],
+        similarity_top_k_neighbors: int | str | None,
+        similarity_threshold_percentile: float | str | None,
+        selection_fraction: float,
+        fold_label: str,
+        repeat_index: Optional[int] = None,
+        progress_callback: Optional[Callable[[str, Optional[Dict[str, Any]]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Run the common selection policy and TabICL baseline/filtered refits."""
+        split = split_payload[0]
+        train_indices = [int(value) for value in split.get("train") or []]
+        validation_indices = [
+            int(value) for value in (split.get("val") or split.get("validation") or [])
+        ]
+        test_indices = [int(value) for value in split.get("test") or []]
+        if not train_indices or not validation_indices:
+            raise ValueError("Outlier analysis requires a non-empty train and validation split.")
+        resolved_features = list(feature_columns)
+        if not resolved_features:
+            raise ValueError("Outlier analysis requires the resolved TabICL feature columns.")
+        target_column = task.target_columns[0]
+        selection = selection_predictions_from_frame(
+            selection_prediction_frame,
+            source_row_indices=validation_indices,
+            target_column=target_column,
+            fold_label=fold_label,
+            repeat_index=repeat_index,
+        )
+        analysis_dir = output_dir / "outlier_analysis"
+        development_indices = [*train_indices, *validation_indices]
+        development_frame = source_df.iloc[development_indices].copy()
+        development_frame.index = development_indices
+
+        with tempfile.TemporaryDirectory(prefix="qsaria_outlier_tabicl_") as temporary_dir:
+            temporary_ad = fit_modern_applicability_domain(
+                feature_frame=source_df.iloc[train_indices][resolved_features].reset_index(drop=True),
+                feature_columns=resolved_features,
+                output_dir=Path(temporary_dir) / "applicability_domain",
+                model_id="tabicl_outlier_selection",
+                feature_space=representation_name or "tabular",
+                representation_name=representation_name,
+                methods=applicability_domain_methods,
+                random_state=int(train_args.get("random_state") or 0),
+                all_feature_frame=source_df[resolved_features],
+                train_indices=train_indices,
+                split_indices=split,
+                similarity_top_k_neighbors=similarity_top_k_neighbors,
+                similarity_threshold_percentile=similarity_threshold_percentile,
+            )
+            validation_ad = score_modern_applicability_domain(
+                feature_frame=source_df.iloc[validation_indices][resolved_features].reset_index(drop=True),
+                applicability_domain=temporary_ad,
+                row_indices=validation_indices,
+            )
+            statuses = _ad_status_series(validation_ad)
+        selection = attach_ad_annotations(
+            selection,
+            ad_statuses=statuses.tolist() if statuses is not None else None,
+        )
+
+        ac_annotations: Optional[pd.DataFrame] = None
+        if task.task_type == "regression":
+            ac_input = development_frame.drop(columns=["source_row_index"], errors="ignore").copy()
+            ac_input.insert(0, "source_row_index", ac_input.index)
+            ac_source = analysis_dir / "development_for_selection.csv"
+            ac_source.parent.mkdir(parents=True, exist_ok=True)
+            ac_input.to_csv(ac_source, index=False)
+            try:
+                ac_context = prepare_activity_cliff_context(
+                    train_csv=str(ac_source),
+                    output_dir=str(analysis_dir / "activity_cliffs_development"),
+                    smiles_column=task.smiles_columns[0] if task.smiles_columns else "smiles",
+                    target_column=target_column,
+                    **activity_args,
+                )
+                annotated_path = ac_context.get("annotated_training_csv")
+                if annotated_path and Path(str(annotated_path)).exists():
+                    ac_annotations = pd.read_csv(annotated_path)
+            except Exception as exc:
+                logger.warning("Development-only Activity Cliff annotations unavailable: %s", exc)
+        selection = attach_activity_cliff_annotations(selection, annotations=ac_annotations)
+        selected_rows, selection_summary = select_outliers(
+            selection,
+            task_type=task.task_type,
+            selection_fraction=selection_fraction,
+        )
+        artifacts = write_outlier_analysis_artifacts(
+            output_dir=analysis_dir,
+            selection_frame=selected_rows,
+            selection_summary=selection_summary,
+            development_frame=development_frame,
+            extra_summary={
+                "fold_label": fold_label,
+                "repeat_index": repeat_index,
+                "selection_model": "train_only_validation_fit",
+                "activity_cliff_scope": "development_only",
+                "test_rows_used_for_selection": 0,
+            },
+        )
+        selected_indices = [
+            int(value)
+            for value in selected_rows.loc[
+                selected_rows["selected_for_removal"].astype(bool), "source_row_index"
+            ].tolist()
+        ]
+
+        def _fit_variant(variant_id: str, train_indices_for_variant: List[int]) -> Dict[str, Any]:
+            payload = [{
+                "train": train_indices_for_variant,
+                **({"test": test_indices} if test_indices else {}),
+                "metadata": {
+                    **dict(split.get("metadata") or {}),
+                    "refit_on_train_validation": True,
+                    "outlier_variant": variant_id,
+                    "removed_source_row_indices": selected_indices if variant_id == "outlier_filtered" else [],
+                },
+            }]
+            run = self.backend.train_model(
+                train_csv=train_csv,
+                output_dir=str(output_dir / "outlier_variants" / variant_id),
+                task=task,
+                extra_args={
+                    **train_args,
+                    "split_payload": payload,
+                    "split_type": "final_refit",
+                    "final_refit": True,
+                },
+            )
+            run["outlier_variant"] = variant_id
+            run["outlier_selected_count"] = len(selected_indices)
+            run["split_payload"] = payload
+            return run
+
+        variants: List[Dict[str, Any]] = []
+        try:
+            if progress_callback is not None:
+                progress_callback("Training baseline refit", {"detail": "train + validation"})
+            variants.append({"variant_id": "baseline", "run": _fit_variant("baseline", development_indices)})
+        except Exception as exc:
+            raise PredictionExecutionError(f"TabICL baseline outlier refit failed: {exc}") from exc
+        if selected_indices:
+            filtered_indices = [value for value in development_indices if value not in set(selected_indices)]
+            try:
+                if progress_callback is not None:
+                    progress_callback(
+                        "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
+                    )
+                variants.append(
+                    {"variant_id": "outlier_filtered", "run": _fit_variant("outlier_filtered", filtered_indices)}
+                )
+            except Exception as exc:
+                variants.append({"variant_id": "outlier_filtered", "status": "failed", "reason": str(exc)})
+
+        comparison_path = write_outlier_variant_comparison(
+            output_dir=analysis_dir,
+            variants=variants,
+            selected_count=len(selected_indices),
+        )
+        return {
+            "summary": {
+                **selection_summary,
+                "enabled": True,
+                "artifacts": artifacts,
+                "summary_path": artifacts.get("summary_path"),
+                "selection_predictions_path": artifacts.get("selection_predictions_path"),
+                "filtered_development_path": artifacts.get("filtered_development_path"),
+                "plot_artifacts": {
+                    key: value for key, value in artifacts.items() if key.startswith("outlier_selection_")
+                },
+                "comparison_path": comparison_path,
+                "test_comparison_policy": "descriptive_only_no_automatic_winner",
+                "selected_source_row_indices": selected_indices,
+                "variants": [
+                    {"variant_id": item["variant_id"], "status": item.get("status", "completed"), "reason": item.get("reason")}
+                    for item in variants
+                ],
+            },
+            "variants": variants,
+        }
 
     def _training_defaults_for_profile(self, profile: str) -> Dict[str, Any]:
         base = {
@@ -501,6 +710,7 @@ class TabICLToolkit(Toolkit):
                 random_state=int(
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
+                outer_test_size=cv_strategy.get("outer_test_size"),
             )
 
         marker_path = active_marker_path or (root_output_path / ".training_in_progress")
@@ -660,7 +870,13 @@ class TabICLToolkit(Toolkit):
             final_output_dir = root_output_path / "final_refit"
             final_output_dir.mkdir(parents=True, exist_ok=True)
             final_started_at = project_now()
-            final_split_payload = build_full_train_split_payload(df=split_source_df)
+            cv_outer_test_indices = list(
+                ((next(iter(cv_split_payloads.values()), [{}]) or [{}])[0]).get("test") or []
+            )
+            final_split_payload = build_full_train_split_payload(
+                df=split_source_df,
+                test_indices=cv_outer_test_indices or None,
+            )
             final_args = {
                 **{
                     key: value
@@ -956,6 +1172,7 @@ class TabICLToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None = None,
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
+        outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -985,6 +1202,11 @@ class TabICLToolkit(Toolkit):
             hyperparameter_tuning
             if hyperparameter_tuning is not None
             else requested_extra_args.pop("hyperparameter_tuning", None)
+        )
+        requested_outlier_analysis = (
+            outlier_analysis
+            if outlier_analysis is not None
+            else requested_extra_args.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
@@ -1057,6 +1279,18 @@ class TabICLToolkit(Toolkit):
             base_seed=training_policy["extra_args"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
+        has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
+        if not has_validation:
+            has_validation = any(
+                len(run.get("split_sizes") or normalized_split_sizes or []) == 3
+                for run in protocol_policy.get("split_runs") or []
+            )
+        outlier_config, outlier_skip_reason = normalize_outlier_analysis_config(
+            requested_outlier_analysis,
+            has_validation=has_validation,
+            target_count=len(normalized_target_columns),
+            activity_cliff_feedback=bool(activity_args.get("activity_cliff_feedback")),
+        )
         # TabICL deliberately exposes no HPO engine in V1.  Normalize here so an
         # explicit request is rejected before the worker process is created.
         normalize_tuning_config(
@@ -1128,6 +1362,146 @@ class TabICLToolkit(Toolkit):
             smiles_columns=["smiles"],
             target_columns=list(normalized_target_columns),
         )
+        outlier_study: Dict[str, Any] = {
+            "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
+            "status": "skipped" if outlier_skip_reason else "pending",
+            "reason": outlier_skip_reason,
+            "config": outlier_config.as_dict(),
+            "studies": [],
+        }
+        outlier_variants: List[Dict[str, Any]] = []
+        root_summary_path = result.get("canonical_summary_path") or result.get("summary_path")
+        # The worker already produced the train-only validation predictions.
+        # Reuse them as selection evidence; only the two final refits run in
+        # the parent process, with exactly the same direct TabICL parameters.
+        is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
+        if outlier_config.enabled and outlier_skip_reason is None:
+            with S3.open(train_csv, "r") as fh:
+                source_df = strip_unnamed_columns(pd.read_csv(fh))
+            source_df = _clean_split_source_target_for_task(
+                source_df,
+                target_column=task.target_columns[0],
+                task_type=task.task_type,
+            )
+            for split_result in list(result.get("split_results") or []):
+                split_payload = split_result.get("split_payload") or []
+                split = split_payload[0] if split_payload else {}
+                validation_indices = split.get("val") or split.get("validation") or []
+                prediction_path = split_result.get("validation_predictions_path")
+                if not validation_indices or not prediction_path or not Path(str(prediction_path)).exists():
+                    outlier_study["studies"].append(
+                        {
+                            "split_label": split_result.get("strategy_label"),
+                            "status": "skipped",
+                            "reason": "Selection validation predictions are unavailable.",
+                        }
+                    )
+                    continue
+                apply_progress_update(
+                    active_run_record,
+                    "Identifying validation outliers",
+                    {"detail": str(split_result.get("strategy_label") or "holdout")},
+                )
+                write_active_training_marker(active_marker_path, active_run_record)
+                study = self._run_outlier_refits(
+                    train_csv=train_csv,
+                    source_df=source_df,
+                    task=task,
+                    split_payload=split_payload,
+                    selection_prediction_frame=pd.read_csv(Path(str(prediction_path))),
+                    output_dir=Path(str(split_result.get("output_dir") or resolved_output_dir)),
+                    train_args={
+                        **{
+                            key: value
+                            for key, value in training_policy["extra_args"].items()
+                            if key not in {"seed_policy", "split_payload", "validation_strategy"}
+                        },
+                        "feature_columns": list(
+                            normalized_feature_columns
+                            or split_result.get("feature_columns")
+                            or []
+                        ),
+                        "random_state": int(split_result.get("seed") or 0),
+                        "validation_protocol": protocol_policy["protocol"],
+                    },
+                    feature_columns=list(
+                        normalized_feature_columns or split_result.get("feature_columns") or []
+                    ),
+                    representation_name=representation_name,
+                    activity_args=activity_args,
+                    applicability_domain_methods=requested_ad_methods,
+                    similarity_top_k_neighbors=requested_similarity_top_k,
+                    similarity_threshold_percentile=requested_similarity_percentile,
+                    selection_fraction=outlier_config.selection_fraction,
+                    fold_label=str(split_result.get("strategy_label") or "holdout"),
+                    repeat_index=split_result.get("repeat_index"),
+                    progress_callback=lambda phase, payload: (
+                        apply_progress_update(active_run_record, phase, payload),
+                        write_active_training_marker(active_marker_path, active_run_record),
+                    ),
+                )
+                study_summary = dict(study["summary"])
+                study_summary["split_label"] = split_result.get("strategy_label")
+                outlier_study["studies"].append(study_summary)
+                for variant in study["variants"]:
+                    run = variant.get("run")
+                    if isinstance(run, dict):
+                        run_output_dir = Path(str(run.get("output_dir") or resolved_output_dir))
+                        run["applicability_domain"] = self._build_applicability_domain(
+                            train_csv=train_csv,
+                            primary_run=run,
+                            primary_output_dir=run_output_dir,
+                            task=task,
+                            feature_columns=list(
+                                normalized_feature_columns or run.get("feature_columns") or []
+                            ),
+                            feature_space=representation_name or run.get("feature_space"),
+                            prediction_artifact_paths={"test": run.get("test_predictions_path")},
+                            applicability_domain_methods=requested_ad_methods,
+                            similarity_top_k_neighbors=requested_similarity_top_k,
+                            similarity_threshold_percentile=requested_similarity_percentile,
+                        )
+                    variant["split_label"] = split_result.get("strategy_label")
+                    variant["repeat_index"] = split_result.get("repeat_index")
+                    variant["variant_id"] = (
+                        f"{safe_slug(str(split_result.get('strategy_label') or 'holdout'))}_"
+                        f"{variant.get('variant_id')}"
+                    )
+                    outlier_variants.append(variant)
+            if outlier_variants:
+                outlier_study["status"] = "completed"
+                primary_label = (result.get("split_results") or [{}])[0].get("strategy_label")
+                baseline = next(
+                    (
+                        item
+                        for item in outlier_variants
+                        if item.get("split_label") == primary_label
+                        and str(item.get("variant_id", "")).endswith("_baseline")
+                        and isinstance(item.get("run"), dict)
+                    ),
+                    None,
+                )
+                if baseline is not None:
+                    result.update(baseline["run"])
+                    result["output_dir"] = resolved_output_dir
+                    if root_summary_path:
+                        result["summary_path"] = root_summary_path
+                        result["canonical_summary_path"] = root_summary_path
+            elif not outlier_study["studies"]:
+                outlier_study["status"] = "skipped"
+                outlier_study["reason"] = "Selection validation predictions are unavailable."
+        result["outlier_analysis"] = outlier_study
+        result["outlier_model_variants"] = outlier_variants
+        if outlier_variants:
+            result["catalog_model_policy"] = "outlier_variants_no_test_winner"
+            result["plot_artifacts"] = {
+                **(result.get("plot_artifacts") or {}),
+                **{
+                    key: value
+                    for study in outlier_study.get("studies") or []
+                    for key, value in (study.get("plot_artifacts") or {}).items()
+                },
+            }
         self._sync_training_run_state_from_result(
             prediction_state=prediction_state,
             train_csv=train_csv,
