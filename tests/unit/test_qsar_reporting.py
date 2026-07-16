@@ -2,6 +2,8 @@
 # coding: utf-8
 """Tests for canonical QSAR reporting handoffs."""
 
+import json
+
 from cs_copilot.tools.prediction.qsar_reporting import (
     build_external_evaluation_reporting_handoff,
     build_registry_reporting_handoff,
@@ -172,6 +174,274 @@ def test_external_evaluation_handoff_is_append_only_and_ad_aware():
     assert "| evaluation externe | out_of_domain | 1 | non calculable |" in handoff[
         "evaluation_metrics_markdown"
     ]
+
+
+def test_training_v2_handoff_normalizes_facts_and_limits_tables_to_three():
+    def variant(name, rmse):
+        return {
+            "variant_id": name,
+            "split_label": "holdout_1",
+            "run": {
+                "applicability_domain": {
+                    "split_score_summaries": {
+                        "test": {
+                            "row_count": 5,
+                            "n_in_domain": 4,
+                            "n_out_of_domain": 1,
+                            "coverage_in_domain": 0.8,
+                            "metrics_all": {"r2": 0.5, "rmse": rmse, "mae": 0.4, "n": 5},
+                            "metrics_in_domain": {"r2": 0.6, "rmse": rmse - 0.1, "n": 4},
+                            "metrics_out_of_domain": {},
+                        }
+                    }
+                }
+            },
+        }
+
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "train_csv": "data/train.csv",
+            "target_columns": ["pEC50"],
+            "validation_protocol": "standard_qsar",
+            "metrics_status": "evaluated",
+            "curation": {
+                "status": "completed",
+                "ready_for_qsar": True,
+                "rows_in": 100,
+                "rows_out": 92,
+                "retained_columns": ["SMILES", "pEC50"],
+                "details": {
+                    "invalid_smiles_removed": 2,
+                    "curation_policy": {"duplicates": "aggregate"},
+                    "curation_actions": ["standardized"],
+                },
+            },
+            "activity_cliffs": {
+                "enabled": True,
+                "mode": "annotate",
+                "index_name": "sali",
+                "flagged_count": 4,
+                "priority_counts": {"high": 1},
+                "index_parameters": {"similarity_threshold": 0.7},
+                "tiering_policy": "standard",
+            },
+            "applicability_domain": {
+                "method": "bounding_box",
+                "feature_space": "rdkit_all",
+                "feature_count": 217,
+                "fit_row_count": 80,
+                "methods": {
+                    "bounding_box": {"feature_space": "rdkit_all", "threshold": 0.95}
+                },
+                "split_score_summaries": {
+                    "validation": {
+                        "row_count": 10,
+                        "n_in_domain": 8,
+                        "n_out_of_domain": 2,
+                        "coverage_in_domain": 0.8,
+                    },
+                    "test": {
+                        "row_count": 10,
+                        "n_in_domain": 9,
+                        "n_out_of_domain": 1,
+                        "coverage_in_domain": 0.9,
+                    },
+                },
+            },
+            "selection_validation": {
+                "metrics": {
+                    "all": {"r2": 0.4, "rmse": 0.8, "mae": 0.5, "n": 10},
+                    "in_domain": {"r2": 0.5, "rmse": 0.7, "mae": 0.4, "n": 8},
+                    "out_of_domain": {"r2": 0.1, "rmse": 1.0, "mae": 0.9, "n": 2},
+                }
+            },
+            "hyperparameter_tuning": {
+                "engine": "optuna_tpe",
+                "requested_trials": 50,
+                "completed_trials": 50,
+                "best_trial": {
+                    "number": 12,
+                    "params": {"num_leaves": 31},
+                    "diagnostics": {"large": "not forwarded"},
+                },
+                "trials": [{"number": index, "large": "not forwarded"} for index in range(50)],
+            },
+            "outlier_analysis": {
+                "enabled": True,
+                "status": "completed",
+                "eligible_count": 6,
+                "selected_count": 1,
+            },
+            "outlier_model_variants": [variant("baseline", 0.7), variant("outlier_filtered", 0.6)],
+        }
+    )
+
+    facts = handoff["report_facts"]
+    tables = handoff["report_tables"]
+    assert facts["schema_version"] == "2.0"
+    assert facts["dataset"]["curation"]["retained_columns"] == ["SMILES", "pEC50"]
+    assert facts["dataset"]["activity_cliffs"]["index_parameters"]["similarity_threshold"] == 0.7
+    assert facts["hyperparameter_optimization"]["best_trial"]["number"] == 12
+    assert "trials" not in facts["hyperparameter_optimization"]
+    assert "not forwarded" not in str(facts["hyperparameter_optimization"])
+    assert set(tables) == {
+        "applicability_domain",
+        "selection_validation_metrics",
+        "final_test_comparison",
+    }
+    assert tables["final_test_comparison"]["markdown"].count("baseline") == 3
+    assert tables["final_test_comparison"]["markdown"].count("outlier_filtered") == 3
+
+
+def test_training_v2_handoff_marks_cv_without_outer_test_as_internal():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "tabicl",
+            "task_type": "regression",
+            "validation_protocol": "cross_validation",
+            "validation_strategy_type": "cross_validation",
+            "validation_strategy": {"n_folds": 5},
+            "metrics_status": "evaluated",
+        }
+    )
+
+    evaluation = handoff["report_facts"]["evaluation"]
+    assert evaluation["scope"] == "internal"
+    assert "No external test set" in evaluation["statement"]
+    assert "final_test_comparison" not in handoff["report_tables"]
+
+
+def test_training_v2_handoff_keeps_chemprop_native_val_loss_and_skipped_outliers():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "chemprop",
+            "task_type": "regression",
+            "validation_protocol": "standard_qsar",
+            "metrics_status": "evaluated",
+            "hyperparameter_tuning": {
+                "status": "completed",
+                "engine": "chemprop_hpopt_hyperopt",
+                "requested_trials": 50,
+                "completed_trials": 50,
+                "objective": {"metric": "val_loss", "direction": "minimize"},
+                "selection_protocol": {"applicability_domain_used_for_selection": False},
+                "best_trial": {"number": 8, "value": 0.21, "params": {"depth": 4}},
+                "trials": [{"number": 1, "checkpoint": "/tmp/heavy"}],
+            },
+            "outlier_analysis": {
+                "enabled": False,
+                "status": "skipped",
+                "reason": "Disabled explicitly by outlier_analysis.enabled=false.",
+            },
+        }
+    )
+
+    facts = handoff["report_facts"]
+    assert facts["hyperparameter_optimization"]["engine"] == "chemprop_hpopt_hyperopt"
+    assert facts["hyperparameter_optimization"]["objective"]["metric"] == "val_loss"
+    assert facts["hyperparameter_optimization"]["selection_protocol"][
+        "applicability_domain_used_for_selection"
+    ] is False
+    assert "trials" not in facts["hyperparameter_optimization"]
+    assert facts["outlier_analysis"]["status"] == "skipped"
+
+
+def test_training_v2_handoff_marks_cv_with_outer_test_as_external():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "validation_protocol": "cross_validation",
+            "validation_strategy_type": "cross_validation",
+            "validation_strategy": {"n_folds": 5, "outer_test_size": 0.1},
+            "metrics_status": "evaluated",
+        }
+    )
+
+    assert handoff["report_facts"]["evaluation"]["scope"] == "external"
+
+
+def test_training_v2_handoff_reports_automatic_development_only_ac_annotation(tmp_path):
+    summary_path = tmp_path / "outlier_analysis_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "selection_annotations": {
+                    "activity_cliffs": {
+                        "executed": True,
+                        "flagged_count": 2,
+                        "scope": "development_only",
+                    },
+                    "applicability_domain": {
+                        "available": True,
+                        "out_of_domain_count": 25,
+                        "scope": "train_fit_validation_score",
+                    },
+                }
+            }
+        )
+    )
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "metrics_status": "evaluated",
+            "outlier_analysis": {
+                "enabled": True,
+                "status": "completed",
+                "eligible_count": 5,
+                "selected_count": 1,
+                "summary_path": str(summary_path),
+                "artifacts": {"summary_path": str(summary_path)},
+            },
+        }
+    )
+
+    facts = handoff["report_facts"]
+    ac = facts["dataset"]["activity_cliffs"]
+    assert ac["status"] == "selection_annotation_only"
+    assert ac["flagged_count"] == 2
+    assert ac["feedback_loops_requested"] == 0
+    assert facts["outlier_analysis"]["selection_annotations"]["applicability_domain"][
+        "out_of_domain_count"
+    ] == 25
+
+
+def test_training_v2_handoff_marks_full_train_as_not_internally_evaluated():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "validation_protocol": "full_train",
+            "metrics_status": "not_evaluated",
+            "evaluation_required": True,
+        }
+    )
+
+    assert handoff["report_facts"]["evaluation"]["scope"] == "none"
+    assert "no internal evaluation" in handoff["report_facts"]["evaluation"]["statement"]
+
+
+def test_external_evaluation_v2_handoff_is_short_and_uses_only_external_facts():
+    handoff = build_external_evaluation_reporting_handoff(
+        {
+            "evaluation_id": "pxr_eval_2",
+            "dataset_path": "data/external.csv",
+            "task_type": "regression",
+            "target_columns": ["pEC50"],
+            "row_count": 3,
+            "metrics": {"r2": 0.4, "rmse": 0.8, "mae": 0.5, "mse": 0.64, "n": 3},
+            "artifacts": {"evaluation_summary": "/tmp/evaluation_summary.json"},
+        }
+    )
+
+    facts = handoff["report_facts"]
+    assert facts["report_kind"] == "standalone_labelled_evaluation"
+    assert facts["evaluation"]["dataset_path"] == "data/external.csv"
+    assert "curation" not in facts
+    assert set(handoff["report_tables"]) == {"external_test_results"}
 
 
 def test_registry_handoff_reports_status_adjustment_reason():

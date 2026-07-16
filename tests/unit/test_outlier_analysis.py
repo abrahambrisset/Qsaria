@@ -203,6 +203,12 @@ def test_selection_artifacts_are_compact_and_json_safe(tmp_path):
 
     payload = json.loads((tmp_path / "outlier_analysis_summary.json").read_text())
     assert payload["selected_count"] == 1
+    assert payload["selection_annotations"]["activity_cliffs"] == {
+        "executed": True,
+        "flagged_count": 3,
+        "scope": "development_only",
+    }
+    assert payload["selection_annotations"]["applicability_domain"]["out_of_domain_count"] == 0
     assert (tmp_path / "outlier_selection_predictions.csv").exists()
     assert (tmp_path / "outlier_filtered_development.csv").exists()
     assert artifacts["summary_path"].endswith("outlier_analysis_summary.json")

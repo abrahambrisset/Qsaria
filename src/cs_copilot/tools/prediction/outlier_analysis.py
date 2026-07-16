@@ -496,7 +496,7 @@ def build_outlier_analysis_plots(
     *,
     output_dir: str | Path,
     title_suffix: str = "validation selection",
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Write the two requested regression selection plots when data is available."""
     if selection_frame.empty or "residual" not in selection_frame.columns:
         return {}
@@ -630,6 +630,27 @@ def write_outlier_analysis_artifacts(
     filtered_path = output / "outlier_filtered_development.csv"
     filtered.to_csv(filtered_path, index=True, index_label="source_row_index")
     plots = build_outlier_analysis_plots(selection_frame, output_dir=output / "plots")
+    def _count_true(column: str) -> int:
+        if column not in selection_frame.columns:
+            return 0
+        return int(selection_frame[column].fillna(False).astype(bool).sum())
+
+    # The Activity Cliff annotation used for outlier selection is deliberately
+    # a development-only analysis.  It is distinct from optional feedback
+    # loops, so persist it explicitly rather than leaving reports to infer it
+    # from the presence of AC plot markers.
+    selection_annotations = {
+        "activity_cliffs": {
+            "executed": "activity_cliff_flag" in selection_frame.columns,
+            "flagged_count": _count_true("activity_cliff_flag"),
+            "scope": "development_only",
+        },
+        "applicability_domain": {
+            "available": "ad_out_of_domain" in selection_frame.columns,
+            "out_of_domain_count": _count_true("ad_out_of_domain"),
+            "scope": "train_fit_validation_score",
+        },
+    }
     summary = {
         "contract_version": OUTLIER_ANALYSIS_CONTRACT_VERSION,
         **dict(selection_summary),
@@ -637,6 +658,7 @@ def write_outlier_analysis_artifacts(
         "selection_predictions_path": str(candidates_path),
         "filtered_development_path": str(filtered_path),
         "plot_artifacts": plots,
+        "selection_annotations": selection_annotations,
         **dict(extra_summary or {}),
     }
     summary_path = output / "outlier_analysis_summary.json"
@@ -645,6 +667,7 @@ def write_outlier_analysis_artifacts(
         "summary_path": str(summary_path),
         "selection_predictions_path": str(candidates_path),
         "filtered_development_path": str(filtered_path),
+        "selection_annotations": selection_annotations,
         **plots,
     }
 

@@ -435,6 +435,7 @@ def _materialize_outlier_variants_manifest(
     *,
     result: Dict[str, Any],
     output_dir: str,
+    compact_for_response: bool = True,
 ) -> None:
     """Move detailed final-refit runs to a dedicated audit artifact."""
     variants = result.get("outlier_model_variants")
@@ -453,11 +454,12 @@ def _materialize_outlier_variants_manifest(
         },
     )
     result["outlier_model_variants_manifest_path"] = str(manifest_path)
-    result["outlier_model_variants"] = [
-        _compact_outlier_variant_for_response(variant)
-        for variant in variants
-        if isinstance(variant, dict)
-    ]
+    if compact_for_response:
+        result["outlier_model_variants"] = [
+            _compact_outlier_variant_for_response(variant)
+            for variant in variants
+            if isinstance(variant, dict)
+        ]
 
 
 def _compact_activity_cliffs(activity_cliffs: Dict[str, Any]) -> Dict[str, Any]:
@@ -469,8 +471,14 @@ def _compact_activity_cliffs(activity_cliffs: Dict[str, Any]) -> Dict[str, Any]:
             "enabled",
             "mode",
             "index_name",
+            "target_column",
             "flagged_count",
             "priority_counts",
+            "index_parameters",
+            "tiering_policy",
+            "evaluation_policy",
+            "selection_policy",
+            "warnings",
             "recommended_variant",
             "summary_path",
             "annotated_training_csv",
@@ -1513,7 +1521,6 @@ class QSARTrainingToolkit(Toolkit):
             ),
             "validation_assessment": best_result.get("validation_assessment") or {},
         }
-        campaign_result["reporting_handoff"] = build_training_reporting_handoff(campaign_result)
         summary_path = campaign_root / "qsar_training_campaign_summary.json"
         campaign_result["summary_path"] = str(summary_path)
         campaign_result["canonical_summary_path"] = str(summary_path)
@@ -1521,6 +1528,9 @@ class QSARTrainingToolkit(Toolkit):
             result=campaign_result,
             output_dir=str(campaign_root),
         )
+        # Build the handoff only after its manifest paths exist so the
+        # persisted summary and the agent see the same factual provenance.
+        campaign_result["reporting_handoff"] = build_training_reporting_handoff(campaign_result)
         write_training_summary(summary_path, campaign_result)
         return _compact_training_tool_result(campaign_result)
 
@@ -1757,6 +1767,10 @@ class QSARTrainingToolkit(Toolkit):
             if curation_artifacts:
                 result["curation"] = curation_artifacts
 
+        # Preserve the user-visible dataset contract in the compact factual
+        # report, even when a backend does not echo these inputs verbatim.
+        result.setdefault("smiles_column", smiles_column)
+        result.setdefault("target_columns", list(normalized_target_columns))
         result["recommended_registry_payload"] = self._recommended_registry_payload(
             backend_name=normalized_backend,
             task_type=task_type,
@@ -1788,9 +1802,22 @@ class QSARTrainingToolkit(Toolkit):
                     "candidate_registry_payloads list and report every returned canonical catalog model_id."
                 ),
             }
-        result["reporting_handoff"] = build_training_reporting_handoff(result)
         _materialize_candidate_persistence_manifest(result=result, output_dir=output_dir)
-        _materialize_outlier_variants_manifest(result=result, output_dir=output_dir)
+        _materialize_outlier_variants_manifest(
+            result=result,
+            output_dir=output_dir,
+            compact_for_response=False,
+        )
+        # The factual report handoff must be created after variant/candidate
+        # manifests have been materialized, then written into the canonical
+        # summary before the facade response is compacted.
+        result["reporting_handoff"] = build_training_reporting_handoff(result)
+        if result.get("outlier_model_variants"):
+            result["outlier_model_variants"] = [
+                _compact_outlier_variant_for_response(variant)
+                for variant in result["outlier_model_variants"]
+                if isinstance(variant, dict)
+            ]
         self._refresh_enriched_training_artifacts(
             result=result,
             output_dir=output_dir,

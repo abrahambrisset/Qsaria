@@ -104,29 +104,28 @@ def test_report_instructions_define_required_report_structures():
     assert "Route Analysis" in instructions
 
 
-def test_qsar_report_instructions_require_canonical_reporting_handoffs():
+def test_qsar_report_instructions_require_fact_first_v2_handoffs():
     instructions = _qsar_report_instructions_text()
 
-    assert "Metriques d'evaluation" in instructions
-    assert "you MUST use a decision report" in instructions
+    assert "Resume executif" in instructions
+    assert "Dataset, curation et qualite des donnees" in instructions
+    assert "Optimisation des hyperparametres" in instructions
+    assert "Analyse des outliers" in instructions
+    assert "Resultats de test externe" in instructions
+    assert "Resultats de test interne" in instructions
     assert "NEVER use the legacy `Partie 1`, `Partie 2`, `Partie 3`, or `Partie 4`" in instructions
     assert "allowed only for curation-only reports" in instructions
     assert "reporting_handoff" in instructions
-    assert "copy these canonical markdown blocks verbatim" in instructions
-    assert "do not split the canonical metrics table into separate validation/test tables" in instructions
-    assert "do not drop `validation interne` in/out rows" in instructions
-    assert "one canonical table with columns `Source`, `AD subset`, `n`" in instructions
-    assert "Do not create replacement subsections named `Metriques detaillees - Validation interne`" in instructions
-    assert "you as the report agent must immediately write a short analytical paragraph" in instructions
-    assert "starting with the literal label `Commentaire :`" in instructions
-    assert "Do not expect the handoff to provide this analysis" in instructions
-    assert "Every additional table you create yourself" in instructions
-    assert "interpret validation/test consistency, the in_domain vs out_of_domain gap" in instructions
-    assert "based only on the copied table values and upstream handoffs" in instructions
-    assert "evaluation_metrics_markdown" in instructions
-    assert "applicability_domain_markdown" in instructions
-    assert "governance_markdown" in instructions
-    assert "artifacts_inventory" in instructions
+    assert "report_facts" in instructions
+    assert "report_tables" in instructions
+    assert "selection_validation_metrics" in instructions
+    assert "final_test_comparison" in instructions
+    assert "Concise tables for curation, working environment, protocol, durations, tuning, and persisted models" in instructions
+    assert "it is mandatory in `Resultats de test externe`" in instructions
+    assert "automatic development-only Activity Cliff annotation" in instructions
+    assert "Immediately after every copied table" in instructions
+    assert "beginning with `Commentaire :`" in instructions
+    assert "Interpret only its visible values" in instructions
     assert "non calculable" in instructions
     assert "out_of_domain" in instructions
 
