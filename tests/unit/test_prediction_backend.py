@@ -1317,6 +1317,71 @@ def test_model_registry_batch_persistence_uses_each_exact_candidate_payload(monk
     ]
 
 
+def test_model_registry_batch_persistence_loads_manifest_and_normalizes_ad_scores(
+    monkeypatch, tmp_path
+):
+    class FakeBackend:
+        backend_name = "lightgbm"
+
+    toolkit = ModelRegistryToolkit(
+        backends={"lightgbm": FakeBackend()},
+        default_backend_name="lightgbm",
+        register_tools=False,
+    )
+    calls = []
+
+    def fake_register_model(*, agent, **payload):
+        calls.append(("register", payload))
+        return {"registered": True, "model_id": payload["model_id"]}
+
+    def fake_persist_registered_model(*, model_id, agent):
+        calls.append(("persist", {"model_id": model_id}))
+        return {
+            "persisted": True,
+            "model_id": f"catalog_{model_id}",
+            "model_root": str(tmp_path / model_id),
+            "model_path": str(tmp_path / model_id / "best.pkl"),
+            "metadata_path": str(tmp_path / model_id / "metadata.json"),
+        }
+
+    monkeypatch.setattr(toolkit, "register_model", fake_register_model)
+    monkeypatch.setattr(toolkit, "persist_registered_model", fake_persist_registered_model)
+    manifest_path = tmp_path / "catalog_candidates_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "candidate_registry_payloads": [
+                    {
+                        "rank": 1,
+                        "candidate_id": "cv_baseline",
+                        "split_label": "cv_baseline",
+                        "registry_payload": {
+                            "model_id": "session_cv_baseline",
+                            "model_path": str(tmp_path / "cv_baseline.pkl"),
+                            "task_type": "regression",
+                            "split_score_summaries": {"test": {"n_in_domain": 12}},
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+
+    result = toolkit.register_and_persist_candidates(
+        candidate_manifest_path=str(manifest_path),
+        agent=SimpleNamespace(session_state={}),
+    )
+
+    assert result["candidate_count"] == 1
+    assert result["candidate_manifest_path"] == str(manifest_path)
+    assert [name for name, _ in calls] == ["register", "persist"]
+    assert calls[0][1]["applicability_domain"]["split_score_summaries"] == {
+        "test": {"n_in_domain": 12}
+    }
+
+
 def test_model_registry_persistence_copies_modern_applicability_domain(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"

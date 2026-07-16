@@ -42,6 +42,33 @@ from .session_state import (
 )
 
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+_REGISTER_MODEL_PAYLOAD_KEYS = {
+    "model_id",
+    "model_path",
+    "task_type",
+    "backend_name",
+    "smiles_columns",
+    "target_columns",
+    "reaction_columns",
+    "uncertainty_method",
+    "calibration_method",
+    "description",
+    "tags",
+    "version",
+    "status",
+    "owner",
+    "source",
+    "domain_summary",
+    "strengths",
+    "limitations",
+    "recommended_for",
+    "not_recommended_for",
+    "known_metrics",
+    "applicability_domain",
+    "training_data_summary",
+    "inference_profile",
+    "selection_hints",
+}
 
 
 def _relative_posix(path: Path, start: Path) -> str:
@@ -80,6 +107,45 @@ def _load_json_if_available(path: Path) -> Dict[str, Any]:
 def _mapping_or_empty(value: Any) -> Dict[str, Any]:
     """Return a mapping only when metadata has the expected object shape."""
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _load_candidate_manifest(path: str) -> List[Dict[str, Any]]:
+    """Load the exact registry payload list emitted by a QSAR training run."""
+    manifest_path = Path(path).expanduser()
+    payload = _load_json_if_available(manifest_path)
+    if not payload:
+        raise ValueError(f"Candidate persistence manifest was not found or is invalid: {path}")
+    candidates = payload.get("candidate_registry_payloads")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError(
+            "Candidate persistence manifest does not contain a non-empty "
+            "candidate_registry_payloads list."
+        )
+    if not all(isinstance(candidate, dict) for candidate in candidates):
+        raise ValueError("Candidate persistence manifest contains an invalid candidate entry.")
+    return candidates
+
+
+def _normalize_candidate_registry_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate registry input and recover one legacy AD field placement.
+
+    Older agent handoffs occasionally lifted ``split_score_summaries`` out of
+    ``applicability_domain``.  It is meaningful metadata, so preserve it in
+    the canonical location instead of silently discarding it.  Other unknown
+    fields remain explicit errors.
+    """
+    normalized = dict(payload)
+    split_score_summaries = normalized.pop("split_score_summaries", None)
+    if split_score_summaries is not None:
+        applicability_domain = _mapping_or_empty(normalized.get("applicability_domain"))
+        applicability_domain.setdefault("split_score_summaries", split_score_summaries)
+        normalized["applicability_domain"] = applicability_domain
+    unexpected = sorted(set(normalized) - _REGISTER_MODEL_PAYLOAD_KEYS)
+    if unexpected:
+        raise ValueError(
+            "Candidate registry payload contains unsupported field(s): " + ", ".join(unexpected)
+        )
+    return normalized
 
 
 def _merge_applicability_domain_metadata(
@@ -1904,19 +1970,28 @@ class ModelRegistryToolkit(Toolkit):
 
     def register_and_persist_candidates(
         self,
-        candidate_registry_payloads: List[Dict[str, Any]],
+        candidate_registry_payloads: Optional[List[Dict[str, Any]]] = None,
+        candidate_manifest_path: Optional[str] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Persist every training candidate sequentially from its exact payload.
+        """Persist every training candidate from an exact payload list or manifest.
 
         This is the lossless counterpart to asking an LLM to alternate
         ``register_model`` and ``persist_registered_model`` calls.  In
         particular, repeated holdout and CV candidates can share a human
         label such as ``baseline`` while still requiring distinct model paths
-        and provenance.
+        and provenance.  Training tools return ``candidate_manifest_path`` for
+        large candidate sets so the detailed registry payload never needs to
+        enter the conversational context.
         """
         if agent is None:
             raise ValueError("Agent is required to persist training candidates")
+        if candidate_manifest_path and candidate_registry_payloads is not None:
+            raise ValueError(
+                "Pass either candidate_manifest_path or candidate_registry_payloads, not both."
+            )
+        if candidate_manifest_path:
+            candidate_registry_payloads = _load_candidate_manifest(candidate_manifest_path)
         if not isinstance(candidate_registry_payloads, list) or not candidate_registry_payloads:
             raise ValueError("candidate_registry_payloads must be a non-empty list.")
 
@@ -1927,7 +2002,7 @@ class ModelRegistryToolkit(Toolkit):
             registry_payload = candidate.get("registry_payload", candidate)
             if not isinstance(registry_payload, Mapping):
                 raise ValueError(f"Candidate {index} has no registry_payload object.")
-            payload = dict(registry_payload)
+            payload = _normalize_candidate_registry_payload(registry_payload)
             required = ("model_id", "model_path", "task_type")
             missing = [key for key in required if not payload.get(key)]
             if missing:
@@ -1962,6 +2037,7 @@ class ModelRegistryToolkit(Toolkit):
             "persisted": True,
             "candidate_count": len(persisted_candidates),
             "candidates": persisted_candidates,
+            "candidate_manifest_path": candidate_manifest_path,
         }
 
     def list_registered_models(self, agent: Optional[Agent] = None) -> List[Dict[str, Any]]:

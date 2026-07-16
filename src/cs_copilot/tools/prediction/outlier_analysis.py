@@ -23,6 +23,16 @@ OUTLIER_ANALYSIS_CONTRACT_VERSION = "1.1"
 OUTLIER_ANALYSIS_SELECTION_FRACTION = 0.10
 OUTLIER_ANALYSIS_RMSE_MULTIPLIER = 2.0
 
+# Keep colour and shape as independent signals: the plots must remain readable
+# when colours are close on screen or unavailable to a colour-blind reader.
+# This shared mapping is used unchanged by both validation/OOF outlier plots.
+OUTLIER_PLOT_MARKER_STYLES: Mapping[str, Mapping[str, Any]] = {
+    "unflagged": {"color": "#4c78a8", "marker": "o", "size": 30},
+    "AC only": {"color": "#d81b60", "marker": "*", "size": 88},
+    "AD only": {"color": "#f28e2b", "marker": "^", "size": 52},
+    "AC + AD": {"color": "#d62728", "marker": "D", "size": 48},
+}
+
 
 class OutlierAnalysisError(ValueError):
     """Raised when a public outlier-analysis request is invalid."""
@@ -503,12 +513,6 @@ def build_outlier_analysis_plots(
             return pd.Series(False, index=frame.index, dtype=bool)
         return frame[name].fillna(False).astype(bool)
 
-    colors = {
-        "unflagged": "#6c8ebf",
-        "AC only": "#8e6bbf",
-        "AD only": "#e09b35",
-        "AC + AD": "#b54a4a",
-    }
     frame["marker_group"] = "unflagged"
     ac_flags = _bool_column("activity_cliff_flag")
     ad_flags = _bool_column("ad_out_of_domain")
@@ -525,10 +529,20 @@ def build_outlier_analysis_plots(
 
     parity_path = output / "outlier_selection_observed_vs_predicted.png"
     fig, ax = plt.subplots(figsize=(6.8, 6.0))
-    for group, color in colors.items():
+    for group, style in OUTLIER_PLOT_MARKER_STYLES.items():
         rows = frame.loc[frame["marker_group"] == group]
         if not rows.empty:
-            ax.scatter(rows["y_true"], rows["y_pred"], s=30, alpha=0.72, color=color, label=group)
+            ax.scatter(
+                rows["y_true"],
+                rows["y_pred"],
+                s=style["size"],
+                marker=style["marker"],
+                alpha=0.82,
+                color=style["color"],
+                edgecolors="white",
+                linewidths=0.45,
+                label=group,
+            )
     selected = frame.loc[_bool_column("selected_for_removal")]
     if not selected.empty:
         ax.scatter(
@@ -553,10 +567,20 @@ def build_outlier_analysis_plots(
 
     residual_path = output / "outlier_selection_residuals_vs_observed.png"
     fig, ax = plt.subplots(figsize=(7.0, 4.8))
-    for group, color in colors.items():
+    for group, style in OUTLIER_PLOT_MARKER_STYLES.items():
         rows = frame.loc[frame["marker_group"] == group]
         if not rows.empty:
-            ax.scatter(rows["y_true"], rows["residual"], s=30, alpha=0.72, color=color, label=group)
+            ax.scatter(
+                rows["y_true"],
+                rows["residual"],
+                s=style["size"],
+                marker=style["marker"],
+                alpha=0.82,
+                color=style["color"],
+                edgecolors="white",
+                linewidths=0.45,
+                label=group,
+            )
     if not selected.empty:
         ax.scatter(
             selected["y_true"], selected["residual"], s=78, facecolors="none", edgecolors="#d62728",

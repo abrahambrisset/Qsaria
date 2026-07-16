@@ -49,6 +49,9 @@ from .tabular_representations import (
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
 QSAR_ROW_ID_COLUMN = "__qsar_row_id"
+PERSISTENCE_MANIFEST_SCHEMA_VERSION = "1.0"
+PERSISTENCE_MANIFEST_FILENAME = "catalog_candidates_manifest.json"
+OUTLIER_VARIANTS_MANIFEST_FILENAME = "outlier_model_variants.json"
 
 
 def _agent_storage_path(path: str | Path) -> str:
@@ -285,6 +288,178 @@ def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str
     } | {"metrics": metrics, "target_metrics": split_result.get("target_metrics") or {}}
 
 
+def _compact_outlier_variant_for_response(variant: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the agent handoff descriptive without embedding a complete refit run.
+
+    The exact run, including split index arrays and detailed AD data, remains in
+    the outlier variants manifest.  Returning it verbatim is particularly
+    costly for CV because each final candidate repeats the same development
+    split provenance.
+    """
+    run = variant.get("run") if isinstance(variant, dict) else None
+    run = run if isinstance(run, dict) else {}
+    compact_run = {
+        key: run.get(key)
+        for key in (
+            "outlier_variant",
+            "model_path",
+            "best_model_path",
+            "output_dir",
+            "config_path",
+            "splits_path",
+            "validation_predictions_path",
+            "test_predictions_path",
+            "metrics",
+            "metrics_status",
+            "effective_train_count",
+            "validation_count",
+            "test_count",
+            "removed_from_train_count",
+            "requested_exclusion_count",
+            "outlier_selected_count",
+            "selected_hyperparameters",
+            "source_folds",
+            "repeat_index",
+            "fold_index",
+            "source_split_label",
+        )
+        if run.get(key) is not None
+    }
+    applicability_domain = run.get("applicability_domain")
+    if isinstance(applicability_domain, dict):
+        compact_run["applicability_domain"] = {
+            key: applicability_domain.get(key)
+            for key in (
+                "available",
+                "primary_method",
+                "method",
+                "manifest_path",
+                "plots_dir",
+                "scores_validation_path",
+                "scores_test_path",
+            )
+            if applicability_domain.get(key) is not None
+        }
+    return {
+        key: variant.get(key)
+        for key in (
+            "variant_id",
+            "configuration_id",
+            "repeat_index",
+            "fold_index",
+            "source_split_label",
+            "source_folds",
+        )
+        if variant.get(key) is not None
+    } | {"run": compact_run}
+
+
+def _manifest_root(result: Dict[str, Any], output_dir: str) -> Path:
+    summary_path = result.get("summary_path") or result.get("canonical_summary_path")
+    if summary_path:
+        return Path(str(summary_path)).expanduser().parent
+    return Path(output_dir).expanduser()
+
+
+def _candidate_manifest_index(candidate: Dict[str, Any], index: int) -> Dict[str, Any]:
+    registry_payload = candidate.get("registry_payload") if isinstance(candidate, dict) else None
+    registry_payload = registry_payload if isinstance(registry_payload, dict) else {}
+    return {
+        "rank": candidate.get("rank", index),
+        "candidate_id": candidate.get("candidate_id"),
+        "split_label": candidate.get("split_label"),
+        "backend_name": candidate.get("backend_name"),
+        "representation_name": candidate.get("representation_name"),
+        "model_id": registry_payload.get("model_id"),
+        "outlier_variant": (registry_payload.get("training_data_summary") or {}).get(
+            "outlier_variant"
+        ),
+    }
+
+
+def _materialize_candidate_persistence_manifest(
+    *,
+    result: Dict[str, Any],
+    output_dir: str,
+) -> None:
+    """Persist lossless registry inputs outside the conversational handoff."""
+    candidates = result.get("candidate_registry_payloads")
+    if not isinstance(candidates, list) or not candidates:
+        return
+
+    root = _manifest_root(result, output_dir)
+    manifest_path = root / PERSISTENCE_MANIFEST_FILENAME
+    write_training_summary(
+        manifest_path,
+        {
+            "schema_version": PERSISTENCE_MANIFEST_SCHEMA_VERSION,
+            "training_summary_path": result.get("summary_path")
+            or result.get("canonical_summary_path"),
+            "candidate_registry_payloads": candidates,
+        },
+    )
+    candidate_index = [
+        _candidate_manifest_index(candidate, index)
+        for index, candidate in enumerate(candidates, start=1)
+        if isinstance(candidate, dict)
+    ]
+    plan = dict(result.get("persistence_plan") or {})
+    plan.update(
+        {
+            "persist_all_candidates": True,
+            "candidate_count": len(candidate_index),
+            "candidate_manifest_path": str(manifest_path),
+            "candidate_manifest_schema_version": PERSISTENCE_MANIFEST_SCHEMA_VERSION,
+            "required_tool_sequence": (
+                "Call register_and_persist_candidates with the exact "
+                "candidate_manifest_path and report every returned canonical catalog model_id."
+            ),
+        }
+    )
+    plan.pop("candidate_registry_payloads_key", None)
+    result["persistence_plan"] = plan
+    result["candidate_manifest_path"] = str(manifest_path)
+    result["candidate_persistence_manifest"] = {
+        "path": str(manifest_path),
+        "schema_version": PERSISTENCE_MANIFEST_SCHEMA_VERSION,
+        "candidate_count": len(candidate_index),
+        "candidates": candidate_index,
+    }
+    # The manifest is the authoritative single copy.  Keeping both payload
+    # lists in the summary and the tool response multiplies CV context size.
+    result.pop("candidate_registry_payloads", None)
+    result.pop("recommended_registry_payloads", None)
+
+
+def _materialize_outlier_variants_manifest(
+    *,
+    result: Dict[str, Any],
+    output_dir: str,
+) -> None:
+    """Move detailed final-refit runs to a dedicated audit artifact."""
+    variants = result.get("outlier_model_variants")
+    if not isinstance(variants, list) or not variants:
+        return
+
+    root = _manifest_root(result, output_dir)
+    manifest_path = root / "artifacts" / "outlier_analysis" / OUTLIER_VARIANTS_MANIFEST_FILENAME
+    write_training_summary(
+        manifest_path,
+        {
+            "schema_version": PERSISTENCE_MANIFEST_SCHEMA_VERSION,
+            "training_summary_path": result.get("summary_path")
+            or result.get("canonical_summary_path"),
+            "variants": variants,
+        },
+    )
+    result["outlier_model_variants_manifest_path"] = str(manifest_path)
+    result["outlier_model_variants"] = [
+        _compact_outlier_variant_for_response(variant)
+        for variant in variants
+        if isinstance(variant, dict)
+    ]
+
+
 def _compact_activity_cliffs(activity_cliffs: Dict[str, Any]) -> Dict[str, Any]:
     if not activity_cliffs:
         return {}
@@ -362,6 +537,9 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "reporting_handoff",
         "outlier_analysis",
         "outlier_model_variants",
+        "outlier_model_variants_manifest_path",
+        "candidate_manifest_path",
+        "candidate_persistence_manifest",
     )
     compact = {key: result.get(key) for key in keep_keys if result.get(key) is not None}
     compact.update(
@@ -387,12 +565,16 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         compact["recommended_registry_payload"] = _compact_registry_payload(
             result["recommended_registry_payload"]
         )
-    if result.get("recommended_registry_payloads"):
+    if result.get("recommended_registry_payloads") and not result.get(
+        "candidate_persistence_manifest"
+    ):
         compact["recommended_registry_payloads"] = [
             _compact_registry_payload(item) or {}
             for item in result.get("recommended_registry_payloads") or []
         ]
-    if result.get("candidate_registry_payloads"):
+    if result.get("candidate_registry_payloads") and not result.get(
+        "candidate_persistence_manifest"
+    ):
         compact["candidate_registry_payloads"] = []
         for item in result.get("candidate_registry_payloads") or []:
             row = dict(item or {})
@@ -414,6 +596,12 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         }
     if result.get("activity_cliffs"):
         compact["activity_cliffs"] = _compact_activity_cliffs(result["activity_cliffs"])
+    if result.get("outlier_model_variants"):
+        compact["outlier_model_variants"] = [
+            _compact_outlier_variant_for_response(variant)
+            for variant in result.get("outlier_model_variants") or []
+            if isinstance(variant, dict)
+        ]
     return compact
 
 
@@ -1327,8 +1515,13 @@ class QSARTrainingToolkit(Toolkit):
         }
         campaign_result["reporting_handoff"] = build_training_reporting_handoff(campaign_result)
         summary_path = campaign_root / "qsar_training_campaign_summary.json"
-        write_training_summary(summary_path, campaign_result)
         campaign_result["summary_path"] = str(summary_path)
+        campaign_result["canonical_summary_path"] = str(summary_path)
+        _materialize_candidate_persistence_manifest(
+            result=campaign_result,
+            output_dir=str(campaign_root),
+        )
+        write_training_summary(summary_path, campaign_result)
         return _compact_training_tool_result(campaign_result)
 
     def train_qsar_model(
@@ -1596,6 +1789,8 @@ class QSARTrainingToolkit(Toolkit):
                 ),
             }
         result["reporting_handoff"] = build_training_reporting_handoff(result)
+        _materialize_candidate_persistence_manifest(result=result, output_dir=output_dir)
+        _materialize_outlier_variants_manifest(result=result, output_dir=output_dir)
         self._refresh_enriched_training_artifacts(
             result=result,
             output_dir=output_dir,

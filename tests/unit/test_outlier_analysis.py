@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.outlier_analysis import (
+    OUTLIER_PLOT_MARKER_STYLES,
     OutlierAnalysisError,
     attach_activity_cliff_annotations,
     deduplicate_parameter_configurations,
@@ -179,6 +180,16 @@ def test_configuration_deduplication_retains_originating_folds():
 
     assert len(configurations) == 2
     assert configurations[0]["source_folds"] == [{"fold_label": "fold_1"}, {"fold_label": "fold_2"}]
+
+
+def test_outlier_plot_styles_use_distinct_colours_and_markers():
+    """Both plot types share a visually distinguishable flag encoding."""
+    styles = OUTLIER_PLOT_MARKER_STYLES
+
+    assert set(styles) == {"unflagged", "AC only", "AD only", "AC + AD"}
+    assert len({style["color"] for style in styles.values()}) == len(styles)
+    assert len({style["marker"] for style in styles.values()}) == len(styles)
+    assert styles["AC only"]["marker"] == "*"
 
 
 def test_selection_artifacts_are_compact_and_json_safe(tmp_path):

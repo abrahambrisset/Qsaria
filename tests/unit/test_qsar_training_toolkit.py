@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -190,6 +191,62 @@ def test_compacted_candidate_payload_keeps_outlier_variant_provenance(tmp_path):
     assert summary["outlier_analysis"] == {"selected_count": 3}
     assert summary["validation_strategy"] == {"type": "repeated_holdout"}
     assert summary["artifact_sources"]["test_predictions_path"].endswith("test_predictions.csv")
+
+
+def test_manifest_backed_training_response_omits_lossless_payloads_and_split_indices(tmp_path):
+    registry_payload = {
+        "model_id": "outlier_filtered_candidate",
+        "model_path": str(tmp_path / "filtered.pkl"),
+        "task_type": "regression",
+        "training_data_summary": {
+            "outlier_variant": "outlier_filtered",
+            "artifact_sources": {"applicability_domain": {"very": "large"}},
+        },
+    }
+    result = {
+        "candidate_persistence_manifest": {
+            "path": str(tmp_path / "catalog_candidates_manifest.json"),
+            "schema_version": "1.0",
+            "candidate_count": 1,
+            "candidates": [
+                {
+                    "rank": 1,
+                    "candidate_id": "outlier_filtered",
+                    "model_id": "outlier_filtered_candidate",
+                }
+            ],
+        },
+        "candidate_registry_payloads": [{"registry_payload": registry_payload}],
+        "recommended_registry_payloads": [registry_payload],
+        "outlier_model_variants": [
+            {
+                "variant_id": "outlier_filtered",
+                "run": {
+                    "model_path": str(tmp_path / "filtered.pkl"),
+                    "metrics": {"test": {"rmse": 0.3}},
+                    "effective_split_payload": {"train": list(range(5000))},
+                    "split_payload": {"validation": list(range(5000))},
+                    "applicability_domain": {
+                        "available": True,
+                        "manifest_path": str(tmp_path / "ad_manifest.json"),
+                        "methods": {"large": {"payload": list(range(5000))}},
+                    },
+                },
+            }
+        ],
+    }
+
+    compact = _compact_training_tool_result(result)
+
+    assert "candidate_registry_payloads" not in compact
+    assert "recommended_registry_payloads" not in compact
+    assert compact["candidate_persistence_manifest"]["candidate_count"] == 1
+    run = compact["outlier_model_variants"][0]["run"]
+    assert run["metrics"]["test"]["rmse"] == 0.3
+    assert "effective_split_payload" not in run
+    assert "split_payload" not in run
+    assert "methods" not in run["applicability_domain"]
+    assert len(json.dumps(compact)) < 4_000
 
 
 def test_prepare_training_dataset_accepts_session_prefixed_paths(tmp_path, monkeypatch):
@@ -514,18 +571,25 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
 
     assert result["persistence_plan"]["persist_all_candidates"] is True
     assert result["persistence_plan"]["candidate_count"] == 3
-    assert len(result["candidate_registry_payloads"]) == 3
+    assert "candidate_registry_payloads" not in result
+    manifest = json.loads(Path(result["candidate_persistence_manifest"]["path"]).read_text())
+    candidates = manifest["candidate_registry_payloads"]
+    assert result["candidate_manifest_path"] == result["candidate_persistence_manifest"]["path"]
+    assert result["persistence_plan"]["candidate_manifest_path"] == result[
+        "candidate_persistence_manifest"
+    ]["path"]
+    assert len(candidates) == 3
     assert "baseline_split_results" not in result
     assert "feature_csvs" not in result["feature_preparation"]
     assert "input_csv" not in result["feature_preparation"]
-    assert [item["split_label"] for item in result["candidate_registry_payloads"]] == [
+    assert [item["split_label"] for item in candidates] == [
         "random_repeat_1",
         "random_repeat_2",
         "random_repeat_3",
     ]
     assert (
         len(
-            {item["registry_payload"]["model_id"] for item in result["candidate_registry_payloads"]}
+            {item["registry_payload"]["model_id"] for item in candidates}
         )
         == 3
     )
