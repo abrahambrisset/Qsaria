@@ -72,7 +72,10 @@ SPECS: list[QsariaLifecycleSpec] = [
     _spec(
         name="qsaria_record_handoff",
         method="record_handoff",
-        summary="Validate and record one structured Qsaria sub-agent handoff.",
+        summary=(
+            "Validate and record one fresh public Qsaria v1.0 sub-agent handoff; "
+            "never pass a toolkit-returned handoff or reporting_handoff directly."
+        ),
         read_only=False,
         group="qsaria_coordination",
     ),

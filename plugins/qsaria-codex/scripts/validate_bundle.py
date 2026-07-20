@@ -395,6 +395,12 @@ def validate_agents(validation: Validation, repo_root: Path) -> None:
             f"{path} must mention the handoff tool exactly once",
         )
         validation.require(
+            'schema_version = "1.0"' in instructions
+            and 'execution_mode = "project_agent"' in instructions
+            and "toolkit-returned handoff" in instructions,
+            f"{path} does not require a fresh public v1.0 handoff envelope",
+        )
+        validation.require(
             "Never spawn" in instructions
             and re.search(r"do\s+not answer the user directly", instructions) is not None,
             f"{path} does not prohibit delegation and direct user answers",

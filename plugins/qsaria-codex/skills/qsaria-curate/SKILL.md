@@ -22,4 +22,4 @@ Do not train, infer, persist a model, or draft the final user report. Do not byp
 
 ## Return the handoff
 
-Build the common handoff envelope. Set `agent` to `qsaria_curation`, reference only returned artifact identifiers, and state whether the data are ready for downstream QSAR. Call `qsaria_record_handoff` exactly once, immediately before returning its normalized envelope to the coordinator.
+Build a fresh public handoff envelope with `schema_version="1.0"`, `execution_mode="project_agent"`, and every required field from the shared schema. Never pass through a toolkit-returned `handoff` object. Set `agent` to `qsaria_curation`, reference only returned artifact identifiers, and state whether the data are ready for downstream QSAR. Call `qsaria_record_handoff` exactly once, immediately before returning its normalized envelope to the coordinator.

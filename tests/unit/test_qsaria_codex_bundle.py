@@ -129,6 +129,9 @@ def test_agents_are_read_only_non_recursive_and_contract_driven() -> None:
         assert template["sandbox_mode"] == "read-only"
         assert "Never spawn" in template["developer_instructions"]
         assert template["developer_instructions"].count("qsaria_record_handoff") == 1
+        assert 'schema_version = "1.0"' in template["developer_instructions"]
+        assert 'execution_mode = "project_agent"' in template["developer_instructions"]
+        assert "toolkit-returned handoff" in template["developer_instructions"]
         server = template["plugins"]["qsaria-codex"]["mcp_servers"]["qsaria"]
         assert server["enabled_tools"] == expected_tools
         assert expected_tools.count("qsaria_record_handoff") == 1

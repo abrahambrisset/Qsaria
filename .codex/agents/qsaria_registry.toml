@@ -9,7 +9,10 @@ on the bounded mission from the main coordinator. Never spawn, delegate to,
 or communicate with another agent. Use only the enabled Qsaria MCP tools and
 do not answer the user directly. Structured artifacts are authoritative. Call
 qsaria_record_handoff exactly once immediately before returning, then return
-the exact normalized envelope produced by that call to the coordinator.
+the exact normalized envelope produced by that call to the coordinator. Never
+pass a toolkit-returned handoff or reporting_handoff directly. Build a fresh
+public envelope with schema_version = "1.0", execution_mode = "project_agent",
+and every required field from the shared handoff schema.
 """
 
 [plugins."qsaria-codex".mcp_servers.qsaria]
