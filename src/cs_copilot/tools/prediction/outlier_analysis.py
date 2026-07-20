@@ -316,10 +316,9 @@ def _regression_selection(
         result["activity_cliff_flag"] = False
     if "ad_out_of_domain" not in result:
         result["ad_out_of_domain"] = False
-    result["flagged_by_ac_or_ad"] = (
-        result["activity_cliff_flag"].fillna(False).astype(bool)
-        | result["ad_out_of_domain"].fillna(False).astype(bool)
-    )
+    result["flagged_by_ac_or_ad"] = result["activity_cliff_flag"].fillna(False).astype(
+        bool
+    ) | result["ad_out_of_domain"].fillna(False).astype(bool)
     result["eligible"] = result["error_exceeds_threshold"] & result["flagged_by_ac_or_ad"]
 
     denominator = result["y_true"].abs()
@@ -508,6 +507,7 @@ def build_outlier_analysis_plots(
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     frame = selection_frame.copy()
+
     def _bool_column(name: str) -> pd.Series:
         if name not in frame.columns:
             return pd.Series(False, index=frame.index, dtype=bool)
@@ -546,16 +546,28 @@ def build_outlier_analysis_plots(
     selected = frame.loc[_bool_column("selected_for_removal")]
     if not selected.empty:
         ax.scatter(
-            selected["y_true"], selected["y_pred"], s=78, facecolors="none", edgecolors="#d62728",
-            linewidths=1.6, label="selected outlier", zorder=4,
+            selected["y_true"],
+            selected["y_pred"],
+            s=78,
+            facecolors="none",
+            edgecolors="#d62728",
+            linewidths=1.6,
+            label="selected outlier",
+            zorder=4,
         )
     low = float(min(frame["y_true"].min(), frame["y_pred"].min()))
     high = float(max(frame["y_true"].max(), frame["y_pred"].max()))
     ax.plot([low, high], [low, high], "--", color="#444444", linewidth=1.1, label="ideal")
     if max_rmse > 0:
         x = pd.Series([low, high])
-        ax.fill_between(x, x - 2 * max_rmse, x + 2 * max_rmse, color="#9db7c9", alpha=0.15,
-                        label="±2 RMSE (max fold)")
+        ax.fill_between(
+            x,
+            x - 2 * max_rmse,
+            x + 2 * max_rmse,
+            color="#9db7c9",
+            alpha=0.15,
+            label="±2 RMSE (max fold)",
+        )
     ax.set_title(f"Observed vs predicted — {title_suffix}")
     ax.set_xlabel("Observed")
     ax.set_ylabel("Predicted")
@@ -583,8 +595,14 @@ def build_outlier_analysis_plots(
             )
     if not selected.empty:
         ax.scatter(
-            selected["y_true"], selected["residual"], s=78, facecolors="none", edgecolors="#d62728",
-            linewidths=1.6, label="selected outlier", zorder=4,
+            selected["y_true"],
+            selected["residual"],
+            s=78,
+            facecolors="none",
+            edgecolors="#d62728",
+            linewidths=1.6,
+            label="selected outlier",
+            zorder=4,
         )
     ax.axhline(0.0, color="#444444", linestyle="--", linewidth=1.1)
     if max_rmse > 0:
@@ -616,7 +634,9 @@ def write_outlier_analysis_artifacts(
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     candidates_path = output / "outlier_selection_predictions.csv"
-    selection_frame.drop(columns=["__ape_sort"], errors="ignore").to_csv(candidates_path, index=False)
+    selection_frame.drop(columns=["__ape_sort"], errors="ignore").to_csv(
+        candidates_path, index=False
+    )
     selected_mask = (
         selection_frame["selected_for_removal"].fillna(False).astype(bool)
         if "selected_for_removal" in selection_frame.columns
@@ -630,6 +650,7 @@ def write_outlier_analysis_artifacts(
     filtered_path = output / "outlier_filtered_development.csv"
     filtered.to_csv(filtered_path, index=True, index_label="source_row_index")
     plots = build_outlier_analysis_plots(selection_frame, output_dir=output / "plots")
+
     def _count_true(column: str) -> int:
         if column not in selection_frame.columns:
             return 0
@@ -654,7 +675,9 @@ def write_outlier_analysis_artifacts(
     summary = {
         "contract_version": OUTLIER_ANALYSIS_CONTRACT_VERSION,
         **dict(selection_summary),
-        "selected_source_row_indices": [int(value) for value in selected.get("source_row_index", [])],
+        "selected_source_row_indices": [
+            int(value) for value in selected.get("source_row_index", [])
+        ],
         "selection_predictions_path": str(candidates_path),
         "filtered_development_path": str(filtered_path),
         "plot_artifacts": plots,

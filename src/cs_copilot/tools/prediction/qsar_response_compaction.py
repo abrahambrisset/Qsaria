@@ -235,7 +235,9 @@ def compact_model_payload_for_response(payload: Dict[str, Any]) -> Dict[str, Any
     return compacted
 
 
-def compact_registry_payload_for_response(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def compact_registry_payload_for_response(
+    payload: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     if not payload:
         return payload
     return compact_model_payload_for_response(dict(payload))

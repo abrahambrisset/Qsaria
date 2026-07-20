@@ -1358,6 +1358,7 @@ class DatasetCurationToolkit(Toolkit):
         curation_result: Dict[str, Any],
         report_path: Optional[str] = None,
         agent: Optional[Agent] = None,
+        bundle_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist a curation result as a JSON report artifact."""
         dataset_id = curation_result.get("dataset_id") or "qsar_dataset"
@@ -1394,10 +1395,17 @@ class DatasetCurationToolkit(Toolkit):
                 for path in (curation_result.get("curation_artifacts") or {}).values()
                 if path
             ]
-            bundle_path = (
-                Path(".files") / "qsar_curation" / f"{dataset_id}_curation_bundle.zip"
-            ).resolve()
-            bundle = _bundle_files(bundle_path, [curated_path, destination, *artifact_files])
+            resolved_bundle_path = (
+                Path(bundle_path).expanduser()
+                if bundle_path
+                else (
+                    Path(".files") / "qsar_curation" / f"{dataset_id}_curation_bundle.zip"
+                ).resolve()
+            )
+            bundle = _bundle_files(
+                resolved_bundle_path,
+                [curated_path, destination, *artifact_files],
+            )
             payload["bundle_file_ref"] = str(bundle)
             payload["bundle_download_tag"] = f"<file>{bundle}</file>"
         if agent is not None:

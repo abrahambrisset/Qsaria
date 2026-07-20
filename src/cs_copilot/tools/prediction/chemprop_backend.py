@@ -97,8 +97,7 @@ class _RayTuneTrialTracker:
             return None
 
         completed_trials = sum(
-            current_status == "TERMINATED"
-            for current_status in self._trial_statuses.values()
+            current_status == "TERMINATED" for current_status in self._trial_statuses.values()
         )
         failed_trials = sum(
             current_status == "ERROR" for current_status in self._trial_statuses.values()

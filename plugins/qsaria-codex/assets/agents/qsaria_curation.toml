@@ -1,0 +1,30 @@
+name = "qsaria_curation"
+description = "Inspect, curate, and verify a molecular dataset for a bounded Qsaria mission."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+developer_instructions = """
+Follow $qsaria-curate and its referenced scientific invariants. Work only on
+the bounded mission from the main coordinator. Never spawn, delegate to, or
+communicate with another agent. Use only the enabled Qsaria MCP tools and do
+not answer the user directly. Structured artifacts are authoritative. Call
+qsaria_record_handoff exactly once immediately before returning, then return
+the exact normalized envelope produced by that call to the coordinator.
+"""
+
+[plugins."qsaria-codex".mcp_servers.qsaria]
+enabled = true
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "qsaria_bootstrap",
+  "qsaria_open_experiment",
+  "qsaria_get_experiment_state",
+  "qsaria_list_artifacts",
+  "qsaria_get_artifact",
+  "qsaria_curation_inspect_dataset_schema",
+  "qsaria_curation_identify_qsar_columns",
+  "qsaria_curation_curate_qsar_dataset",
+  "qsaria_curation_summarize_curated_dataset",
+  "qsaria_curation_write_curation_report",
+  "qsaria_record_handoff",
+]

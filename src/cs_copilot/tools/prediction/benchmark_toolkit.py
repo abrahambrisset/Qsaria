@@ -302,6 +302,7 @@ class BenchmarkToolkit(Toolkit):
         campaign_seed_policy: Dict[str, Any],
         validation_strategy: Optional[Dict[str, Any]],
         agent: Agent,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         requested_extra_args: Dict[str, Any] = {
             "validation_protocol": benchmark_protocol,
@@ -314,6 +315,7 @@ class BenchmarkToolkit(Toolkit):
         if validation_strategy is not None:
             requested_extra_args["validation_strategy"] = validation_strategy
 
+        bundle_kwargs = {"bundle_dir": bundle_dir} if bundle_dir else {}
         result = self.training_toolkit.train_qsar_model(
             train_csv=train_csv,
             backend_name=candidate["backend_name"],
@@ -330,6 +332,7 @@ class BenchmarkToolkit(Toolkit):
             extra_args=requested_extra_args,
             validation_strategy=validation_strategy,
             agent=agent,
+            **bundle_kwargs,
         )
         result["representation_name"] = candidate["representation_name"]
         result.setdefault("candidate_train_csv", result.get("train_csv") or train_csv)
@@ -857,6 +860,7 @@ class BenchmarkToolkit(Toolkit):
         validation_strategy: Optional[Dict[str, Any]] = None,
         benchmark_requested: bool = False,
         agent: Optional[Agent] = None,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
         if agent is None:
@@ -982,6 +986,7 @@ class BenchmarkToolkit(Toolkit):
                     campaign_seed_policy=campaign_seed_policy,
                     validation_strategy=validation_strategy,
                     agent=agent,
+                    bundle_dir=bundle_dir,
                 )
             except Exception:
                 logger.exception(

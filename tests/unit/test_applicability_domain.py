@@ -128,9 +128,9 @@ def test_isolation_forest_fit_persists_defaults_and_scores_outlier(tmp_path):
     scores = scored["scores"]
     assert scores.loc[1, "ad_isolation_forest_decision"] < 0.0
     assert scores.loc[1, "ad_isolation_forest_status"] == AD_OUT_OF_DOMAIN
-    assert (
-        scores.loc[1, "ad_isolation_forest_status"] == AD_OUT_OF_DOMAIN
-    ) == (scores.loc[1, "ad_isolation_forest_decision"] < 0.0)
+    assert (scores.loc[1, "ad_isolation_forest_status"] == AD_OUT_OF_DOMAIN) == (
+        scores.loc[1, "ad_isolation_forest_decision"] < 0.0
+    )
 
 
 def test_isolation_forest_invalid_and_schema_mismatch_are_explicit(tmp_path):
@@ -311,9 +311,7 @@ def test_modern_ad_aggregation_is_strict():
         }
     )
 
-    combined = _combine_modern_scores(
-        {"bounding_box": bounding, "isolation_forest": isolation}
-    )
+    combined = _combine_modern_scores({"bounding_box": bounding, "isolation_forest": isolation})
 
     assert combined["ad_status"].tolist() == [
         AD_IN_DOMAIN,
@@ -383,9 +381,7 @@ def test_training_ad_syncs_canonical_prediction_artifacts(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     splits_path = run_dir / "splits.json"
-    splits_path.write_text(
-        '[{"train": [0, 1], "validation": [2], "test": [3]}]\n'
-    )
+    splits_path.write_text('[{"train": [0, 1], "validation": [2], "test": [3]}]\n')
 
     primary_validation = run_dir / "primary_validation.csv"
     canonical_validation = run_dir / "canonical_validation.csv"

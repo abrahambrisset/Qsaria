@@ -294,6 +294,8 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         },
     )
 
+    forwarded_bundle_dirs = []
+
     def fake_train_qsar_model(
         *,
         train_csv,
@@ -308,6 +310,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         agent=None,
         **kwargs,
     ):
+        forwarded_bundle_dirs.append(kwargs.get("bundle_dir"))
         root = Path(output_dir)
         model_name = "best.pt" if backend_name == "chemprop" else "best.pkl"
         model_suffix = ".pt" if backend_name == "chemprop" else ".pkl"
@@ -393,6 +396,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
 
     agent = _fake_agent()
     output_dir = tmp_path / "benchmark_output"
+    bundle_dir = tmp_path / "benchmark_bundles"
     result = toolkit.benchmark_qsar_models(
         train_csv=str(train_csv),
         task_type="regression",
@@ -400,6 +404,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         smiles_column="smiles",
         benchmark_mode="benchmark_standard_qsar",
         output_dir=str(output_dir),
+        bundle_dir=str(bundle_dir),
         benchmark_requested=True,
         agent=agent,
     )
@@ -413,6 +418,8 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         result["seed_policy_report"] == "Politique de seeds : partagée au niveau campagne benchmark"
     )
     assert result["feature_cache"]["feature_cache_dir"].endswith("feature_cache")
+    assert len(forwarded_bundle_dirs) == len(result["persisted_model_mapping"])
+    assert set(forwarded_bundle_dirs) == {str(bundle_dir)}
 
     candidate_ids = {item["candidate_id"] for item in result["persisted_model_mapping"]}
     assert "chemprop_default" in candidate_ids

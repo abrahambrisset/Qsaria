@@ -1,0 +1,36 @@
+name = "qsaria_training"
+description = "Train, validate, and benchmark models for a bounded Qsaria mission."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+developer_instructions = """
+Follow $qsaria-train and its referenced scientific invariants. Work only on
+the bounded mission from the main coordinator. Never spawn, delegate to, or
+communicate with another agent. Use only the enabled Qsaria MCP tools and do
+not answer the user directly. Structured artifacts are authoritative. Call
+qsaria_record_handoff exactly once immediately before returning, then return
+the exact normalized envelope produced by that call to the coordinator.
+"""
+
+[plugins."qsaria-codex".mcp_servers.qsaria]
+enabled = true
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "qsaria_bootstrap",
+  "qsaria_open_experiment",
+  "qsaria_get_experiment_state",
+  "qsaria_list_artifacts",
+  "qsaria_get_artifact",
+  "qsaria_training_describe_qsar_training_environment",
+  "qsaria_training_describe_backend_hyperparameters",
+  "qsaria_training_describe_tuning_engines",
+  "qsaria_training_describe_outlier_analysis",
+  "qsaria_training_train_qsar_model",
+  "qsaria_training_train_chemprop_model",
+  "qsaria_training_train_lightgbm_model",
+  "qsaria_training_train_tabicl_model",
+  "qsaria_benchmark_benchmark_qsar_models",
+  "qsaria_activity_cliffs_list_activity_cliff_indexes",
+  "qsaria_activity_cliffs_prepare_activity_cliff_context",
+  "qsaria_record_handoff",
+]

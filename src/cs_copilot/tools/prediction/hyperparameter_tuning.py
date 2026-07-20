@@ -242,10 +242,7 @@ def build_tuning_progress_plot(
     # hidden below.
     populated_axes = list(axes.flat)[: len(panels)]
     for axis, (metric, subset, direction) in zip(populated_axes, panels, strict=True):
-        values = [
-            _trial_metric_value(trial, metric=metric, subset=subset)
-            for trial in trials
-        ]
+        values = [_trial_metric_value(trial, metric=metric, subset=subset) for trial in trials]
         if not any(value is not None for value in values):
             axis.set_visible(False)
             continue
@@ -687,11 +684,18 @@ def normalize_tuning_config(
         subset=str(raw_objective.get("subset") or default_objective.subset),
     )
     if objective.subset not in {"all", "in_domain", "out_of_domain"}:
-        raise HyperparameterTuningError("objective.subset must be all, in_domain, or out_of_domain.")
+        raise HyperparameterTuningError(
+            "objective.subset must be all, in_domain, or out_of_domain."
+        )
     if objective.direction not in {"minimize", "maximize"}:
         raise HyperparameterTuningError("objective.direction must be minimize or maximize.")
     if backend_name == "lightgbm":
-        regression_metrics = {"mse": "minimize", "mae": "minimize", "rmse": "minimize", "r2": "maximize"}
+        regression_metrics = {
+            "mse": "minimize",
+            "mae": "minimize",
+            "rmse": "minimize",
+            "r2": "maximize",
+        }
         classification_metrics = {
             "accuracy": "maximize",
             "balanced_accuracy": "maximize",
@@ -766,7 +770,7 @@ def _uses_multivariate_leaf_parameterization(config: TuningConfig) -> bool:
 def _leaf_bounds_for_depth(space: Mapping[str, Any], *, max_depth: int) -> tuple[int, int]:
     """Return the native LightGBM leaf bounds that are legal at one depth."""
     lower = int(space["low"])
-    upper = min(int(space["high"]), 2**int(max_depth))
+    upper = min(int(space["high"]), 2 ** int(max_depth))
     if upper < lower:
         raise HyperparameterTuningError(
             "The requested num_leaves range is incompatible with max_depth="
@@ -848,9 +852,9 @@ class LightGBMOptunaAdapter:
         if {
             "max_depth",
             "num_leaves",
-        }.issubset(fixed_parameters) and int(fixed_parameters["num_leaves"]) > 2 ** int(
-            fixed_parameters["max_depth"]
-        ):
+        }.issubset(fixed_parameters) and int(
+            fixed_parameters["num_leaves"]
+        ) > 2 ** int(fixed_parameters["max_depth"]):
             raise HyperparameterTuningError(
                 "LightGBM requires num_leaves <= 2**max_depth for a fixed direct configuration."
             )
@@ -962,7 +966,9 @@ class LightGBMOptunaAdapter:
                 raise
             objective_value = outcome.get("objective")
             if objective_value is None:
-                raise HyperparameterTuningError("A LightGBM trial did not produce an objective score.")
+                raise HyperparameterTuningError(
+                    "A LightGBM trial did not produce an objective score."
+                )
             trial.set_user_attr("metrics", outcome.get("metrics") or {})
             trial.set_user_attr("diagnostics", outcome.get("diagnostics") or {})
             notify_progress(

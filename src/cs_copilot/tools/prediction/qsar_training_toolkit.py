@@ -691,7 +691,9 @@ class QSARTrainingToolkit(Toolkit):
             "toolkit": "QSARTrainingToolkit",
         }
 
-    def describe_backend_hyperparameters(self, backend_name: Optional[str] = None) -> Dict[str, Any]:
+    def describe_backend_hyperparameters(
+        self, backend_name: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Describe Qsaria-supported direct and tunable backend hyperparameters."""
         return describe_backend_hyperparameters(backend_name)
 
@@ -1160,9 +1162,7 @@ class QSARTrainingToolkit(Toolkit):
             "splits_path": result.get("splits_path"),
             "validation_predictions_path": result.get("validation_predictions_path"),
             "test_predictions_path": result.get("test_predictions_path"),
-            "hyperparameter_tuning_summary_path": result.get(
-                "hyperparameter_tuning_summary_path"
-            )
+            "hyperparameter_tuning_summary_path": result.get("hyperparameter_tuning_summary_path")
             or (result.get("hyperparameter_tuning") or {}).get("summary_path"),
             "applicability_domain": result.get("applicability_domain") or {},
             "plot_artifacts": result.get("plot_artifacts") or {},
@@ -1402,6 +1402,7 @@ class QSARTrainingToolkit(Toolkit):
         similarity_top_k_neighbors: int | str | None,
         similarity_threshold_percentile: float | str | None,
         extra_args: Dict[str, Any],
+        bundle_dir: Optional[str],
         agent: Optional[Agent],
     ) -> Dict[str, Any]:
         campaign_started_at = time.monotonic()
@@ -1436,6 +1437,7 @@ class QSARTrainingToolkit(Toolkit):
                 similarity_top_k_neighbors=similarity_top_k_neighbors,
                 similarity_threshold_percentile=similarity_threshold_percentile,
                 extra_args=candidate_extra_args,
+                bundle_dir=bundle_dir,
                 agent=agent,
             )
             result["candidate_id"] = f"{backend_name}_{representation_name}"
@@ -1560,6 +1562,7 @@ class QSARTrainingToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Train a QSAR model with the requested backend."""
         train_csv = _resolve_existing_training_csv(train_csv, agent)
@@ -1611,10 +1614,19 @@ class QSARTrainingToolkit(Toolkit):
             else requested_extra_args.pop("similarity_threshold_percentile", None)
         )
         requested_extra_args.setdefault("validation_protocol", validation_protocol)
+        bundle_path = (
+            str(
+                Path(bundle_dir).expanduser().resolve()
+                / f"{Path(output_dir).name}_training_bundle.zip"
+            )
+            if bundle_dir
+            else None
+        )
 
         if normalized_backend == "chemprop":
             if requested_validation_strategy is not None:
                 requested_extra_args["validation_strategy"] = requested_validation_strategy
+            chemprop_kwargs = {"bundle_path": bundle_path} if bundle_path else {}
             result = self.chemprop_toolkit.train_model(
                 train_csv=train_csv,
                 task_type=task_type,
@@ -1635,6 +1647,7 @@ class QSARTrainingToolkit(Toolkit):
                 hyperparameter_tuning=requested_hyperparameter_tuning,
                 outlier_analysis=requested_outlier_analysis,
                 agent=agent,
+                **chemprop_kwargs,
             )
             result["backend_name"] = "chemprop"
             result.setdefault("representation_name", "molecular_graph")
@@ -1664,6 +1677,7 @@ class QSARTrainingToolkit(Toolkit):
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
                     extra_args=requested_extra_args,
+                    bundle_dir=bundle_dir,
                     agent=agent,
                 )
             working_train_csv = train_csv
@@ -1701,6 +1715,7 @@ class QSARTrainingToolkit(Toolkit):
                 }
 
             if normalized_backend == "lightgbm":
+                lightgbm_kwargs = {"bundle_path": bundle_path} if bundle_path else {}
                 result = self.lightgbm_toolkit.train_lightgbm_model(
                     train_csv=working_train_csv,
                     task_type=task_type,
@@ -1724,6 +1739,7 @@ class QSARTrainingToolkit(Toolkit):
                     hyperparameter_tuning=requested_hyperparameter_tuning,
                     outlier_analysis=requested_outlier_analysis,
                     agent=agent,
+                    **lightgbm_kwargs,
                 )
             else:
                 result = self.tabicl_toolkit.train_tabicl_model(
@@ -1856,6 +1872,7 @@ class QSARTrainingToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Train Chemprop through the unified QSAR facade."""
         return self.train_qsar_model(
@@ -1879,6 +1896,7 @@ class QSARTrainingToolkit(Toolkit):
             hyperparameter_tuning=hyperparameter_tuning,
             outlier_analysis=outlier_analysis,
             extra_args=extra_args,
+            bundle_dir=bundle_dir,
             agent=agent,
         )
 
@@ -1907,6 +1925,7 @@ class QSARTrainingToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Train LightGBM through the unified QSAR facade."""
         return self.train_qsar_model(
@@ -1933,6 +1952,7 @@ class QSARTrainingToolkit(Toolkit):
             hyperparameter_tuning=hyperparameter_tuning,
             outlier_analysis=outlier_analysis,
             extra_args=extra_args,
+            bundle_dir=bundle_dir,
             agent=agent,
         )
 
@@ -1960,6 +1980,7 @@ class QSARTrainingToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Train TabICL through the unified QSAR facade."""
         return self.train_qsar_model(
@@ -1985,5 +2006,6 @@ class QSARTrainingToolkit(Toolkit):
             hyperparameter_tuning=hyperparameter_tuning,
             outlier_analysis=outlier_analysis,
             extra_args=extra_args,
+            bundle_dir=bundle_dir,
             agent=agent,
         )

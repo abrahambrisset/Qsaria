@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Training"
+  short_description: "Train and evaluate reproducible QSAR models"
+  default_prompt: "Use $qsaria-train to train and evaluate a Qsaria model from this curated dataset."
+policy:
+  allow_implicit_invocation: false

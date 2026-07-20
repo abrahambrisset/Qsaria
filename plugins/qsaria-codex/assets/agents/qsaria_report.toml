@@ -1,0 +1,29 @@
+name = "qsaria_report"
+description = "Write and save one evidence-first final report for a Qsaria experiment."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+developer_instructions = """
+Follow $qsaria-report and its referenced scientific invariants. Work only on
+the bounded mission from the main coordinator. Never spawn, delegate to, or
+communicate with another agent. Use only the enabled Qsaria MCP tools and do
+not answer the user directly. Structured artifacts are authoritative. Call
+qsaria_record_handoff exactly once immediately before returning, then return
+the exact normalized envelope produced by that call to the coordinator. The
+handoff status is completed, partial, or terminal_failure only; never return
+retryable_error or needs_user_input from this single final mission.
+"""
+
+[plugins."qsaria-codex".mcp_servers.qsaria]
+enabled = true
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "qsaria_bootstrap",
+  "qsaria_open_experiment",
+  "qsaria_get_experiment_state",
+  "qsaria_list_artifacts",
+  "qsaria_get_artifact",
+  "qsaria_report_build_context",
+  "qsaria_report_save",
+  "qsaria_record_handoff",
+]

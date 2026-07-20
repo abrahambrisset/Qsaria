@@ -22,13 +22,38 @@ from cs_copilot.mcp.session import (  # noqa: E402  (import-after-skip)
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
+    previous_workdir = os.getcwd()
     work = tmp_path_factory.mktemp("mcp-server")
     os.chdir(work)
     apply_session_id("mcp-server-test")
     ctx = bootstrap(BootstrapConfig(session_id="mcp-server-test", workflow_slug="smoke"))
     from cs_copilot.mcp.server import build_server
 
-    return build_server(ctx)
+    try:
+        yield build_server(ctx)
+    finally:
+        os.chdir(previous_workdir)
+
+
+@pytest.fixture(scope="module")
+def qsaria_server(tmp_path_factory):
+    from cs_copilot.mcp.context import MCPAgentContext
+    from cs_copilot.mcp.server import build_server
+
+    previous_workdir = os.getcwd()
+    work = tmp_path_factory.mktemp("qsaria-mcp-server")
+    os.chdir(work)
+    try:
+        yield build_server(
+            MCPAgentContext(llm_policy="disabled"),
+            profile="qsaria",
+            include_chatgpt_compat=True,
+            include_prompts=True,
+            include_resources=True,
+            enable_agno_team_tool=True,
+        )
+    finally:
+        os.chdir(previous_workdir)
 
 
 def test_server_instructions_are_chatgpt_orchestration_contract(server):
@@ -77,6 +102,107 @@ def test_tools_registered(server):
     assert "peptide_validate_design_candidates" in names
     assert "synplanner_identify_input" in names
     assert "agno_team_run" not in names
+
+
+def test_qsaria_profile_exposes_only_its_deterministic_surface(qsaria_server):
+    from cs_copilot.mcp.tools_registry import all_specs
+
+    names = {tool.name for tool in qsaria_server._tool_manager.list_tools()}
+    expected = {spec.mcp_name for spec in all_specs(profile="qsaria")}
+
+    assert len(expected) == 46
+    assert names == expected
+    assert "qsaria_bootstrap" in names
+    assert "qsaria_report_save" in names
+    assert "search" not in names
+    assert "fetch" not in names
+    assert "agno_team_run" not in names
+    assert "mcp_bootstrap" not in names
+    assert not any(spec.run_in_worker_process for spec in all_specs(profile="qsaria"))
+
+
+def test_qsaria_profile_forces_prompts_resources_and_agno_off(qsaria_server):
+    from cs_copilot.mcp.server import QSARIA_SERVER_INSTRUCTIONS
+
+    assert qsaria_server.name == "qsaria"
+    assert qsaria_server.instructions == QSARIA_SERVER_INSTRUCTIONS
+    assert qsaria_server._prompt_manager.list_prompts() == []
+    assert asyncio.run(qsaria_server.list_resources()) == []
+
+
+def test_qsaria_annotations_do_not_label_state_indexing_as_read_only(qsaria_server):
+    tools = {tool.name: tool for tool in qsaria_server._tool_manager.list_tools()}
+
+    assert tools["qsaria_registry_list_catalog_models"].annotations.readOnlyHint is True
+    assert tools["qsaria_get_experiment_state"].annotations.readOnlyHint is True
+    for name in {
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_report_build_context",
+        "qsaria_registry_list_registered_models",
+        "qsaria_registry_summarize_model",
+    }:
+        assert tools[name].annotations.readOnlyHint is False, name
+
+
+def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
+    tools = {tool.name: tool for tool in qsaria_server._tool_manager.list_tools()}
+
+    result = asyncio.run(tools["qsaria_bootstrap"].fn())
+
+    assert result["profile"] == "qsaria"
+    assert result["llm_policy"] == "disabled"
+    assert result["auto_resume"] is False
+    assert result["active_experiment_id"] is None
+    assert result["experiments_listed"] is False
+
+
+def test_qsaria_protocol_calls_preserve_structured_content(qsaria_server):
+    content, structured = asyncio.run(
+        qsaria_server._tool_manager.call_tool(
+            "qsaria_bootstrap",
+            {},
+            convert_result=True,
+        )
+    )
+
+    assert content
+    assert structured["profile"] == "qsaria"
+    assert structured["contracts"]["handoff"] == "1.0"
+
+
+def test_qsaria_lifecycle_tools_share_one_durable_manager(qsaria_server):
+    tools = {tool.name: tool for tool in qsaria_server._tool_manager.list_tools()}
+    experiment_id = "exp_server_lifecycle_123"
+
+    created = asyncio.run(
+        tools["qsaria_create_experiment"].fn(
+            user_request="Train a test model",
+            report_language="en",
+            metadata={"source": "server-smoke"},
+            experiment_id=experiment_id,
+        )
+    )
+    reopened = asyncio.run(tools["qsaria_open_experiment"].fn(experiment_id=experiment_id))
+    environment = asyncio.run(tools["qsaria_training_describe_outlier_analysis"].fn())
+
+    assert created["experiment_id"] == experiment_id
+    assert reopened == created
+    assert reopened["report_language"] == "en"
+    assert environment
+
+
+def test_qsaria_profile_rejects_any_attached_model():
+    from cs_copilot.mcp.context import MCPAgentContext
+    from cs_copilot.mcp.server import build_server
+
+    with pytest.raises(ValueError, match="llm_policy='disabled'"):
+        build_server(MCPAgentContext(llm_policy="external"), profile="qsaria")
+    with pytest.raises(ValueError, match="no model"):
+        build_server(
+            MCPAgentContext(llm_policy="disabled", model=object()),
+            profile="qsaria",
+        )
 
 
 def test_all_direct_parity_tools_registered(server):

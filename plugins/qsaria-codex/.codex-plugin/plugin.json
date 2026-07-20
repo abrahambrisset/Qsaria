@@ -1,0 +1,38 @@
+{
+  "name": "qsaria-codex",
+  "version": "0.1.1+codex.20260720125146",
+  "description": "Use Codex to coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows.",
+  "author": {
+    "name": "Qsaria contributors",
+    "url": "https://github.com/abrahambrisset/Qsaria"
+  },
+  "homepage": "https://github.com/abrahambrisset/Qsaria",
+  "repository": "https://github.com/abrahambrisset/Qsaria",
+  "license": "MIT",
+  "keywords": [
+    "qsar",
+    "chemoinformatics",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Qsaria for Codex",
+    "shortDescription": "Coordinate reproducible Qsaria QSAR workflows",
+    "longDescription": "Codex coordinates five focused Qsaria agents while a deterministic MCP profile executes the existing scientific toolkits and persists auditable artifacts.",
+    "developerName": "Qsaria contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/abrahambrisset/Qsaria",
+    "defaultPrompt": [
+      "Train and critically assess a Qsaria model from my dataset.",
+      "Use a persisted Qsaria model to predict this compound file.",
+      "List the Qsaria models suitable for my endpoint."
+    ]
+  }
+}

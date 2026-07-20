@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Coordinator"
+  short_description: "Orchestrate and verify complete Qsaria workflows"
+  default_prompt: "Use $qsaria-coordinate to run this Qsaria request through the appropriate scientific agents."
+policy:
+  allow_implicit_invocation: true

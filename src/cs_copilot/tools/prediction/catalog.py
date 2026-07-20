@@ -11,9 +11,13 @@ predictive assets.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -23,7 +27,9 @@ from .backend import PredictionModelRecord
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
 DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated")
-_CATALOG_IO_LOCK = threading.Lock()
+_CATALOG_LOCKS_GUARD = threading.Lock()
+_CATALOG_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_CATALOG_LOCK_STATE = threading.local()
 STATUS_WEIGHTS = {
     "production": 12,
     "robust_validated": 10,
@@ -32,6 +38,125 @@ STATUS_WEIGHTS = {
     "workflow_demo": -12,
     "deprecated": -20,
 }
+
+
+def _resolved_catalog_path(path: str | os.PathLike[str] | None = None) -> Path:
+    source_path = Path(path).expanduser() if path is not None else DEFAULT_MODEL_CATALOG_PATH
+    return source_path.resolve(strict=False)
+
+
+def model_catalog_lock_path(path: str | os.PathLike[str] | None = None) -> Path:
+    """Return a writable runtime lock shared by writers of one catalog file."""
+
+    source_path = _resolved_catalog_path(path)
+    digest = hashlib.sha256(str(source_path).encode("utf-8")).hexdigest()
+    try:
+        user_scope = str(os.getuid())
+    except AttributeError:  # pragma: no cover - Windows fallback
+        user_scope = os.getenv("USERNAME", "default")
+    return (
+        Path(tempfile.gettempdir())
+        / f"cs_copilot-{user_scope}"
+        / "catalog_locks"
+        / f"{digest}.lock"
+    )
+
+
+def _catalog_process_lock(path: Path) -> threading.RLock:
+    key = str(path)
+    with _CATALOG_LOCKS_GUARD:
+        return _CATALOG_PROCESS_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def model_catalog_lock(
+    path: str | os.PathLike[str] | None = None,
+) -> Iterator[None]:
+    """Serialize catalog access across threads and local processes.
+
+    The lock is reentrant on the owning thread.  This matters for Qsaria MCP:
+    its experiment manager holds the catalog lock around the complete toolkit
+    call, while the reused Agno/Chainlit toolkit acquires it again when it
+    persists the resulting model.
+    """
+
+    source_path = _resolved_catalog_path(path)
+    key = str(source_path)
+    process_lock = _catalog_process_lock(source_path)
+    with process_lock:
+        depths = getattr(_CATALOG_LOCK_STATE, "depths", None)
+        if depths is None:
+            depths = {}
+            _CATALOG_LOCK_STATE.depths = depths
+
+        depth = depths.get(key, 0)
+        if depth:
+            depths[key] = depth + 1
+            try:
+                yield
+            finally:
+                depths[key] -= 1
+            return
+
+        lock_path = model_catalog_lock_path(source_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            try:
+                import fcntl
+            except ImportError:  # pragma: no cover - Windows fallback is process-only
+                fcntl = None
+
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            depths[key] = 1
+            try:
+                yield
+            finally:
+                depths.pop(key, None)
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_catalog_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"schema_version": 2, "models": []}
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {"schema_version": 1, "models": []}
+    return json.loads(raw)
+
+
+def _atomic_write_catalog(path: Path, payload: dict[str, Any]) -> None:
+    """Replace a catalog atomically with a temporary file in the same directory."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+def _records_from_payload(payload: dict[str, Any]) -> list[PredictionModelRecord]:
+    return [
+        PredictionModelRecord.from_dict(record_payload)
+        for record_payload in payload.get("models", [])
+    ]
 
 
 def _normalize_text(value: Optional[str]) -> str:
@@ -170,15 +295,17 @@ class PredictionModelCatalog:
     @classmethod
     def load(cls, path: Optional[str] = None) -> "PredictionModelCatalog":
         source_path = Path(path).expanduser() if path else DEFAULT_MODEL_CATALOG_PATH
-        if not source_path.exists():
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_text(json.dumps({"schema_version": 2, "models": []}, indent=2) + "\n")
-        raw = source_path.read_text()
-        payload = json.loads(raw) if raw.strip() else {"schema_version": 1, "models": []}
-        records = [
-            PredictionModelRecord.from_dict(record_payload)
-            for record_payload in payload.get("models", [])
-        ]
+        if source_path.exists():
+            # Writers publish with os.replace(), so an existing catalog can be
+            # read consistently without creating a lock file.  This keeps
+            # read-only package installations usable.
+            payload = _read_catalog_payload(source_path)
+        else:
+            with model_catalog_lock(source_path):
+                if not source_path.exists():
+                    _atomic_write_catalog(source_path, {"schema_version": 2, "models": []})
+                payload = _read_catalog_payload(source_path)
+        records = _records_from_payload(payload)
         discovered_records = _discover_internal_records(DEFAULT_INTERNAL_MODEL_ROOT)
         if discovered_records:
             indexed = {record.model_id: record for record in records}
@@ -193,8 +320,6 @@ class PredictionModelCatalog:
 
     def refresh_from_internal_store(self, persist: bool = False) -> int:
         discovered_records = _discover_internal_records(DEFAULT_INTERNAL_MODEL_ROOT)
-        if not discovered_records:
-            return 0
         indexed = {record.model_id: record for record in self.records}
         updated = 0
         for record in discovered_records:
@@ -202,10 +327,29 @@ class PredictionModelCatalog:
             if existing is None or existing.as_dict() != record.as_dict():
                 indexed[record.model_id] = record
                 updated += 1
-        if updated:
-            self.records = sorted(indexed.values(), key=lambda item: item.model_id)
-            if persist:
-                self.save()
+        self.records = sorted(indexed.values(), key=lambda item: item.model_id)
+        if persist:
+            with model_catalog_lock(self.source_path):
+                disk_payload = _read_catalog_payload(self.source_path)
+                disk_records = _records_from_payload(disk_payload)
+
+                # Preserve unsaved in-memory additions, prefer the latest
+                # committed value for stale records, then let newly discovered
+                # internal metadata supersede both.
+                merged = {record.model_id: record for record in self.records}
+                merged.update({record.model_id: record for record in disk_records})
+                merged.update({record.model_id: record for record in discovered_records})
+                self.records = sorted(merged.values(), key=lambda item: item.model_id)
+                self.schema_version = max(
+                    self.schema_version,
+                    int(disk_payload.get("schema_version", 1)),
+                )
+                payload = {
+                    "schema_version": self.schema_version,
+                    "models": [record.as_dict() for record in self.records],
+                }
+                if payload != disk_payload:
+                    _atomic_write_catalog(self.source_path, payload)
         return updated
 
     def save(self) -> None:
@@ -213,11 +357,8 @@ class PredictionModelCatalog:
             "schema_version": self.schema_version,
             "models": [record.as_dict() for record in self.records],
         }
-        self.source_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.source_path.with_name(f".{self.source_path.name}.{os.getpid()}.tmp")
-        with _CATALOG_IO_LOCK:
-            tmp_path.write_text(json.dumps(payload, indent=2) + "\n")
-            tmp_path.replace(self.source_path)
+        with model_catalog_lock(self.source_path):
+            _atomic_write_catalog(self.source_path, payload)
 
     def list_models(self) -> List[PredictionModelRecord]:
         return list(self.records)
@@ -229,16 +370,31 @@ class PredictionModelCatalog:
         raise ValueError(f"Unknown catalog model_id: {model_id}")
 
     def upsert_model(self, record: PredictionModelRecord) -> PredictionModelRecord:
-        """Insert or replace a model record and persist the catalog."""
-        for index, existing in enumerate(self.records):
-            if existing.model_id == record.model_id:
-                self.records[index] = record
-                break
-        else:
-            self.records.append(record)
+        """Insert or replace a model without losing concurrent catalog entries."""
 
-        self.records.sort(key=lambda item: item.model_id)
-        self.save()
+        with model_catalog_lock(self.source_path):
+            disk_payload = _read_catalog_payload(self.source_path)
+            disk_records = _records_from_payload(disk_payload)
+
+            # This instance may have been loaded before another writer
+            # committed.  Merge its additions first, then prefer the current
+            # disk values for conflicts, and finally apply this explicit
+            # upsert as the authoritative value for ``record.model_id``.
+            merged = {item.model_id: item for item in self.records}
+            merged.update({item.model_id: item for item in disk_records})
+            merged[record.model_id] = record
+            self.records = sorted(merged.values(), key=lambda item: item.model_id)
+            self.schema_version = max(
+                self.schema_version,
+                int(disk_payload.get("schema_version", 1)),
+            )
+            _atomic_write_catalog(
+                self.source_path,
+                {
+                    "schema_version": self.schema_version,
+                    "models": [item.as_dict() for item in self.records],
+                },
+            )
         return record
 
     def search(

@@ -28,8 +28,8 @@ from .applicability_domain import (
     score_record_applicability_domain,
 )
 from .backend import PredictionModelRecord
-from .qsar_response_compaction import compact_applicability_domain_for_response
 from .qsar_reporting import build_external_evaluation_reporting_handoff
+from .qsar_response_compaction import compact_applicability_domain_for_response
 from .qsar_training_policy import project_now, safe_slug
 from .training_orchestration import (
     compute_classification_metrics,
@@ -65,6 +65,37 @@ def _read_csv(path: str) -> pd.DataFrame:
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(_json_safe(dict(payload)), indent=2) + "\n")
+
+
+def _reserve_evaluation_directory(
+    model_root: Path,
+    label_slug: str,
+    created_at: Any,
+) -> tuple[str, Path]:
+    """Reserve an append-only directory while preserving the legacy ID format."""
+
+    legacy_id = f"{label_slug}_{created_at.strftime('%Y%m%d_%H%M%S')}"
+    microsecond_id = f"{legacy_id}_{created_at.strftime('%f')}"
+    candidate_ids = (legacy_id, microsecond_id)
+    evaluations_root = model_root / "evaluations"
+    for candidate_id in candidate_ids:
+        candidate = evaluations_root / candidate_id
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate_id, candidate
+
+    counter = 2
+    while True:
+        candidate_id = f"{microsecond_id}_{counter}"
+        candidate = evaluations_root / candidate_id
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            counter += 1
+            continue
+        return candidate_id, candidate
 
 
 def _resolve_target_columns(
@@ -335,9 +366,7 @@ def _write_report(
             if value is None:
                 continue
             parts.append(
-                f"{key}={float(value):.4g}"
-                if isinstance(value, (int, float))
-                else f"{key}={value}"
+                f"{key}={float(value):.4g}" if isinstance(value, (int, float)) else f"{key}={value}"
             )
         if values.get("n") is not None:
             parts.append(f"n={values['n']}")
@@ -428,10 +457,12 @@ def evaluate_model_on_external_dataset(
 
     created_at = project_now()
     label_slug = safe_slug(evaluation_label or Path(str(test_csv)).stem or "external_dataset")
-    evaluation_id = f"{label_slug}_{created_at.strftime('%Y%m%d_%H%M%S')}"
     model_root = metadata_path.parent
-    eval_dir = model_root / "evaluations" / evaluation_id
-    eval_dir.mkdir(parents=True, exist_ok=False)
+    evaluation_id, eval_dir = _reserve_evaluation_directory(
+        model_root,
+        label_slug,
+        created_at,
+    )
 
     input_df = source_df.copy()
     input_df = standardize_smiles_column(input_df, smiles_found)
@@ -467,7 +498,10 @@ def evaluate_model_on_external_dataset(
                 if column in predictions_only.columns:
                     predictions_only = predictions_only.drop(columns=[column])
             predictions_only = pd.concat(
-                [predictions_only.reset_index(drop=True), ad_result["scores"].reset_index(drop=True)],
+                [
+                    predictions_only.reset_index(drop=True),
+                    ad_result["scores"].reset_index(drop=True),
+                ],
                 axis=1,
             )
     predictions_only.to_csv(predictions_path, index=False)
@@ -528,46 +562,54 @@ def evaluate_model_on_external_dataset(
             if is_classification_task(task_type):
                 ad_metrics_by_target[target] = {
                     "metrics_all": metric_values,
-                    "metrics_in_domain": compute_classification_metrics(
-                        in_domain[target],
-                        in_domain[pred_col],
-                        positive_scores=in_domain[score_col] if score_col else None,
-                        target_column=target,
-                    )
-                    if not in_domain.empty
-                    else {},
-                    "metrics_out_of_domain": compute_classification_metrics(
-                        out_domain[target],
-                        out_domain[pred_col],
-                        positive_scores=out_domain[score_col] if score_col else None,
-                        target_column=target,
-                    )
-                    if not out_domain.empty
-                    else {},
+                    "metrics_in_domain": (
+                        compute_classification_metrics(
+                            in_domain[target],
+                            in_domain[pred_col],
+                            positive_scores=in_domain[score_col] if score_col else None,
+                            target_column=target,
+                        )
+                        if not in_domain.empty
+                        else {}
+                    ),
+                    "metrics_out_of_domain": (
+                        compute_classification_metrics(
+                            out_domain[target],
+                            out_domain[pred_col],
+                            positive_scores=out_domain[score_col] if score_col else None,
+                            target_column=target,
+                        )
+                        if not out_domain.empty
+                        else {}
+                    ),
                 }
             else:
                 ad_metrics_by_target[target] = {
                     "metrics_all": metric_values,
-                    "metrics_in_domain": compute_regression_metrics(
-                        in_domain[target],
-                        in_domain[pred_col],
-                        target_column=target,
-                    )
-                    if not in_domain.empty
-                    else {},
-                    "metrics_out_of_domain": compute_regression_metrics(
-                        out_domain[target],
-                        out_domain[pred_col],
-                        target_column=target,
-                    )
-                    if not out_domain.empty
-                    else {},
+                    "metrics_in_domain": (
+                        compute_regression_metrics(
+                            in_domain[target],
+                            in_domain[pred_col],
+                            target_column=target,
+                        )
+                        if not in_domain.empty
+                        else {}
+                    ),
+                    "metrics_out_of_domain": (
+                        compute_regression_metrics(
+                            out_domain[target],
+                            out_domain[pred_col],
+                            target_column=target,
+                        )
+                        if not out_domain.empty
+                        else {}
+                    ),
                 }
             ad_metrics_by_target[target].update(
                 {
-                    "coverage_in_domain": float(len(in_domain) / len(enriched))
-                    if len(enriched)
-                    else None,
+                    "coverage_in_domain": (
+                        float(len(in_domain) / len(enriched)) if len(enriched) else None
+                    ),
                     "n_out_of_domain": int(len(out_domain)),
                     "ad_status_counts": {
                         str(key): int(value)

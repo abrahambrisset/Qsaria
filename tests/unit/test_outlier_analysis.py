@@ -24,8 +24,30 @@ def _regression_rows() -> pd.DataFrame:
             "y_true": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "y_pred": [1.0, 1.2, 0.1, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             "fold_label": ["fold_1"] * 10,
-            "activity_cliff_flag": [False, True, True, True, False, False, False, False, False, False],
-            "ad_out_of_domain": [False, False, False, False, False, False, False, False, False, False],
+            "activity_cliff_flag": [
+                False,
+                True,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
+            "ad_out_of_domain": [
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
         }
     )
 
@@ -72,9 +94,10 @@ def test_regression_selection_uses_per_fold_rmse():
     assert set(summary["fold_rmse"]) == {"easy", "hard"}
     assert selected.loc[selected["source_row_index"] == 0, "eligible"].item() is True
     assert selected.loc[selected["source_row_index"] == 6, "eligible"].item() is True
-    assert selected.loc[selected["source_row_index"] == 6, "fold_rmse"].item() != selected.loc[
-        selected["source_row_index"] == 0, "fold_rmse"
-    ].item()
+    assert (
+        selected.loc[selected["source_row_index"] == 6, "fold_rmse"].item()
+        != selected.loc[selected["source_row_index"] == 0, "fold_rmse"].item()
+    )
 
 
 def test_classification_removes_every_misclassification():
@@ -121,7 +144,12 @@ def test_ape_is_recorded_only_for_eligible_regression_rows():
 
 def test_activity_cliff_annotations_join_by_source_row_index():
     predictions = pd.DataFrame(
-        {"source_row_index": [5, 7], "y_true": [1.0, 2.0], "y_pred": [1.0, 2.0], "fold_label": ["f", "f"]}
+        {
+            "source_row_index": [5, 7],
+            "y_true": [1.0, 2.0],
+            "y_pred": [1.0, 2.0],
+            "fold_label": ["f", "f"],
+        }
     )
     annotated = attach_activity_cliff_annotations(
         predictions,

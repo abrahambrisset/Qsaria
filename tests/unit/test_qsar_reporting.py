@@ -136,6 +136,63 @@ def test_applicability_domain_handoff_keeps_coverage_table_uninterpreted():
     assert "Commentaire :" not in ad_markdown
 
 
+def test_v2_ad_table_treats_omitted_method_status_category_as_zero():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "metrics_status": "evaluated",
+            "applicability_domain": {
+                "method": "combined",
+                "feature_space": "rdkit_all",
+                "methods": {
+                    "bounding_box": {
+                        "feature_space": "rdkit_all",
+                        "rule": "strict_min_max_any_feature_outside_is_out_of_domain",
+                    },
+                    "isolation_forest": {
+                        "feature_space": "rdkit_all",
+                        "rule": "decision_function_less_than_zero_is_out_of_domain",
+                    },
+                },
+                "split_score_summaries": {
+                    "train": {
+                        "row_count": 3718,
+                        "n_in_domain": 3511,
+                        "n_out_of_domain": 207,
+                        "coverage_in_domain": 3511 / 3718,
+                        "method_status_summaries": {
+                            "bounding_box": {
+                                "row_count": 3718,
+                                "status_counts": {"in_domain": 3718},
+                                "coverage_in_domain": 1.0,
+                            },
+                            "isolation_forest": {
+                                "row_count": 3718,
+                                "status_counts": {
+                                    "in_domain": 3627,
+                                    "out_of_domain": 91,
+                                },
+                                "coverage_in_domain": 3627 / 3718,
+                            },
+                        },
+                    }
+                },
+            },
+        }
+    )
+
+    table = handoff["report_tables"]["applicability_domain"]
+    bounding_box = next(row for row in table["rows"] if row["method"] == "bounding_box")
+
+    assert bounding_box["n"] == 3718
+    assert bounding_box["n_in_domain"] == 3718
+    assert bounding_box["n_out_of_domain"] == 0
+    assert bounding_box["n_invalid_features"] == 0
+    assert "| bounding_box | rdkit_all |" in table["markdown"]
+    assert "| train | 3718 | 3718 | 0 | 0 | 1 |" in table["markdown"]
+
+
 def test_full_train_handoff_states_not_evaluated():
     handoff = build_training_reporting_handoff(
         {
@@ -171,9 +228,10 @@ def test_external_evaluation_handoff_is_append_only_and_ad_aware():
     )
 
     assert "append-only" in handoff["decision_summary"]
-    assert "| evaluation externe | out_of_domain | 1 | non calculable |" in handoff[
-        "evaluation_metrics_markdown"
-    ]
+    assert (
+        "| evaluation externe | out_of_domain | 1 | non calculable |"
+        in handoff["evaluation_metrics_markdown"]
+    )
 
 
 def test_training_v2_handoff_normalizes_facts_and_limits_tables_to_three():
@@ -232,9 +290,7 @@ def test_training_v2_handoff_normalizes_facts_and_limits_tables_to_three():
                 "feature_space": "rdkit_all",
                 "feature_count": 217,
                 "fit_row_count": 80,
-                "methods": {
-                    "bounding_box": {"feature_space": "rdkit_all", "threshold": 0.95}
-                },
+                "methods": {"bounding_box": {"feature_space": "rdkit_all", "threshold": 0.95}},
                 "split_score_summaries": {
                     "validation": {
                         "row_count": 10,
@@ -341,9 +397,12 @@ def test_training_v2_handoff_keeps_chemprop_native_val_loss_and_skipped_outliers
     facts = handoff["report_facts"]
     assert facts["hyperparameter_optimization"]["engine"] == "chemprop_hpopt_hyperopt"
     assert facts["hyperparameter_optimization"]["objective"]["metric"] == "val_loss"
-    assert facts["hyperparameter_optimization"]["selection_protocol"][
-        "applicability_domain_used_for_selection"
-    ] is False
+    assert (
+        facts["hyperparameter_optimization"]["selection_protocol"][
+            "applicability_domain_used_for_selection"
+        ]
+        is False
+    )
     assert "trials" not in facts["hyperparameter_optimization"]
     assert facts["outlier_analysis"]["status"] == "skipped"
 
@@ -404,9 +463,12 @@ def test_training_v2_handoff_reports_automatic_development_only_ac_annotation(tm
     assert ac["status"] == "selection_annotation_only"
     assert ac["flagged_count"] == 2
     assert ac["feedback_loops_requested"] == 0
-    assert facts["outlier_analysis"]["selection_annotations"]["applicability_domain"][
-        "out_of_domain_count"
-    ] == 25
+    assert (
+        facts["outlier_analysis"]["selection_annotations"]["applicability_domain"][
+            "out_of_domain_count"
+        ]
+        == 25
+    )
 
 
 def test_training_v2_handoff_marks_full_train_as_not_internally_evaluated():
@@ -519,12 +581,14 @@ def test_compact_training_result_omits_heavy_ad_feature_lists():
 
     assert "feature_names" not in rendered
     assert "feature_kinds" not in rendered
-    assert compact["applicability_domain"]["methods"]["similarity_matrix"]["subspaces"][
-        "morgan_binary"
-    ]["threshold"] == 0.25
     assert (
-        compact["applicability_domain"]["split_score_summaries"]["test"]["metrics_all"]["r2"]
-        == 0.4
+        compact["applicability_domain"]["methods"]["similarity_matrix"]["subspaces"][
+            "morgan_binary"
+        ]["threshold"]
+        == 0.25
+    )
+    assert (
+        compact["applicability_domain"]["split_score_summaries"]["test"]["metrics_all"]["r2"] == 0.4
     )
 
 

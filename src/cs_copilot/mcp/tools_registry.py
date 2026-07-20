@@ -34,8 +34,22 @@ def _with_group(specs: Iterable[ToolSpec], group: str) -> Iterable[ToolSpec]:
         yield replace(spec, group=spec.group or group)
 
 
-def iter_specs() -> Iterable[ToolSpec]:
-    """Yield every :class:`ToolSpec` exposed by the MCP server."""
+def iter_specs(profile: str = "full") -> Iterable[ToolSpec]:
+    """Yield the :class:`ToolSpec` objects exposed by ``profile``.
+
+    The historical registry remains the default compatibility surface.  The
+    Qsaria registry is imported lazily so starting the generic MCP server does
+    not import any QSAR toolkit or alter its startup behaviour.
+    """
+
+    if profile == "qsaria":
+        from .tool_specs import qsaria, qsaria_lifecycle
+
+        yield from _with_group(qsaria_lifecycle.SPECS, "qsaria_lifecycle")
+        yield from _with_group(qsaria.SPECS, "qsaria")
+        return
+    if profile != "full":
+        raise ValueError(f"Unknown MCP profile: {profile!r}")
 
     yield from _with_group(chembl.SPECS, "chembl")
     yield from _with_group(gtm.SPECS, "gtm")
@@ -52,7 +66,7 @@ def iter_specs() -> Iterable[ToolSpec]:
     yield from _with_group(synplanner.SPECS, "synplanner")
 
 
-def all_specs() -> List[ToolSpec]:
-    """Return every :class:`ToolSpec` as a list."""
+def all_specs(profile: str = "full") -> List[ToolSpec]:
+    """Return every :class:`ToolSpec` exposed by ``profile`` as a list."""
 
-    return list(iter_specs())
+    return list(iter_specs(profile=profile))

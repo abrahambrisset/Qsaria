@@ -3,6 +3,7 @@
 Run local stdio clients with::
 
     cscopilot-mcp [--session-id SID] [--workflow-slug SLUG]
+    cscopilot-mcp --profile qsaria --llm-policy disabled
 
 Run a remote HTTP endpoint for ChatGPT / browser-hosted MCP clients with::
 
@@ -25,6 +26,7 @@ from .session import BootstrapConfig, apply_session_id, bootstrap, configure_log
 
 _TRANSPORTS = ("stdio", "sse", "streamable-http")
 _LLM_POLICIES = ("external", "agno-model", "disabled")
+_PROFILES = ("full", "qsaria")
 
 
 def _parse_args(
@@ -39,6 +41,16 @@ def _parse_args(
             "cs_copilot MCP server. Exposes cs_copilot toolkits, "
             "prompts, and session artifacts to external MCP clients over "
             "stdio, SSE, or streamable HTTP."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        default=os.getenv("CS_COPILOT_MCP_PROFILE", "full"),
+        choices=_PROFILES,
+        help=(
+            "Tool surface to expose. 'full' preserves the existing generic "
+            "server; 'qsaria' exposes only deterministic Qsaria experiment and "
+            "scientific tools for an external coordinator."
         ),
     )
     parser.add_argument(
@@ -215,7 +227,10 @@ def _parse_args(
             "trusted clients; default MCP mode keeps Agno reasoning disabled."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.profile == "qsaria" and args.enable_agno_team_tool:
+        parser.error("--enable-agno-team-tool is unavailable with --profile qsaria")
+    return args
 
 
 def main(
@@ -230,11 +245,12 @@ def main(
     require_mcp()
     args = _parse_args(argv, default_transport=default_transport, prog=prog)
 
+    llm_policy = "disabled" if args.profile == "qsaria" else args.llm_policy
     config = BootstrapConfig(
         session_id=args.session_id,
         workflow_slug=args.workflow_slug,
         log_level=args.log_level,
-        llm_policy=args.llm_policy,
+        llm_policy=llm_policy,
     )
     configure_logging(config.log_level)
     apply_session_id(config.session_id)
@@ -250,11 +266,12 @@ def main(
 
     server = build_server(
         ctx,
+        profile=args.profile,
         include_tools=not args.no_tools,
-        include_chatgpt_compat=not args.no_chatgpt_compat,
-        include_prompts=not args.no_prompts,
-        include_resources=not args.no_resources,
-        enable_agno_team_tool=args.enable_agno_team_tool,
+        include_chatgpt_compat=(args.profile == "full" and not args.no_chatgpt_compat),
+        include_prompts=args.profile == "full" and not args.no_prompts,
+        include_resources=args.profile == "full" and not args.no_resources,
+        enable_agno_team_tool=(args.profile == "full" and args.enable_agno_team_tool),
         host=args.host,
         port=args.port,
         mount_path=args.mount_path,

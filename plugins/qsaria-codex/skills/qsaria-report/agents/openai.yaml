@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Report"
+  short_description: "Produce evidence-first Qsaria scientific reports"
+  default_prompt: "Use $qsaria-report to create the final evidence-first report for this Qsaria experiment."
+policy:
+  allow_implicit_invocation: false

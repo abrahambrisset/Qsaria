@@ -829,9 +829,8 @@ def build_cross_validation_artifacts(
     for split_result in split_results:
         # A CV fold is train/validation.  Only an explicit outer test remains
         # a test set, so OOF aggregation reads validation predictions first.
-        predictions_path = (
-            split_result.get("validation_predictions_path")
-            or split_result.get("test_predictions_path")
+        predictions_path = split_result.get("validation_predictions_path") or split_result.get(
+            "test_predictions_path"
         )
         split_payload = split_result.get("split_payload") or []
         if not predictions_path or not split_payload:

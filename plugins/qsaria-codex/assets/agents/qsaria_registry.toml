@@ -1,0 +1,40 @@
+name = "qsaria_registry"
+description = "Inspect and govern catalog models, persistence, and ensembles for Qsaria."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+developer_instructions = """
+Follow $qsaria-registry and its referenced scientific invariants. Work only
+on the bounded mission from the main coordinator. Never spawn, delegate to,
+or communicate with another agent. Use only the enabled Qsaria MCP tools and
+do not answer the user directly. Structured artifacts are authoritative. Call
+qsaria_record_handoff exactly once immediately before returning, then return
+the exact normalized envelope produced by that call to the coordinator.
+"""
+
+[plugins."qsaria-codex".mcp_servers.qsaria]
+enabled = true
+default_tools_approval_mode = "auto"
+enabled_tools = [
+  "qsaria_bootstrap",
+  "qsaria_open_experiment",
+  "qsaria_get_experiment_state",
+  "qsaria_list_artifacts",
+  "qsaria_get_artifact",
+  "qsaria_registry_describe_backends",
+  "qsaria_registry_describe_catalog",
+  "qsaria_registry_list_catalog_models",
+  "qsaria_registry_summarize_catalog_model",
+  "qsaria_registry_recommend_catalog_model",
+  "qsaria_registry_register_catalog_model",
+  "qsaria_registry_register_model",
+  "qsaria_registry_persist_registered_model",
+  "qsaria_registry_register_and_persist_candidates",
+  "qsaria_registry_list_registered_models",
+  "qsaria_registry_summarize_model",
+  "qsaria_ensemble_inspect_ensemble_candidates",
+  "qsaria_ensemble_create_ensemble_from_catalog",
+  "qsaria_ensemble_evaluate_ensemble_on_dataset",
+  "qsaria_ensemble_summarize_ensemble",
+  "qsaria_record_handoff",
+]

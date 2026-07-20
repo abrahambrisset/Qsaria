@@ -181,7 +181,9 @@ class LightGBMToolkit(Toolkit):
         ]
         test_indices = [int(index) for index in split.get("test") or []]
         if not train_indices or not validation_indices:
-            raise ValueError("Outlier analysis requires fixed non-empty train and validation indices.")
+            raise ValueError(
+                "Outlier analysis requires fixed non-empty train and validation indices."
+            )
         target_column = task.target_columns[0]
         selection = selection_predictions_from_frame(
             selection_prediction_frame,
@@ -200,7 +202,9 @@ class LightGBMToolkit(Toolkit):
         # diagnostic and never reuses final-model AD artifacts.
         with tempfile.TemporaryDirectory(prefix="qsaria_outlier_lightgbm_") as temporary_dir:
             temporary_ad = fit_modern_applicability_domain(
-                feature_frame=split_source_df.iloc[train_indices][feature_columns].reset_index(drop=True),
+                feature_frame=split_source_df.iloc[train_indices][feature_columns].reset_index(
+                    drop=True
+                ),
                 feature_columns=feature_columns,
                 output_dir=Path(temporary_dir) / "applicability_domain",
                 model_id="lightgbm_outlier_selection",
@@ -215,7 +219,9 @@ class LightGBMToolkit(Toolkit):
                 similarity_threshold_percentile=similarity_threshold_percentile,
             )
             validation_ad = score_modern_applicability_domain(
-                feature_frame=split_source_df.iloc[validation_indices][feature_columns].reset_index(drop=True),
+                feature_frame=split_source_df.iloc[validation_indices][feature_columns].reset_index(
+                    drop=True
+                ),
                 applicability_domain=temporary_ad,
                 row_indices=validation_indices,
             )
@@ -247,7 +253,9 @@ class LightGBMToolkit(Toolkit):
                 if annotated_path and Path(str(annotated_path)).exists():
                     ac_annotations = pd.read_csv(annotated_path)
             except Exception as exc:
-                logger.warning("Development-only Activity Cliff selection annotations unavailable: %s", exc)
+                logger.warning(
+                    "Development-only Activity Cliff selection annotations unavailable: %s", exc
+                )
         selection = attach_activity_cliff_annotations(selection, annotations=ac_annotations)
         selected_rows, selection_summary = select_outliers(
             selection,
@@ -333,7 +341,9 @@ class LightGBMToolkit(Toolkit):
 
         variants = [{"variant_id": "baseline", "run": baseline_run}]
         if selected_indices:
-            filtered_train = [index for index in development_indices if index not in set(selected_indices)]
+            filtered_train = [
+                index for index in development_indices if index not in set(selected_indices)
+            ]
             filtered_payload = [
                 {
                     "train": filtered_train,
@@ -347,7 +357,9 @@ class LightGBMToolkit(Toolkit):
                 }
             ]
             if progress_callback is not None:
-                progress_callback("Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"})
+                progress_callback(
+                    "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
+                )
             try:
                 filtered_run = self.backend.train_model(
                     train_csv=train_csv,
@@ -548,19 +560,21 @@ class LightGBMToolkit(Toolkit):
                     base_args: Dict[str, Any] = base_args,
                     parameters: Dict[str, Any] = parameters,
                 ) -> Dict[str, Any]:
-                    payload = [{
-                        "train": indices,
-                        **({"test": sorted(outer_test_indices)} if outer_test_indices else {}),
-                        "metadata": {
-                            "split_type": "cross_validation_final_refit",
-                            "repeat_index": repeat_index,
-                            "source_folds": source_folds,
-                            "outlier_variant": variant_id,
-                            "removed_source_row_indices": (
-                                selected_indices if variant_id == "outlier_filtered" else []
-                            ),
-                        },
-                    }]
+                    payload = [
+                        {
+                            "train": indices,
+                            **({"test": sorted(outer_test_indices)} if outer_test_indices else {}),
+                            "metadata": {
+                                "split_type": "cross_validation_final_refit",
+                                "repeat_index": repeat_index,
+                                "source_folds": source_folds,
+                                "outlier_variant": variant_id,
+                                "removed_source_row_indices": (
+                                    selected_indices if variant_id == "outlier_filtered" else []
+                                ),
+                            },
+                        }
+                    ]
                     run = self.backend.train_model(
                         train_csv=train_csv,
                         output_dir=str(
@@ -664,7 +678,9 @@ class LightGBMToolkit(Toolkit):
                     "selection_predictions_path": artifacts.get("selection_predictions_path"),
                     "filtered_development_path": artifacts.get("filtered_development_path"),
                     "plot_artifacts": {
-                        key: value for key, value in artifacts.items() if key.startswith("outlier_selection_")
+                        key: value
+                        for key, value in artifacts.items()
+                        if key.startswith("outlier_selection_")
                     },
                     "comparison_path": comparison_path,
                     "selected_source_row_indices": selected_indices,
@@ -1264,7 +1280,9 @@ class LightGBMToolkit(Toolkit):
         """
         total_started_at = project_now()
         if progress_callback is not None:
-            progress_callback("Hyperparameter optimization", {"detail": "Preparing validation split"})
+            progress_callback(
+                "Hyperparameter optimization", {"detail": "Preparing validation split"}
+            )
         root_output_path = Path(resolved_output_dir)
         effective_feature_columns = list(feature_columns) or [
             str(column)
@@ -1322,7 +1340,9 @@ class LightGBMToolkit(Toolkit):
             fixed_parameters=fixed_model_args,
         )
         if tuning_config is None:
-            raise HyperparameterTuningError("Internal error: tuned holdout requires an enabled config.")
+            raise HyperparameterTuningError(
+                "Internal error: tuned holdout requires an enabled config."
+            )
         if (
             int(direct_model_args.get("early_stopping_rounds") or 0) > 0
             and "n_estimators" in tuning_config.parameters
@@ -1330,9 +1350,7 @@ class LightGBMToolkit(Toolkit):
             raise HyperparameterTuningError(
                 "early_stopping_rounds cannot be used while n_estimators is optimized."
             )
-        requested_early_stopping_rounds = int(
-            direct_model_args.get("early_stopping_rounds") or 0
-        )
+        requested_early_stopping_rounds = int(direct_model_args.get("early_stopping_rounds") or 0)
 
         feature_frame = split_source_df[effective_feature_columns].copy().reset_index(drop=True)
         base_args = {
@@ -1374,10 +1392,11 @@ class LightGBMToolkit(Toolkit):
             )
             validation_status = _ad_status_series(validation_ad)
             if validation_status is None:
-                raise HyperparameterTuningError("Could not score the validation applicability domain.")
-            if (
-                tuning_config.objective.subset == "in_domain"
-                and not bool(validation_status.eq("in_domain").any())
+                raise HyperparameterTuningError(
+                    "Could not score the validation applicability domain."
+                )
+            if tuning_config.objective.subset == "in_domain" and not bool(
+                validation_status.eq("in_domain").any()
             ):
                 raise HyperparameterTuningError(
                     "The validation split contains no in-domain molecule; choose objective.subset='all' "
@@ -1463,12 +1482,16 @@ class LightGBMToolkit(Toolkit):
                     },
                 )
 
-            summary = LightGBMOptunaAdapter().run(
-                config=tuning_config,
-                fixed_parameters=fixed_model_args,
-                evaluate=evaluate,
-                progress_callback=report_trial_progress,
-            ).as_dict()
+            summary = (
+                LightGBMOptunaAdapter()
+                .run(
+                    config=tuning_config,
+                    fixed_parameters=fixed_model_args,
+                    evaluate=evaluate,
+                    progress_callback=report_trial_progress,
+                )
+                .as_dict()
+            )
 
         summary["seed"] = tuning_config.seed
         summary["contract_version"] = HYPERPARAMETER_CONTRACT_VERSION
@@ -1489,9 +1512,7 @@ class LightGBMToolkit(Toolkit):
             output_dir=root_output_path / "artifacts" / "plots",
         )
         tuning_plot_artifacts = (
-            {"hyperparameter_tuning_progress": tuning_plot_path}
-            if tuning_plot_path
-            else {}
+            {"hyperparameter_tuning_progress": tuning_plot_path} if tuning_plot_path else {}
         )
         if tuning_plot_artifacts:
             summary["plot_artifacts"] = tuning_plot_artifacts
@@ -1503,7 +1524,9 @@ class LightGBMToolkit(Toolkit):
         selection_prediction_frame: Optional[pd.DataFrame] = None
         if outlier_config.enabled and outlier_skip_reason is None:
             if progress_callback is not None:
-                progress_callback("Identifying validation outliers", {"detail": "fitting selected model"})
+                progress_callback(
+                    "Identifying validation outliers", {"detail": "fitting selected model"}
+                )
             with tempfile.TemporaryDirectory(prefix="qsaria_lightgbm_selection_") as selection_dir:
                 selection_run = self.backend.train_model(
                     train_csv=train_csv,
@@ -1734,7 +1757,8 @@ class LightGBMToolkit(Toolkit):
         result.update(
             {
                 "model_path": root_artifacts.get("best_model_path") or final_run.get("model_path"),
-                "best_model_path": root_artifacts.get("best_model_path") or final_run.get("model_path"),
+                "best_model_path": root_artifacts.get("best_model_path")
+                or final_run.get("model_path"),
                 "validation_predictions_path": None,
                 "test_predictions_path": root_artifacts.get("test_predictions_path"),
                 "config_path": root_artifacts.get("config_path") or final_run.get("config_path"),
@@ -1761,7 +1785,9 @@ class LightGBMToolkit(Toolkit):
                 "validation_strategy": protocol_policy.get("validation_strategy"),
                 "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
                 "seed_policy": protocol_policy["seed_policy"],
-                "reproducibility": seed_policy_reproducibility_metadata(protocol_policy["seed_policy"]),
+                "reproducibility": seed_policy_reproducibility_metadata(
+                    protocol_policy["seed_policy"]
+                ),
                 "training_profile": training_policy["training_profile"],
                 "compute_environment": training_policy["compute_environment"],
                 "effective_train_args": final_run.get("effective_train_args") or {},
@@ -1769,11 +1795,15 @@ class LightGBMToolkit(Toolkit):
                 "baseline_split_results": [final_run],
                 "validation_assessment": assess_protocol_results([final_run]),
                 "training_durations": training_durations,
-                "catalog_model_policy": "outlier_variants_no_test_winner"
-                if outlier_variants
-                else "tuned_final_refit_only",
+                "catalog_model_policy": (
+                    "outlier_variants_no_test_winner"
+                    if outlier_variants
+                    else "tuned_final_refit_only"
+                ),
                 "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
-                "canonical_summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                "canonical_summary_path": str(
+                    root_output_path / "cs_copilot_training_summary.json"
+                ),
                 "train_csv": train_csv,
                 "target_columns": list(task.target_columns),
                 "feature_columns": effective_feature_columns,
@@ -1810,6 +1840,7 @@ class LightGBMToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         extra_args: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        bundle_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Train a LightGBM regressor with QSAR validation protocols."""
         normalized_target_columns = (
@@ -2032,9 +2063,13 @@ class LightGBMToolkit(Toolkit):
                             split_run["split_payload"] = build_qsar_split_payload(
                                 df=split_source_df,
                                 split_type=split_run["backend_split_type"],
-                                split_sizes=split_run.get("split_sizes") or normalized_split_sizes or [],
+                                split_sizes=split_run.get("split_sizes")
+                                or normalized_split_sizes
+                                or [],
                                 random_state=int(split_run["seed"]),
-                                smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                                smiles_column=(
+                                    "smiles" if "smiles" in split_source_df.columns else None
+                                ),
                                 feature_columns=list(normalized_feature_columns or []),
                             )
                         split_label = str(split_run.get("label") or f"split_{run_index}")
@@ -2043,31 +2078,33 @@ class LightGBMToolkit(Toolkit):
                             {"detail": f"fold {run_index} of {len(split_runs)}"},
                         )
                         tuned_split_result = self._train_tuned_holdout(
-                                train_csv=train_csv,
-                                resolved_output_dir=str(root_output_path / safe_slug(split_label)),
-                                task=task,
-                                protocol_policy=protocol_policy,
-                                training_policy=training_policy,
-                                split_source_df=split_source_df,
-                                split_run=split_run,
-                                feature_columns=list(normalized_feature_columns or []),
-                                categorical_feature_columns=list(normalized_categorical_feature_columns or []),
-                                representation_name=representation_name,
-                                direct_model_args=direct_model_args,
-                                raw_tuning_config=requested_hyperparameter_tuning,
-                                applicability_domain_methods=requested_ad_methods,
-                                similarity_top_k_neighbors=requested_similarity_top_k,
-                                similarity_threshold_percentile=requested_similarity_percentile,
-                                outlier_config=outlier_config,
-                                outlier_skip_reason=outlier_skip_reason,
-                                activity_args=activity_args,
-                                selection_only=bool(
-                                    is_cv_protocol
-                                    and outlier_config.enabled
-                                    and outlier_skip_reason is None
-                                ),
-                                progress_callback=publish_active_progress,
-                            )
+                            train_csv=train_csv,
+                            resolved_output_dir=str(root_output_path / safe_slug(split_label)),
+                            task=task,
+                            protocol_policy=protocol_policy,
+                            training_policy=training_policy,
+                            split_source_df=split_source_df,
+                            split_run=split_run,
+                            feature_columns=list(normalized_feature_columns or []),
+                            categorical_feature_columns=list(
+                                normalized_categorical_feature_columns or []
+                            ),
+                            representation_name=representation_name,
+                            direct_model_args=direct_model_args,
+                            raw_tuning_config=requested_hyperparameter_tuning,
+                            applicability_domain_methods=requested_ad_methods,
+                            similarity_top_k_neighbors=requested_similarity_top_k,
+                            similarity_threshold_percentile=requested_similarity_percentile,
+                            outlier_config=outlier_config,
+                            outlier_skip_reason=outlier_skip_reason,
+                            activity_args=activity_args,
+                            selection_only=bool(
+                                is_cv_protocol
+                                and outlier_config.enabled
+                                and outlier_skip_reason is None
+                            ),
+                            progress_callback=publish_active_progress,
+                        )
                         tuned_split_result.update(
                             {
                                 "strategy_label": split_label,
@@ -2146,7 +2183,9 @@ class LightGBMToolkit(Toolkit):
                         output_dir=root_output_path,
                         training_policy=training_policy,
                         feature_columns=list(normalized_feature_columns or []),
-                        categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+                        categorical_feature_columns=list(
+                            normalized_categorical_feature_columns or []
+                        ),
                         representation_name=representation_name,
                         applicability_domain_methods=requested_ad_methods,
                         similarity_top_k_neighbors=requested_similarity_top_k,
@@ -2170,7 +2209,9 @@ class LightGBMToolkit(Toolkit):
                         "tuning_scope": "one_study_per_validation_fold",
                         "test_selection_policy": "no_test_metric_selects_a_candidate",
                         "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
-                        "canonical_summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
+                        "canonical_summary_path": str(
+                            root_output_path / "cs_copilot_training_summary.json"
+                        ),
                     }
                 )
                 composite["outlier_analysis"] = {
@@ -2536,7 +2577,11 @@ class LightGBMToolkit(Toolkit):
                 split = split_payload[0] if split_payload else {}
                 validation_indices = list(split.get("val") or split.get("validation") or [])
                 prediction_path = split_result.get("validation_predictions_path")
-                if not validation_indices or not prediction_path or not Path(str(prediction_path)).exists():
+                if (
+                    not validation_indices
+                    or not prediction_path
+                    or not Path(str(prediction_path)).exists()
+                ):
                     outlier_study["studies"].append(
                         {
                             "split_label": split_result.get("strategy_label"),
@@ -2558,11 +2603,11 @@ class LightGBMToolkit(Toolkit):
                         if key not in {"seed_policy", "split_payload", "validation_strategy"}
                     },
                     "feature_columns": list(
-                        normalized_feature_columns
-                        or split_result.get("feature_columns")
-                        or []
+                        normalized_feature_columns or split_result.get("feature_columns") or []
                     ),
-                    "categorical_feature_columns": list(normalized_categorical_feature_columns or []),
+                    "categorical_feature_columns": list(
+                        normalized_categorical_feature_columns or []
+                    ),
                     "random_state": int(split_result.get("seed") or 0),
                     "validation_protocol": protocol_policy["protocol"],
                     "early_stopping_rounds": 0,
@@ -2573,9 +2618,17 @@ class LightGBMToolkit(Toolkit):
                     for key, value in direct_model_args.items()
                     if key
                     in {
-                        "n_estimators", "learning_rate", "num_leaves", "max_depth",
-                        "subsample", "colsample_bytree", "min_child_samples", "reg_alpha",
-                        "reg_lambda", "min_split_gain", "boosting_type",
+                        "n_estimators",
+                        "learning_rate",
+                        "num_leaves",
+                        "max_depth",
+                        "subsample",
+                        "colsample_bytree",
+                        "min_child_samples",
+                        "reg_alpha",
+                        "reg_lambda",
+                        "min_split_gain",
+                        "boosting_type",
                     }
                 }
                 study = self._run_outlier_refits(
@@ -2813,8 +2866,10 @@ class LightGBMToolkit(Toolkit):
         summary_path = Path(result["summary_path"])
         write_training_summary(summary_path, result)
 
-        bundle_path = (
-            Path(".files")
+        bundle_destination = (
+            Path(bundle_path).expanduser()
+            if bundle_path
+            else Path(".files")
             / "prediction_outputs"
             / f"{Path(resolved_output_dir).name}_training_bundle.zip"
         ).resolve()
@@ -2830,7 +2885,7 @@ class LightGBMToolkit(Toolkit):
             extra_files=[Path(resolved_output_dir)],
         )
 
-        bundle = bundle_artifacts(bundle_path, bundle_files)
+        bundle = bundle_artifacts(bundle_destination, bundle_files)
         result["bundle_file_ref"] = str(bundle)
         result["training_bundle"] = str(bundle)
         result["bundle_download_tag"] = f"<file>{bundle}</file>"

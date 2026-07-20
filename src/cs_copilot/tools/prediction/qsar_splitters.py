@@ -95,7 +95,9 @@ def _finalize_split(
     if "val" in clean and "test" not in clean and len(split_sizes) == 2:
         total = float(sum(split_sizes))
         if total <= 0 or any(float(value) <= 0 for value in split_sizes):
-            raise InvalidPredictionInputError("Cross-validation train/validation sizes must be positive.")
+            raise InvalidPredictionInputError(
+                "Cross-validation train/validation sizes must be positive."
+            )
         normalized_sizes = [float(value) / total for value in split_sizes]
     clean["metadata"] = {
         "split_type": split_type,
@@ -306,7 +308,9 @@ def build_repeated_kfold_split_payloads(
         try:
             outer_fraction = float(outer_test_size)
         except (TypeError, ValueError) as exc:
-            raise InvalidPredictionInputError("outer_test_size must be a number between 0 and 1.") from exc
+            raise InvalidPredictionInputError(
+                "outer_test_size must be a number between 0 and 1."
+            ) from exc
         if not 0.0 < outer_fraction < 1.0:
             raise InvalidPredictionInputError("outer_test_size must be strictly between 0 and 1.")
         outer_count = int(round(n_rows * outer_fraction))
@@ -315,7 +319,9 @@ def build_repeated_kfold_split_payloads(
                 "outer_test_size produced an empty development or external test split."
             )
         rng = np.random.default_rng(int(random_state))
-        outer_indices = np.sort(rng.choice(all_indices, size=outer_count, replace=False)).astype(int)
+        outer_indices = np.sort(rng.choice(all_indices, size=outer_count, replace=False)).astype(
+            int
+        )
         development_indices = np.setdiff1d(all_indices, outer_indices, assume_unique=True)
     if len(development_indices) < n_splits:
         raise InvalidPredictionInputError(
@@ -398,9 +404,11 @@ def build_full_train_split_payload(
         "train": resolved_train,
         "metadata": {
             "split_type": "final_refit",
-            "split_sizes": [len(resolved_train) / n_rows, len(resolved_test) / n_rows]
-            if resolved_test
-            else [1.0],
+            "split_sizes": (
+                [len(resolved_train) / n_rows, len(resolved_test) / n_rows]
+                if resolved_test
+                else [1.0]
+            ),
             "split_counts": {key: len(value) for key, value in payload_for_hash.items()},
             "has_validation": False,
             "has_outer_test": bool(resolved_test),

@@ -57,6 +57,77 @@ from cs_copilot.tools.prediction.training_orchestration import (
 )
 
 
+def test_collision_safe_model_id_preserves_legacy_first_and_isolates_later_models(
+    monkeypatch,
+    tmp_path,
+):
+    internal_root = tmp_path / "internal"
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    task = PredictionTaskSpec(
+        task_type="regression",
+        smiles_columns=["smiles"],
+        target_columns=["logS"],
+    )
+    base_model_id = "solubility_dataset_protocol_lightgbm_v1_17072026_120000"
+    existing_path = tmp_path / "existing.pkl"
+    current_path = tmp_path / "current.pkl"
+    existing_path.write_bytes(b"first")
+    current_path.write_bytes(b"second")
+    existing = PredictionModelRecord(
+        model_id=base_model_id,
+        backend_name="lightgbm",
+        model_path=str(existing_path),
+        task=task,
+    )
+    current = PredictionModelRecord(
+        model_id=base_model_id,
+        backend_name="lightgbm",
+        model_path=str(current_path),
+        task=task,
+    )
+    catalog = PredictionModelCatalog(
+        records=[existing],
+        source_path=tmp_path / "catalog.json",
+    )
+
+    isolated_id = registry_module._collision_safe_model_id(
+        base_model_id,
+        current=current,
+        catalog=catalog,
+    )
+    assert isolated_id != base_model_id
+    assert isolated_id.startswith(f"{base_model_id}_")
+    assert isolated_id == registry_module._collision_safe_model_id(
+        base_model_id,
+        current=current,
+        catalog=catalog,
+    )
+    free_model_id = f"{base_model_id}_free"
+    assert (
+        registry_module._collision_safe_model_id(
+            free_model_id,
+            current=current,
+            catalog=catalog,
+        )
+        == free_model_id
+    )
+
+    idempotent = PredictionModelRecord(
+        model_id=base_model_id,
+        backend_name="lightgbm",
+        model_path=str(existing_path),
+        task=task,
+    )
+    assert (
+        registry_module._collision_safe_model_id(
+            base_model_id,
+            current=idempotent,
+            catalog=catalog,
+        )
+        == base_model_id
+    )
+
+
 class _FakeLightGBMPredictor:
     def predict(self, features):
         return [float(index) for index in range(len(features))]
@@ -1125,10 +1196,7 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
     assert persisted_metadata["inference_profile"]["representation_name"] == "morgan_count_only"
     assert persisted_metadata["hyperparameter_tuning"] == tuning_provenance
     assert persisted_metadata["hyperparameter_tuning_summary_path"] == tuning_summary_path
-    assert (
-        persisted_metadata["training_data_summary"]["hyperparameter_tuning"]
-        == tuning_provenance
-    )
+    assert persisted_metadata["training_data_summary"]["hyperparameter_tuning"] == tuning_provenance
     assert result["status_reason"]
     assert "workflow_demo" in result["status_reason"]
 
@@ -1177,7 +1245,14 @@ def test_model_registry_persists_variant_specific_outlier_artifacts(monkeypatch,
     comparison_csv = analysis_dir / "outlier_variant_comparison.csv"
     observed_plot = plots_dir / "outlier_selection_observed_vs_predicted.png"
     residual_plot = plots_dir / "outlier_selection_residuals_vs_observed.png"
-    for path in (analysis_summary, selection_csv, filtered_csv, comparison_csv, observed_plot, residual_plot):
+    for path in (
+        analysis_summary,
+        selection_csv,
+        filtered_csv,
+        comparison_csv,
+        observed_plot,
+        residual_plot,
+    ):
         path.write_text(path.name)
     outlier_analysis = {
         "enabled": True,
@@ -1238,15 +1313,18 @@ def test_model_registry_persists_variant_specific_outlier_artifacts(monkeypatch,
 
     metadata = json.loads(Path(persisted["metadata_path"]).read_text())
     root = Path(persisted["model_root"])
-    assert (root / metadata["artifacts"]["test_predictions_path"]).read_text() == "prediction\n2.0\n"
+    assert (
+        root / metadata["artifacts"]["test_predictions_path"]
+    ).read_text() == "prediction\n2.0\n"
     assert metadata["known_metrics"] == {"test": {"rmse": 0.3}}
     assert metadata["outlier_analysis"]["selected_count"] == 1
     assert (root / metadata["outlier_analysis"]["summary_path"]).exists()
     assert (root / metadata["outlier_analysis"]["comparison_path"]).exists()
     assert (root / metadata["artifacts"]["hyperparameter_tuning_summary_path"]).exists()
-    assert metadata["hyperparameter_tuning_summary_path"] == metadata["artifacts"][
-        "hyperparameter_tuning_summary_path"
-    ]
+    assert (
+        metadata["hyperparameter_tuning_summary_path"]
+        == metadata["artifacts"]["hyperparameter_tuning_summary_path"]
+    )
 
 
 def test_model_registry_batch_persistence_uses_each_exact_candidate_payload(monkeypatch, tmp_path):
@@ -1989,9 +2067,7 @@ def test_training_plots_build_regression_artifacts_for_tuned_refit(tmp_path):
     train_csv = tmp_path / "train.csv"
     train_csv.write_text("smiles,Y\nCCO,1.0\nCCN,2.0\nCCC,3.0\nCCCl,4.0\n")
     predictions_path = tmp_path / "predictions.csv"
-    predictions_path.write_text(
-        "Y,prediction\n1.1,1.1\n1.9,1.9\n3.2,3.2\n3.8,3.8\n"
-    )
+    predictions_path.write_text("Y,prediction\n1.1,1.1\n1.9,1.9\n3.2,3.2\n3.8,3.8\n")
     splits_path = tmp_path / "splits.json"
     splits_path.write_text(json.dumps([{"train": [], "test": [0, 1, 2, 3]}]))
     primary_run = {

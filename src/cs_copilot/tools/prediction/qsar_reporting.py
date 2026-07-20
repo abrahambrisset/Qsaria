@@ -193,14 +193,12 @@ def _rows_from_ad_split(
 
 def _training_metric_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
     target = next(iter(result.get("target_columns") or []), None)
-    ad_splits = ((result.get("applicability_domain") or {}).get("split_score_summaries") or {})
+    ad_splits = (result.get("applicability_domain") or {}).get("split_score_summaries") or {}
     rows: List[Dict[str, Any]] = []
     selection = result.get("selection_validation") or {}
     selection_metrics = selection.get("metrics") if isinstance(selection, Mapping) else None
     if isinstance(selection_metrics, Mapping):
-        if any(
-            subset in selection_metrics for subset in ("all", "in_domain", "out_of_domain")
-        ):
+        if any(subset in selection_metrics for subset in ("all", "in_domain", "out_of_domain")):
             for subset in ("all", "in_domain", "out_of_domain"):
                 metrics = selection_metrics.get(subset)
                 if isinstance(metrics, Mapping) and metrics:
@@ -284,7 +282,11 @@ def _external_metric_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
             "source": "evaluation externe",
             "target": next(iter(result.get("target_columns") or []), None),
             "ad_subset": "all",
-            "n": (metrics or {}).get("n") if isinstance(metrics, Mapping) else result.get("row_count"),
+            "n": (
+                (metrics or {}).get("n")
+                if isinstance(metrics, Mapping)
+                else result.get("row_count")
+            ),
             "metrics": metrics or {},
         }
     ]
@@ -313,9 +315,11 @@ def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> st
     if methods:
         reference_summary = {}
         if coverage_rows:
-            reference_summary = coverage_rows[0][1].get("method_summaries") or coverage_rows[0][1].get(
-                "method_status_summaries"
-            ) or {}
+            reference_summary = (
+                coverage_rows[0][1].get("method_summaries")
+                or coverage_rows[0][1].get("method_status_summaries")
+                or {}
+            )
         lines.extend(
             [
                 "",
@@ -324,7 +328,9 @@ def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> st
             ]
         )
         for method_name, method_payload in methods.items():
-            method_summary = reference_summary.get(method_name) if isinstance(reference_summary, Mapping) else {}
+            method_summary = (
+                reference_summary.get(method_name) if isinstance(reference_summary, Mapping) else {}
+            )
             counts = (method_summary or {}).get("status_counts") or {}
             rule = (
                 method_payload.get("rule")
@@ -356,11 +362,14 @@ def _ad_markdown(ad: Mapping[str, Any], *, source_label: str = "training") -> st
         )
         for split, summary in coverage_rows:
             top = summary.get("top_violating_features") or []
-            top_text = ", ".join(
-                f"{item.get('feature')} ({item.get('count')})"
-                for item in top[:5]
-                if isinstance(item, Mapping)
-            ) or "-"
+            top_text = (
+                ", ".join(
+                    f"{item.get('feature')} ({item.get('count')})"
+                    for item in top[:5]
+                    if isinstance(item, Mapping)
+                )
+                or "-"
+            )
             lines.append(
                 "| "
                 + " | ".join(
@@ -433,7 +442,9 @@ def governance_markdown(
     if status_reason:
         lines.append(f"- Raison: {status_reason}")
     if metrics_status == "not_evaluated":
-        lines.append("- Manquant pour promotion: evaluation externe labelisee et metriques documentees.")
+        lines.append(
+            "- Manquant pour promotion: evaluation externe labelisee et metriques documentees."
+        )
     return "\n".join(lines)
 
 
@@ -557,7 +568,9 @@ def _variant_test_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
         for index, run in enumerate(split_results, start=1):
             if not isinstance(run, Mapping):
                 continue
-            label = str(run.get("strategy_label") or run.get("strategy") or f"configuration_{index}")
+            label = str(
+                run.get("strategy_label") or run.get("strategy") or f"configuration_{index}"
+            )
             ad = _mapping(run.get("applicability_domain"))
             summary = _mapping(_mapping(ad.get("split_score_summaries")).get("test"))
             if summary:
@@ -567,7 +580,9 @@ def _variant_test_rows(result: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _combined_ad_table(ad: Mapping[str, Any], *, source_label: str = "training") -> Optional[Dict[str, Any]]:
+def _combined_ad_table(
+    ad: Mapping[str, Any], *, source_label: str = "training"
+) -> Optional[Dict[str, Any]]:
     """One table joining AD methods, flags, and coverage as the V2 canonical block."""
     ad = _mapping(ad)
     if not ad:
@@ -608,10 +623,24 @@ def _combined_ad_table(ad: Mapping[str, Any], *, source_label: str = "training")
             payload = _mapping(payload)
             method_summary = _mapping(method_summaries.get(method_name))
             counts = _mapping(method_summary.get("status_counts"))
-            out_of_domain = counts.get("out_of_domain", summary.get("n_out_of_domain"))
-            invalid = counts.get("invalid_features", summary.get("n_invalid_features"))
-            row_count = summary.get("row_count")
-            in_domain = counts.get("in_domain", summary.get("n_in_domain"))
+            if method_summary:
+                row_count = method_summary.get("row_count", summary.get("row_count"))
+                if counts:
+                    # Status categories with zero rows are commonly omitted from
+                    # ``status_counts``.  A missing method-level category is zero,
+                    # not the combined AD count from the enclosing split.
+                    in_domain = counts.get("in_domain", 0)
+                    out_of_domain = counts.get("out_of_domain", 0)
+                    invalid = counts.get("invalid_features", 0)
+                else:
+                    in_domain = method_summary.get("n_in_domain")
+                    out_of_domain = method_summary.get("n_out_of_domain")
+                    invalid = method_summary.get("n_invalid_features")
+            else:
+                row_count = summary.get("row_count")
+                in_domain = summary.get("n_in_domain")
+                out_of_domain = summary.get("n_out_of_domain")
+                invalid = summary.get("n_invalid_features")
             if in_domain is None and row_count is not None and out_of_domain is not None:
                 try:
                     in_domain = max(0, int(row_count) - int(out_of_domain) - int(invalid or 0))
@@ -700,10 +729,7 @@ def _outlier_selection_annotation_facts(outliers: Mapping[str, Any]) -> Dict[str
     persisted = _read_local_json_mapping(
         outliers.get("summary_path") or artifacts.get("summary_path")
     )
-    return _mapping(
-        outliers.get("selection_annotations")
-        or persisted.get("selection_annotations")
-    )
+    return _mapping(outliers.get("selection_annotations") or persisted.get("selection_annotations"))
 
 
 def _normalized_activity_cliff_facts(result: Mapping[str, Any]) -> Dict[str, Any]:
@@ -872,7 +898,8 @@ def _normalized_outlier_facts(result: Mapping[str, Any]) -> Dict[str, Any]:
     selection_annotations = _outlier_selection_annotation_facts(outliers)
     return _json_safe(
         {
-            "status": outliers.get("status") or ("completed" if outliers.get("enabled") else "skipped"),
+            "status": outliers.get("status")
+            or ("completed" if outliers.get("enabled") else "skipped"),
             "enabled": outliers.get("enabled"),
             "reason": outliers.get("reason"),
             "config": outliers.get("config"),
@@ -908,30 +935,41 @@ def _compact_fold_and_campaign_facts(result: Mapping[str, Any]) -> Dict[str, Any
                     "repeat_index": run.get("repeat_index"),
                     "seed": run.get("seed"),
                     "metrics": run.get("metrics"),
-                    "selection_validation": {
-                        key: selection.get(key)
-                        for key in ("label", "objective", "metrics", "applicability_domain_used")
-                        if selection.get(key) is not None
-                    }
-                    if selection
-                    else None,
+                    "selection_validation": (
+                        {
+                            key: selection.get(key)
+                            for key in (
+                                "label",
+                                "objective",
+                                "metrics",
+                                "applicability_domain_used",
+                            )
+                            if selection.get(key) is not None
+                        }
+                        if selection
+                        else None
+                    ),
                     "selected_hyperparameters": run.get("selected_hyperparameters"),
-                    "tuning": {
-                        "engine": tuning.get("engine"),
-                        "requested_trials": tuning.get("requested_trials"),
-                        "completed_trials": tuning.get("completed_trials"),
-                        "failed_trials": tuning.get("failed_trials"),
-                        "best_trial": {
-                            key: best_trial.get(key)
-                            for key in ("number", "value", "params")
-                            if best_trial.get(key) is not None
-                        },
-                    }
-                    if tuning
-                    else None,
-                    "outlier_analysis": _normalized_outlier_facts({"outlier_analysis": run.get("outlier_analysis")})
-                    if run.get("outlier_analysis")
-                    else None,
+                    "tuning": (
+                        {
+                            "engine": tuning.get("engine"),
+                            "requested_trials": tuning.get("requested_trials"),
+                            "completed_trials": tuning.get("completed_trials"),
+                            "failed_trials": tuning.get("failed_trials"),
+                            "best_trial": {
+                                key: best_trial.get(key)
+                                for key in ("number", "value", "params")
+                                if best_trial.get(key) is not None
+                            },
+                        }
+                        if tuning
+                        else None
+                    ),
+                    "outlier_analysis": (
+                        _normalized_outlier_facts({"outlier_analysis": run.get("outlier_analysis")})
+                        if run.get("outlier_analysis")
+                        else None
+                    ),
                 }
             )
         )
@@ -970,31 +1008,40 @@ def _compact_fold_and_campaign_facts(result: Mapping[str, Any]) -> Dict[str, Any
             }
         ),
         "folds": folds,
-        "campaign": _json_safe(
-            {
-                "type": result.get("campaign_type"),
-                "recommended_candidate": result.get("recommended_candidate"),
-                "recommended_representation_name": result.get("recommended_representation_name"),
-                "candidate_count": len(candidates),
-                "duration_seconds": result.get("campaign_duration_seconds"),
-                "candidates": candidates,
-            }
-        )
-        if candidates or result.get("campaign_type")
-        else {},
+        "campaign": (
+            _json_safe(
+                {
+                    "type": result.get("campaign_type"),
+                    "recommended_candidate": result.get("recommended_candidate"),
+                    "recommended_representation_name": result.get(
+                        "recommended_representation_name"
+                    ),
+                    "candidate_count": len(candidates),
+                    "duration_seconds": result.get("campaign_duration_seconds"),
+                    "candidates": candidates,
+                }
+            )
+            if candidates or result.get("campaign_type")
+            else {}
+        ),
     }
 
 
 def _evaluation_scope(result: Mapping[str, Any], *, metrics_status: str) -> Dict[str, Any]:
     strategy_type = str(result.get("validation_strategy_type") or "").lower()
     strategy = _mapping(result.get("validation_strategy"))
-    ad_summaries = _mapping(_mapping(result.get("applicability_domain")).get("split_score_summaries"))
+    ad_summaries = _mapping(
+        _mapping(result.get("applicability_domain")).get("split_score_summaries")
+    )
     has_external_test = bool(
         result.get("test_count")
         or _mapping(ad_summaries.get("test"))
         or strategy.get("outer_test_size")
     )
-    if metrics_status == "not_evaluated" or str(result.get("validation_protocol") or "").lower() == "full_train":
+    if (
+        metrics_status == "not_evaluated"
+        or str(result.get("validation_protocol") or "").lower() == "full_train"
+    ):
         return {
             "scope": "none",
             "heading_key": "no_internal_evaluation",
@@ -1030,7 +1077,9 @@ def _training_report_facts(result: Mapping[str, Any], *, metrics_status: str) ->
                 "task_type": result.get("task_type"),
                 "curation": _normalized_curation_facts(result),
                 "activity_cliffs": _normalized_activity_cliff_facts(result),
-                "applicability_domain": _normalized_ad_facts(result.get("applicability_domain") or {}),
+                "applicability_domain": _normalized_ad_facts(
+                    result.get("applicability_domain") or {}
+                ),
             },
             "working_environment": {
                 "training_profile": result.get("training_profile"),
@@ -1115,7 +1164,10 @@ def build_training_reporting_handoff(result: Mapping[str, Any]) -> Dict[str, Any
         f"- Cibles: `{', '.join(map(str, result.get('target_columns') or [])) or 'non specifie'}`",
         f"- Strategie: `{protocol or 'non specifie'}`",
     ]
-    if any(result.get(key) is not None for key in ("effective_train_count", "validation_count", "test_count")):
+    if any(
+        result.get(key) is not None
+        for key in ("effective_train_count", "validation_count", "test_count")
+    ):
         protocol_lines.append(
             "- Split: "
             f"train={result.get('effective_train_count')}, "

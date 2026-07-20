@@ -37,10 +37,24 @@ SERVER_INSTRUCTIONS = (
     "needs_external_llm, chembl_retrieval_judge for row filtering. Review write actions."
 )
 
+QSARIA_SERVER_INSTRUCTIONS = (
+    "Qsaria MCP is a deterministic scientific execution surface. Codex is "
+    "the sole coordinator; this server never runs an LLM or an Agno team. "
+    "Start with qsaria_bootstrap. Create a new experiment for scientific "
+    "work that writes artifacts, or explicitly open one by experiment_id. "
+    "Sub-agents report only to the coordinator and never call one another. "
+    "Structured artifacts outrank structured handoffs, narrative reports, "
+    "and coordinator interpretation. Never bypass a terminal scientific "
+    "failure by silently changing the data or method."
+)
+
+_PROFILES = {"full", "qsaria"}
+
 
 def build_server(
     ctx: MCPAgentContext,
     *,
+    profile: str = "full",
     include_tools: bool = True,
     include_chatgpt_compat: bool = True,
     include_prompts: bool = True,
@@ -65,6 +79,16 @@ def build_server(
     disable_dns_rebinding_protection: bool = False,
 ) -> Any:
     """Create and configure the FastMCP server instance."""
+
+    if profile not in _PROFILES:
+        raise ValueError(f"Unknown MCP profile: {profile!r}")
+    if profile == "qsaria":
+        if ctx.llm_policy != "disabled" or ctx.model is not None:
+            raise ValueError("The Qsaria MCP profile requires llm_policy='disabled' and no model.")
+        include_chatgpt_compat = False
+        include_prompts = False
+        include_resources = False
+        enable_agno_team_tool = False
 
     require_mcp()
 
@@ -126,8 +150,8 @@ def build_server(
         )
 
     server = _CsCopilotFastMCP(
-        name="cs_copilot",
-        instructions=SERVER_INSTRUCTIONS,
+        name="qsaria" if profile == "qsaria" else "cs_copilot",
+        instructions=(QSARIA_SERVER_INSTRUCTIONS if profile == "qsaria" else SERVER_INSTRUCTIONS),
         host=host,
         port=port,
         mount_path=mount_path,
@@ -151,7 +175,7 @@ def build_server(
     if include_tools:
         if include_chatgpt_compat:
             _register_chatgpt_compat_tools(server, ToolAnnotations)
-        _register_tools(server, ctx, ToolAnnotations)
+        _register_tools(server, ctx, ToolAnnotations, profile=profile)
         if enable_agno_team_tool:
             _register_agno_team_tool(server, ctx, ToolAnnotations)
     if include_prompts:
@@ -160,18 +184,44 @@ def build_server(
     return server
 
 
-def _register_tools(server: Any, ctx: MCPAgentContext, tool_annotations_cls: Any) -> None:
+def _register_tools(
+    server: Any,
+    ctx: MCPAgentContext,
+    tool_annotations_cls: Any,
+    *,
+    profile: str = "full",
+) -> None:
     from .tool_adapter import build_tool
     from .tools_registry import iter_specs
 
+    qsaria_manager = None
+    qsaria_facade = None
+    if profile == "qsaria":
+        from .qsaria.experiments import ExperimentManager
+        from .qsaria.facade import ExperimentFacade
+
+        qsaria_manager = ExperimentManager()
+        qsaria_facade = ExperimentFacade(qsaria_manager)
+
     registered: set[str] = set()
-    for spec in iter_specs():
+    for spec in iter_specs(profile=profile):
         if spec.mcp_name in registered:
             logger.warning("Duplicate MCP tool name skipped: %s", spec.mcp_name)
             continue
         try:
-            instance = spec.toolkit_factory()
+            if profile == "qsaria":
+                from .qsaria.lifecycle_adapter import is_qsaria_lifecycle_spec
+
+                instance = (
+                    qsaria_facade if is_qsaria_lifecycle_spec(spec) else spec.toolkit_factory()
+                )
+            else:
+                instance = spec.toolkit_factory()
         except Exception as exc:  # noqa: BLE001
+            if profile == "qsaria":
+                raise RuntimeError(
+                    f"Required Qsaria MCP tool {spec.mcp_name!r} could not be constructed"
+                ) from exc
             logger.warning(
                 "Skipping MCP tool %s: factory %s raised %s",
                 spec.mcp_name,
@@ -179,7 +229,21 @@ def _register_tools(server: Any, ctx: MCPAgentContext, tool_annotations_cls: Any
                 exc,
             )
             continue
-        tool_fn = build_tool(spec, instance, ctx)
+        if profile == "qsaria":
+            from .qsaria.adapter import build_qsaria_tool, is_qsaria_spec
+            from .qsaria.lifecycle_adapter import (
+                build_qsaria_lifecycle_tool,
+                is_qsaria_lifecycle_spec,
+            )
+
+            if is_qsaria_spec(spec):
+                tool_fn = build_qsaria_tool(spec, instance, qsaria_manager)
+            elif is_qsaria_lifecycle_spec(spec):
+                tool_fn = build_qsaria_lifecycle_tool(spec, qsaria_facade)
+            else:  # pragma: no cover - protected by the profile registry contract
+                raise TypeError(f"Unsupported Qsaria tool spec: {spec!r}")
+        else:
+            tool_fn = build_tool(spec, instance, ctx)
         server.add_tool(
             tool_fn,
             name=spec.mcp_name,
@@ -190,7 +254,7 @@ def _register_tools(server: Any, ctx: MCPAgentContext, tool_annotations_cls: Any
                 destructive=spec.destructive,
                 open_world=spec.open_world,
             ),
-            structured_output=False,
+            structured_output=True if profile == "qsaria" else False,
         )
         registered.add(spec.mcp_name)
     logger.info("Registered %d MCP tools", len(registered))

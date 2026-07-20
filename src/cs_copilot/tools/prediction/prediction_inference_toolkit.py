@@ -85,6 +85,7 @@ class PredictionInferenceToolkit(Toolkit):
         preds_path: Optional[str] = None,
         return_uncertainty: bool = False,
         agent: Optional[Agent] = None,
+        materialized_input_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run prediction from a CSV file and persist the result path in session state."""
         if agent is None:
@@ -131,7 +132,11 @@ class PredictionInferenceToolkit(Toolkit):
             df["smiles"] = df[smiles_found]
             df = df.drop(columns=[smiles_found])
 
-        local_input = (Path(".files") / "prediction_inputs" / f"{model_id}_input.csv").resolve()
+        local_input = (
+            Path(materialized_input_path).expanduser()
+            if materialized_input_path
+            else (Path(".files") / "prediction_inputs" / f"{model_id}_input.csv").resolve()
+        )
         local_input.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(local_input, index=False)
 
@@ -217,6 +222,7 @@ class PredictionInferenceToolkit(Toolkit):
         preds_path: Optional[str] = None,
         return_uncertainty: bool = False,
         agent: Optional[Agent] = None,
+        input_csv_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run prediction from an in-memory list of SMILES by materializing a temporary CSV."""
         if agent is None:
@@ -225,7 +231,11 @@ class PredictionInferenceToolkit(Toolkit):
         if not smiles:
             raise ValueError("At least one SMILES string is required")
 
-        input_path = Path(".files") / "prediction_inputs" / f"{model_id}_smiles_input.csv"
+        input_path = (
+            Path(input_csv_path).expanduser()
+            if input_csv_path
+            else Path(".files") / "prediction_inputs" / f"{model_id}_smiles_input.csv"
+        )
         input_path.parent.mkdir(parents=True, exist_ok=True)
         df = pd.DataFrame({"smiles": smiles})
         df = standardize_smiles_column(df, "smiles")
@@ -238,6 +248,7 @@ class PredictionInferenceToolkit(Toolkit):
             preds_path=preds_path,
             return_uncertainty=return_uncertainty,
             agent=agent,
+            materialized_input_path=(str(input_path) if input_csv_path else None),
         )
         result["num_smiles"] = len(smiles)
         return result

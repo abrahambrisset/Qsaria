@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-
 STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"

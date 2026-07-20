@@ -25,24 +25,24 @@ from cs_copilot.tools.activity_cliffs import (
     split_activity_cliff_args,
 )
 
-from .backend import PredictionExecutionError, PredictionTaskSpec
 from .applicability_domain import fit_modern_applicability_domain, score_modern_applicability_domain
+from .backend import PredictionExecutionError, PredictionTaskSpec
 from .hyperparameter_tuning import normalize_tuning_config
 from .outlier_analysis import (
     attach_activity_cliff_annotations,
     attach_ad_annotations,
     normalize_outlier_analysis_config,
-    selection_predictions_from_frame,
     select_outliers,
+    selection_predictions_from_frame,
     write_outlier_analysis_artifacts,
     write_outlier_variant_comparison,
 )
+from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
 )
-from .qsar_progress import apply_progress_update
 from .qsar_training_policy import (
     assess_protocol_results,
     describe_compute_environment,
@@ -199,7 +199,9 @@ class TabICLToolkit(Toolkit):
 
         with tempfile.TemporaryDirectory(prefix="qsaria_outlier_tabicl_") as temporary_dir:
             temporary_ad = fit_modern_applicability_domain(
-                feature_frame=source_df.iloc[train_indices][resolved_features].reset_index(drop=True),
+                feature_frame=source_df.iloc[train_indices][resolved_features].reset_index(
+                    drop=True
+                ),
                 feature_columns=resolved_features,
                 output_dir=Path(temporary_dir) / "applicability_domain",
                 model_id="tabicl_outlier_selection",
@@ -214,7 +216,9 @@ class TabICLToolkit(Toolkit):
                 similarity_threshold_percentile=similarity_threshold_percentile,
             )
             validation_ad = score_modern_applicability_domain(
-                feature_frame=source_df.iloc[validation_indices][resolved_features].reset_index(drop=True),
+                feature_frame=source_df.iloc[validation_indices][resolved_features].reset_index(
+                    drop=True
+                ),
                 applicability_domain=temporary_ad,
                 row_indices=validation_indices,
             )
@@ -271,16 +275,20 @@ class TabICLToolkit(Toolkit):
         ]
 
         def _fit_variant(variant_id: str, train_indices_for_variant: List[int]) -> Dict[str, Any]:
-            payload = [{
-                "train": train_indices_for_variant,
-                **({"test": test_indices} if test_indices else {}),
-                "metadata": {
-                    **dict(split.get("metadata") or {}),
-                    "refit_on_train_validation": True,
-                    "outlier_variant": variant_id,
-                    "removed_source_row_indices": selected_indices if variant_id == "outlier_filtered" else [],
-                },
-            }]
+            payload = [
+                {
+                    "train": train_indices_for_variant,
+                    **({"test": test_indices} if test_indices else {}),
+                    "metadata": {
+                        **dict(split.get("metadata") or {}),
+                        "refit_on_train_validation": True,
+                        "outlier_variant": variant_id,
+                        "removed_source_row_indices": (
+                            selected_indices if variant_id == "outlier_filtered" else []
+                        ),
+                    },
+                }
+            ]
             run = self.backend.train_model(
                 train_csv=train_csv,
                 output_dir=str(output_dir / "outlier_variants" / variant_id),
@@ -301,21 +309,31 @@ class TabICLToolkit(Toolkit):
         try:
             if progress_callback is not None:
                 progress_callback("Training baseline refit", {"detail": "train + validation"})
-            variants.append({"variant_id": "baseline", "run": _fit_variant("baseline", development_indices)})
+            variants.append(
+                {"variant_id": "baseline", "run": _fit_variant("baseline", development_indices)}
+            )
         except Exception as exc:
             raise PredictionExecutionError(f"TabICL baseline outlier refit failed: {exc}") from exc
         if selected_indices:
-            filtered_indices = [value for value in development_indices if value not in set(selected_indices)]
+            filtered_indices = [
+                value for value in development_indices if value not in set(selected_indices)
+            ]
             try:
                 if progress_callback is not None:
                     progress_callback(
-                        "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
+                        "Training filtered refit",
+                        {"detail": f"{len(selected_indices)} rows removed"},
                     )
                 variants.append(
-                    {"variant_id": "outlier_filtered", "run": _fit_variant("outlier_filtered", filtered_indices)}
+                    {
+                        "variant_id": "outlier_filtered",
+                        "run": _fit_variant("outlier_filtered", filtered_indices),
+                    }
                 )
             except Exception as exc:
-                variants.append({"variant_id": "outlier_filtered", "status": "failed", "reason": str(exc)})
+                variants.append(
+                    {"variant_id": "outlier_filtered", "status": "failed", "reason": str(exc)}
+                )
 
         comparison_path = write_outlier_variant_comparison(
             output_dir=analysis_dir,
@@ -331,13 +349,19 @@ class TabICLToolkit(Toolkit):
                 "selection_predictions_path": artifacts.get("selection_predictions_path"),
                 "filtered_development_path": artifacts.get("filtered_development_path"),
                 "plot_artifacts": {
-                    key: value for key, value in artifacts.items() if key.startswith("outlier_selection_")
+                    key: value
+                    for key, value in artifacts.items()
+                    if key.startswith("outlier_selection_")
                 },
                 "comparison_path": comparison_path,
                 "test_comparison_policy": "descriptive_only_no_automatic_winner",
                 "selected_source_row_indices": selected_indices,
                 "variants": [
-                    {"variant_id": item["variant_id"], "status": item.get("status", "completed"), "reason": item.get("reason")}
+                    {
+                        "variant_id": item["variant_id"],
+                        "status": item.get("status", "completed"),
+                        "reason": item.get("reason"),
+                    }
                     for item in variants
                 ],
             },
@@ -1233,7 +1257,9 @@ class TabICLToolkit(Toolkit):
         if requested_similarity_top_k is not None:
             requested_extra_args["similarity_top_k_neighbors"] = requested_similarity_top_k
         if requested_similarity_percentile is not None:
-            requested_extra_args["similarity_threshold_percentile"] = requested_similarity_percentile
+            requested_extra_args["similarity_threshold_percentile"] = (
+                requested_similarity_percentile
+            )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
             "activity_cliff_feedback": activity_cliff_feedback,
@@ -1374,7 +1400,6 @@ class TabICLToolkit(Toolkit):
         # The worker already produced the train-only validation predictions.
         # Reuse them as selection evidence; only the two final refits run in
         # the parent process, with exactly the same direct TabICL parameters.
-        is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         if outlier_config.enabled and outlier_skip_reason is None:
             with S3.open(train_csv, "r") as fh:
                 source_df = strip_unnamed_columns(pd.read_csv(fh))
@@ -1388,7 +1413,11 @@ class TabICLToolkit(Toolkit):
                 split = split_payload[0] if split_payload else {}
                 validation_indices = split.get("val") or split.get("validation") or []
                 prediction_path = split_result.get("validation_predictions_path")
-                if not validation_indices or not prediction_path or not Path(str(prediction_path)).exists():
+                if (
+                    not validation_indices
+                    or not prediction_path
+                    or not Path(str(prediction_path)).exists()
+                ):
                     outlier_study["studies"].append(
                         {
                             "split_label": split_result.get("strategy_label"),
@@ -1417,9 +1446,7 @@ class TabICLToolkit(Toolkit):
                             if key not in {"seed_policy", "split_payload", "validation_strategy"}
                         },
                         "feature_columns": list(
-                            normalized_feature_columns
-                            or split_result.get("feature_columns")
-                            or []
+                            normalized_feature_columns or split_result.get("feature_columns") or []
                         ),
                         "random_state": int(split_result.get("seed") or 0),
                         "validation_protocol": protocol_policy["protocol"],

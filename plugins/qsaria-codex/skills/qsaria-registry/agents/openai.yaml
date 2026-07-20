@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Registry"
+  short_description: "Govern persisted Qsaria models and ensembles"
+  default_prompt: "Use $qsaria-registry to inspect, persist, or compare Qsaria models."
+policy:
+  allow_implicit_invocation: false

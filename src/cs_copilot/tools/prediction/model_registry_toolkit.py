@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import replace
@@ -380,6 +381,42 @@ def _canonical_model_id(
         parts.append(safe_slug(representation))
     parts.extend([safe_slug(version_token), date_token, time_token])
     return "_".join(parts)
+
+
+def _collision_safe_model_id(
+    base_model_id: str,
+    *,
+    current: PredictionModelRecord,
+    catalog: PredictionModelCatalog,
+) -> str:
+    """Preserve legacy IDs when free and deterministically isolate collisions."""
+
+    catalog_records = {record.model_id: record for record in catalog.list_models()}
+    current_path = Path(current.model_path).expanduser().resolve()
+
+    def occupied(model_id: str) -> bool:
+        return model_id in catalog_records or (DEFAULT_INTERNAL_MODEL_ROOT / model_id).exists()
+
+    def same_persisted_model(model_id: str) -> bool:
+        existing = catalog_records.get(model_id)
+        if existing is not None:
+            return Path(existing.model_path).expanduser().resolve() == current_path
+        model_root = (DEFAULT_INTERNAL_MODEL_ROOT / model_id).resolve()
+        return current_path.is_relative_to(model_root)
+
+    if not occupied(base_model_id) or same_persisted_model(base_model_id):
+        return base_model_id
+
+    source_token = f"{Path(current.model_path).expanduser().resolve()}|{current.model_id}"
+    suffix = hashlib.sha256(source_token.encode("utf-8")).hexdigest()[:10]
+    candidate = f"{base_model_id}_{suffix}"
+    if not occupied(candidate) or same_persisted_model(candidate):
+        return candidate
+
+    counter = 2
+    while occupied(f"{candidate}_{counter}"):
+        counter += 1
+    return f"{candidate}_{counter}"
 
 
 def _canonical_display_name(
@@ -1704,6 +1741,11 @@ class ModelRegistryToolkit(Toolkit):
             version=str(resolved_version),
             trained_at=trained_at,
         )
+        canonical_model_id = _collision_safe_model_id(
+            canonical_model_id,
+            current=current,
+            catalog=self.catalog,
+        )
         canonical_display_name = _canonical_display_name(
             endpoint=endpoint_name,
             dataset=dataset_name,
@@ -1754,15 +1796,11 @@ class ModelRegistryToolkit(Toolkit):
             "split_results": summary_payload.get("split_results") or [],
             "ad_manifest_path": resolved_applicability_domain.get("manifest_path"),
             "ad_bounds_path": resolved_applicability_domain.get("bounds_path")
-            or (
-                resolved_bounding_box.get("bounds_path")
-            ),
+            or (resolved_bounding_box.get("bounds_path")),
             "ad_isolation_forest_model_path": resolved_applicability_domain.get(
                 "isolation_forest_model_path"
             )
-            or (
-                resolved_isolation_forest.get("model_path")
-            ),
+            or (resolved_isolation_forest.get("model_path")),
             "ad_scores_train_path": resolved_applicability_domain.get("scores_train_path"),
             "ad_scores_validation_path": resolved_applicability_domain.get(
                 "scores_validation_path"

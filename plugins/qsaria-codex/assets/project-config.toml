@@ -1,0 +1,27 @@
+# Merge this section into .codex/config.toml for the repository pilot.
+# The install_project_agents.py script copies only the five files below; it
+# intentionally does not mutate the project configuration.
+
+[agents]
+max_threads = 5
+max_depth = 1
+
+[agents.qsaria_curation]
+description = "Curate and verify molecular datasets for Qsaria workflows."
+config_file = "agents/qsaria_curation.toml"
+
+[agents.qsaria_training]
+description = "Train and validate Qsaria models from curated data."
+config_file = "agents/qsaria_training.toml"
+
+[agents.qsaria_registry]
+description = "Inspect and govern the Qsaria model catalog and ensembles."
+config_file = "agents/qsaria_registry.toml"
+
+[agents.qsaria_inference]
+description = "Run governed Qsaria prediction and external evaluation."
+config_file = "agents/qsaria_inference.toml"
+
+[agents.qsaria_report]
+description = "Write one final evidence-first report for a Qsaria experiment."
+config_file = "agents/qsaria_report.toml"

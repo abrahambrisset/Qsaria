@@ -44,13 +44,14 @@ def test_backend_hyperparameter_contracts_expose_supported_engines_and_parameter
     assert lightgbm["supported_engines"] == ["optuna_tpe", "optuna_tpe_multivariate"]
     max_depth = next(item for item in lightgbm["parameters"] if item["name"] == "max_depth")
     assert max_depth["search_space"] == {"type": "int", "low": 4, "high": 12}
-    assert {
-        item["name"] for item in lightgbm["parameters"] if item["default_tuning"]
-    } == {"n_estimators", "learning_rate", "max_depth", "num_leaves"}
+    assert {item["name"] for item in lightgbm["parameters"] if item["default_tuning"]} == {
+        "n_estimators",
+        "learning_rate",
+        "max_depth",
+        "num_leaves",
+    }
     assert chemprop["default_engine"] == "chemprop_hpopt_hyperopt"
-    assert {
-        item["name"] for item in chemprop["parameters"] if item["default_tuning"]
-    } == {
+    assert {item["name"] for item in chemprop["parameters"] if item["default_tuning"]} == {
         "depth",
         "message_hidden_dim",
         "ffn_hidden_dim",
@@ -195,13 +196,19 @@ def test_tuning_progress_plot_persists_trial_metrics_and_incumbent(tmp_path):
                 "number": 0,
                 "state": "complete",
                 "objective": 1.3,
-                "metrics": {"all": {"r2": 0.4, "rmse": 1.5, "mae": 1.1}, "in_domain": {"rmse": 1.3}},
+                "metrics": {
+                    "all": {"r2": 0.4, "rmse": 1.5, "mae": 1.1},
+                    "in_domain": {"rmse": 1.3},
+                },
             },
             {
                 "number": 1,
                 "state": "complete",
                 "objective": 1.0,
-                "metrics": {"all": {"r2": 0.6, "rmse": 1.2, "mae": 0.9}, "in_domain": {"rmse": 1.0}},
+                "metrics": {
+                    "all": {"r2": 0.6, "rmse": 1.2, "mae": 0.9},
+                    "in_domain": {"rmse": 1.0},
+                },
             },
         ],
     }
@@ -519,7 +526,9 @@ def test_chemprop_cluster_holdout_builds_transient_molecular_descriptors(tmp_pat
     assert len(split["train"]) + len(split["val"]) + len(split["test"]) == len(molecules)
 
 
-def test_chemprop_backend_keeps_supported_architecture_and_schedule_arguments(tmp_path, monkeypatch):
+def test_chemprop_backend_keeps_supported_architecture_and_schedule_arguments(
+    tmp_path, monkeypatch
+):
     source = tmp_path / "source.csv"
     source.write_text("smiles,target\nCCO,1.0\nCCN,2.0\nCCC,3.0\n")
     backend = ChempropBackend()

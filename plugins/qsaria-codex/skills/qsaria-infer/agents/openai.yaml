@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Inference"
+  short_description: "Run governed predictions with Qsaria models"
+  default_prompt: "Use $qsaria-infer to predict or evaluate compounds with a persisted Qsaria model."
+policy:
+  allow_implicit_invocation: false

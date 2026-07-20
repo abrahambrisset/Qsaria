@@ -1,6 +1,21 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+
+
+def _catalog_record(model_id, model_path):
+    return PredictionModelRecord(
+        model_id=model_id,
+        backend_name="lightgbm",
+        model_path=str(model_path),
+        task=PredictionTaskSpec(
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["target"],
+        ),
+    )
 
 
 def test_catalog_load_bootstraps_missing_local_catalog(monkeypatch, tmp_path):
@@ -13,6 +28,19 @@ def test_catalog_load_bootstraps_missing_local_catalog(monkeypatch, tmp_path):
     assert catalog.schema_version == 2
     assert catalog_path.exists()
     assert catalog_path.read_text() == '{\n  "schema_version": 2,\n  "models": []\n}\n'
+
+
+def test_catalog_load_existing_is_lock_free(monkeypatch, tmp_path):
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", tmp_path / "internal")
+    catalog_path = tmp_path / "model_catalog.json"
+    catalog_path.write_text('{"schema_version": 2, "models": []}\n')
+    lock_path = catalog_module.model_catalog_lock_path(catalog_path)
+
+    assert not lock_path.exists()
+    catalog = PredictionModelCatalog.load(str(catalog_path))
+
+    assert catalog.records == []
+    assert not lock_path.exists()
 
 
 def test_prediction_model_record_roundtrip_with_catalog_metadata():
@@ -136,3 +164,22 @@ def test_catalog_search_excludes_missing_paths_by_default(tmp_path):
     catalog = PredictionModelCatalog.load(str(catalog_path))
 
     assert catalog.search(task_type="regression") == []
+
+
+def test_stale_catalog_instances_merge_concurrent_upserts(monkeypatch, tmp_path):
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", tmp_path / "internal")
+    catalog_path = tmp_path / "model_catalog.json"
+    first = PredictionModelCatalog.load(str(catalog_path))
+    second = PredictionModelCatalog.load(str(catalog_path))
+    records = [
+        _catalog_record("model_first", tmp_path / "first.pkl"),
+        _catalog_record("model_second", tmp_path / "second.pkl"),
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pairs = zip((first, second), records, strict=True)
+        list(pool.map(lambda pair: pair[0].upsert_model(pair[1]), pairs))
+
+    persisted = PredictionModelCatalog.load(str(catalog_path))
+    assert [record.model_id for record in persisted.records] == ["model_first", "model_second"]
+    assert not list(tmp_path.glob(".model_catalog.json.*.tmp"))

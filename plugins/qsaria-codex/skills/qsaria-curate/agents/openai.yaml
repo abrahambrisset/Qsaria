@@ -1,0 +1,6 @@
+interface:
+  display_name: "Qsaria Curation"
+  short_description: "Curate molecular datasets for reliable QSAR work"
+  default_prompt: "Use $qsaria-curate to inspect and curate this dataset for QSAR modeling."
+policy:
+  allow_implicit_invocation: false

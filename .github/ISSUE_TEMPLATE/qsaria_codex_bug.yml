@@ -1,0 +1,91 @@
+name: Qsaria Codex / MCP Bug
+description: Report a reproducible Qsaria Codex agent, skill, or deterministic MCP integration defect
+title: "[Qsaria Codex] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form after the coordinator could not complete the same scientific mission with existing deterministic MCP tools. Remove private data, credentials, absolute home paths, and confidential scientific results.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Coordinator routing or recovery
+        - Curation agent or MCP facade
+        - Training agent or MCP facade
+        - Registry agent or MCP facade
+        - Inference agent or MCP facade
+        - Report agent or MCP facade
+        - Plugin packaging or MCP startup
+    validations:
+      required: true
+
+  - type: input
+    id: experiment
+    attributes:
+      label: Experiment ID
+      description: Use the explicit exp_... identifier, or state that no experiment was created.
+      placeholder: exp_...
+
+  - type: textarea
+    id: intent
+    attributes:
+      label: Original scientific intent
+      description: Describe the requested workflow without attaching the dataset.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      placeholder: |
+        Expected:
+        Actual:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include the affected agent, exact MCP tool, and sanitized arguments or artifact IDs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: recovery
+    attributes:
+      label: Manual recovery attempted
+      description: List the existing deterministic MCP calls attempted and their statuses. Do not describe source patches as recovery.
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and runtime
+      placeholder: |
+        Qsaria version:
+        Plugin version:
+        Contract version:
+        MCP profile and llm_policy:
+        Fresh Codex task reproduced: yes/no
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized error and evidence
+      description: Include the exact error, handoff status, artifact IDs, and repository-relative paths only.
+      render: shell
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed credentials, private datasets, model binaries, absolute home paths, and confidential scientific results.
+          required: true

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_main_loads_dotenv_before_bootstrap(monkeypatch):
     from cs_copilot.mcp import __main__ as entrypoint
@@ -53,3 +55,48 @@ def test_main_loads_dotenv_before_bootstrap(monkeypatch):
         "bootstrap",
     ]
     assert calls[-2:] == ["build_server", "run:stdio"]
+
+
+def test_qsaria_profile_forces_disabled_llm_and_isolated_surface(monkeypatch):
+    from cs_copilot.mcp import __main__ as entrypoint
+    from cs_copilot.mcp import server as server_module
+
+    observed: dict[str, object] = {}
+
+    class FakeServer:
+        def run(self, transport: str, **kwargs) -> None:
+            observed["transport"] = transport
+
+    def fake_bootstrap(config):
+        observed["config"] = config
+        return object()
+
+    def fake_build_server(*args, **kwargs):
+        observed["server_kwargs"] = kwargs
+        return FakeServer()
+
+    monkeypatch.setattr(entrypoint, "load_dotenv", lambda: None)
+    monkeypatch.setattr(entrypoint, "require_mcp", lambda: None)
+    monkeypatch.setattr(entrypoint, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(entrypoint, "apply_session_id", lambda _session_id: None)
+    monkeypatch.setattr(entrypoint, "bootstrap", fake_bootstrap)
+    monkeypatch.setattr(server_module, "build_server", fake_build_server)
+
+    entrypoint.main(["--profile", "qsaria", "--llm-policy", "agno-model"])
+
+    config = observed["config"]
+    assert config.llm_policy == "disabled"
+    kwargs = observed["server_kwargs"]
+    assert kwargs["profile"] == "qsaria"
+    assert kwargs["include_chatgpt_compat"] is False
+    assert kwargs["include_prompts"] is False
+    assert kwargs["include_resources"] is False
+    assert kwargs["enable_agno_team_tool"] is False
+    assert observed["transport"] == "stdio"
+
+
+def test_qsaria_profile_rejects_private_agno_team_tool():
+    from cs_copilot.mcp.__main__ import _parse_args
+
+    with pytest.raises(SystemExit):
+        _parse_args(["--profile", "qsaria", "--enable-agno-team-tool"])

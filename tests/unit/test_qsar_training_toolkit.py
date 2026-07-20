@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
@@ -144,16 +146,12 @@ def test_outlier_variants_are_exposed_as_independent_catalog_candidates(tmp_path
         item["registry_payload"]["training_data_summary"]["outlier_analysis"]["selected_count"] == 2
         for item in payloads
     )
-    assert (
-        payloads[0]["registry_payload"]["training_data_summary"]["artifact_sources"]
-        ["test_predictions_path"]
-        == str(baseline_test)
-    )
-    assert (
-        payloads[1]["registry_payload"]["training_data_summary"]["artifact_sources"]
-        ["test_predictions_path"]
-        == str(filtered_test)
-    )
+    assert payloads[0]["registry_payload"]["training_data_summary"]["artifact_sources"][
+        "test_predictions_path"
+    ] == str(baseline_test)
+    assert payloads[1]["registry_payload"]["training_data_summary"]["artifact_sources"][
+        "test_predictions_path"
+    ] == str(filtered_test)
 
 
 def test_compacted_candidate_payload_keeps_outlier_variant_provenance(tmp_path):
@@ -183,9 +181,7 @@ def test_compacted_candidate_payload_keeps_outlier_variant_provenance(tmp_path):
     }
 
     compact = _compact_training_tool_result(result)
-    summary = compact["candidate_registry_payloads"][0]["registry_payload"][
-        "training_data_summary"
-    ]
+    summary = compact["candidate_registry_payloads"][0]["registry_payload"]["training_data_summary"]
 
     assert summary["outlier_variant"] == "repeat_2_outlier_filtered"
     assert summary["outlier_analysis"] == {"selected_count": 3}
@@ -483,6 +479,62 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
     assert inference_profile["feature_columns_count"] == 64
 
 
+@pytest.mark.parametrize("backend_name", ["chemprop", "lightgbm"])
+def test_training_facade_forwards_explicit_bundle_destination(tmp_path, monkeypatch, backend_name):
+    toolkit = QSARTrainingToolkit()
+    captured: dict[str, object] = {}
+
+    if backend_name == "lightgbm":
+        monkeypatch.setattr(
+            toolkit,
+            "_prepare_tabular_training_dataset",
+            lambda **kwargs: {
+                "train_csv": str(tmp_path / "rdkit.csv"),
+                "feature_columns": ["feature_a"],
+                "feature_preparation": {
+                    "representation_name": kwargs["representation_name"],
+                    "durations": {"total_duration_seconds": 0.1, "steps": []},
+                },
+            },
+        )
+
+        def fake_train(**kwargs):
+            captured.update(kwargs)
+            return _fake_train_result(
+                tmp_path,
+                backend_name="lightgbm",
+                representation_name="rdkit_all",
+                validation_protocol=kwargs["validation_protocol"],
+            )
+
+        monkeypatch.setattr(toolkit.lightgbm_toolkit, "train_lightgbm_model", fake_train)
+    else:
+
+        def fake_train(**kwargs):
+            captured.update(kwargs)
+            return _fake_train_result(
+                tmp_path,
+                backend_name="chemprop",
+                representation_name="molecular_graph",
+                validation_protocol="standard_qsar",
+            )
+
+        monkeypatch.setattr(toolkit.chemprop_toolkit, "train_model", fake_train)
+
+    output_dir = tmp_path / "out"
+    bundle_dir = tmp_path / "bundles"
+    toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        backend_name=backend_name,
+        task_type="regression",
+        output_dir=str(output_dir),
+        target_columns=["Y"],
+        bundle_dir=str(bundle_dir),
+    )
+
+    assert captured["bundle_path"] == str((bundle_dir / "out_training_bundle.zip").resolve())
+
+
 def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     captured = {}
@@ -575,9 +627,10 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
     manifest = json.loads(Path(result["candidate_persistence_manifest"]["path"]).read_text())
     candidates = manifest["candidate_registry_payloads"]
     assert result["candidate_manifest_path"] == result["candidate_persistence_manifest"]["path"]
-    assert result["persistence_plan"]["candidate_manifest_path"] == result[
-        "candidate_persistence_manifest"
-    ]["path"]
+    assert (
+        result["persistence_plan"]["candidate_manifest_path"]
+        == result["candidate_persistence_manifest"]["path"]
+    )
     assert len(candidates) == 3
     assert "baseline_split_results" not in result
     assert "feature_csvs" not in result["feature_preparation"]
@@ -587,12 +640,7 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
         "random_repeat_2",
         "random_repeat_3",
     ]
-    assert (
-        len(
-            {item["registry_payload"]["model_id"] for item in candidates}
-        )
-        == 3
-    )
+    assert len({item["registry_payload"]["model_id"] for item in candidates}) == 3
 
 
 def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_path, monkeypatch):

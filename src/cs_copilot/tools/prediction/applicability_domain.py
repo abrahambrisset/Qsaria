@@ -141,7 +141,9 @@ def _coerce_numeric_frame(frame: pd.DataFrame, feature_columns: Sequence[str]) -
         pd.to_numeric(frame[str(column)], errors="coerce").rename(str(column))
         for column in feature_columns
     ]
-    return pd.concat(numeric_columns, axis=1) if numeric_columns else pd.DataFrame(index=frame.index)
+    return (
+        pd.concat(numeric_columns, axis=1) if numeric_columns else pd.DataFrame(index=frame.index)
+    )
 
 
 def normalize_ad_methods(methods: Optional[Sequence[str] | str]) -> List[str]:
@@ -216,9 +218,7 @@ def _summarize_scores(scores: pd.DataFrame) -> Dict[str, Any]:
         ],
         "method_status_summaries": {
             BOUNDING_BOX_METHOD: _status_summary(scores, "ad_bounding_box_status"),
-            ISOLATION_FOREST_METHOD: _status_summary(
-                scores, "ad_isolation_forest_status"
-            ),
+            ISOLATION_FOREST_METHOD: _status_summary(scores, "ad_isolation_forest_status"),
             SIMILARITY_MATRIX_METHOD: _status_summary(scores, "ad_similarity_status"),
         },
     }
@@ -535,8 +535,7 @@ def score_bounding_box_domain(
             "ad_method": BOUNDING_BOX_METHOD,
             "ad_methods": BOUNDING_BOX_METHOD,
             "ad_methods_out": [
-                BOUNDING_BOX_METHOD if status == AD_OUT_OF_DOMAIN else ""
-                for status in statuses
+                BOUNDING_BOX_METHOD if status == AD_OUT_OF_DOMAIN else "" for status in statuses
             ],
             "ad_violation_count": violation_counts,
             "ad_violating_features": violating_features,
@@ -743,8 +742,12 @@ def score_isolation_forest_domain(
         }
 
     method = (manifest.get("methods") or {}).get(ISOLATION_FOREST_METHOD) or {}
-    feature_names = [str(item) for item in method.get("feature_names") or manifest.get("feature_names") or []]
-    feature_kinds = [str(item) for item in method.get("feature_kinds") or manifest.get("feature_kinds") or []]
+    feature_names = [
+        str(item) for item in method.get("feature_names") or manifest.get("feature_names") or []
+    ]
+    feature_kinds = [
+        str(item) for item in method.get("feature_kinds") or manifest.get("feature_kinds") or []
+    ]
     expected_hash = str(method.get("schema_hash") or manifest.get("schema_hash") or "")
     if not feature_names:
         scores = _schema_mismatch_scores(
@@ -785,7 +788,12 @@ def score_isolation_forest_domain(
             reason=reason,
             method=ISOLATION_FOREST_METHOD,
         )
-        return {"available": False, "reason": reason, "scores": scores, "summary": _summarize_scores(scores)}
+        return {
+            "available": False,
+            "reason": reason,
+            "scores": scores,
+            "summary": _summarize_scores(scores),
+        }
 
     model_path = _isolation_forest_model_path_from_manifest(
         manifest,
@@ -800,14 +808,21 @@ def score_isolation_forest_domain(
             reason=reason,
             method=ISOLATION_FOREST_METHOD,
         )
-        return {"available": False, "reason": reason, "scores": scores, "summary": _summarize_scores(scores)}
+        return {
+            "available": False,
+            "reason": reason,
+            "scores": scores,
+            "summary": _summarize_scores(scores),
+        }
 
     estimator = joblib.load(model_path)
     values = _coerce_numeric_frame(feature_frame, feature_names).to_numpy(dtype=float)
     invalid = ~np.isfinite(values).all(axis=1)
     score_samples = np.full(len(feature_frame), np.nan, dtype=float)
     decisions = np.full(len(feature_frame), np.nan, dtype=float)
-    statuses = np.asarray([AD_INVALID_FEATURES if item else AD_IN_DOMAIN for item in invalid], dtype=object)
+    statuses = np.asarray(
+        [AD_INVALID_FEATURES if item else AD_IN_DOMAIN for item in invalid], dtype=object
+    )
     if (~invalid).any():
         valid_values = values[~invalid]
         score_samples[~invalid] = estimator.score_samples(valid_values)
@@ -832,8 +847,7 @@ def score_isolation_forest_domain(
             "ad_method": ISOLATION_FOREST_METHOD,
             "ad_methods": ISOLATION_FOREST_METHOD,
             "ad_methods_out": [
-                ISOLATION_FOREST_METHOD if status == AD_OUT_OF_DOMAIN else ""
-                for status in statuses
+                ISOLATION_FOREST_METHOD if status == AD_OUT_OF_DOMAIN else "" for status in statuses
             ],
             "ad_violation_count": [0] * len(feature_frame),
             "ad_violating_features": invalid_features,
@@ -887,9 +901,7 @@ def _normalize_similarity_top_k(value: int | str | None) -> int:
 
 def _normalize_similarity_percentile(value: float | str | None) -> float:
     try:
-        percentile = float(
-            DEFAULT_SIMILARITY_THRESHOLD_PERCENTILE if value is None else value
-        )
+        percentile = float(DEFAULT_SIMILARITY_THRESHOLD_PERCENTILE if value is None else value)
     except (TypeError, ValueError) as exc:
         raise ValueError("similarity_threshold_percentile must be a number in [0, 100].") from exc
     if not 0.0 <= percentile <= 100.0:
@@ -938,7 +950,9 @@ def _active_subspace_values(
         if fit_stats:
             mean = np.asarray(fit_stats.get("mean"), dtype=float)
             std = np.asarray(fit_stats.get("std"), dtype=float)
-            active_columns = [str(item) for item in fit_stats.get("feature_names") or active_columns]
+            active_columns = [
+                str(item) for item in fit_stats.get("feature_names") or active_columns
+            ]
             numeric = _coerce_numeric_frame(frame, active_columns)
             values = numeric.to_numpy(dtype=float)
         else:
@@ -946,13 +960,20 @@ def _active_subspace_values(
             std = np.nanstd(values, axis=0)
             finite_stats = np.isfinite(mean) & np.isfinite(std) & (std > 0.0)
             active_columns = [
-                column for column, keep in zip(active_columns, finite_stats) if bool(keep)
+                column
+                for column, keep in zip(active_columns, finite_stats, strict=True)
+                if bool(keep)
             ]
             values = values[:, finite_stats] if values.size else values
             mean = mean[finite_stats]
             std = std[finite_stats]
         if not active_columns:
-            return np.empty((len(frame), 0), dtype=float), [], np.zeros(len(frame), dtype=bool), stats
+            return (
+                np.empty((len(frame), 0), dtype=float),
+                [],
+                np.zeros(len(frame), dtype=bool),
+                stats,
+            )
         values = (values - mean) / std
         stats = {
             "feature_names": active_columns,
@@ -1016,7 +1037,9 @@ def _write_pairwise_matrix(
     matrix.flush()
 
 
-def _support_from_vector(values: np.ndarray, *, metric: str, top_k: int) -> Tuple[float, Any, float, float]:
+def _support_from_vector(
+    values: np.ndarray, *, metric: str, top_k: int
+) -> Tuple[float, Any, float, float]:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return np.nan, "", np.nan, np.nan
@@ -1074,9 +1097,7 @@ def fit_similarity_matrix_domain(
     percentile = _normalize_similarity_percentile(threshold_percentile)
     row_count = int(len(feature_frame))
     resolved_train_indices = [int(item) for item in (train_indices or range(row_count))]
-    resolved_train_indices = [
-        item for item in resolved_train_indices if 0 <= int(item) < row_count
-    ]
+    resolved_train_indices = [item for item in resolved_train_indices if 0 <= int(item) < row_count]
     if len(resolved_train_indices) < 2:
         return {
             "available": False,
@@ -1174,7 +1195,11 @@ def fit_similarity_matrix_domain(
                 "top_k_neighbors": top_k,
                 "threshold_percentile": percentile,
                 "threshold": threshold,
-                "support_score": "mean_top_k_tanimoto" if metric != "euclidean" else "inverse_one_plus_mean_top_k_distance",
+                "support_score": (
+                    "mean_top_k_tanimoto"
+                    if metric != "euclidean"
+                    else "inverse_one_plus_mean_top_k_distance"
+                ),
                 "decision_rule": "support_score_less_than_threshold_is_out_of_domain",
                 "standardization": fit_stats if fit_stats else None,
             }
@@ -1275,7 +1300,11 @@ def score_similarity_matrix_domain(
         }
 
     subspaces = method.get("subspaces") or {}
-    row_ids = [int(item) for item in row_indices] if row_indices is not None else [None] * len(feature_frame)
+    row_ids = (
+        [int(item) for item in row_indices]
+        if row_indices is not None
+        else [None] * len(feature_frame)
+    )
     per_subspace_scores: Dict[str, pd.DataFrame] = {}
     summaries: Dict[str, Any] = {}
     for subspace, subspace_payload in subspaces.items():
@@ -1428,7 +1457,9 @@ def score_similarity_matrix_domain(
             ";".join(
                 subspace
                 for subspace in per_subspace_scores
-                if scores.get(f"ad_similarity_{subspace}_status", pd.Series(dtype=object)).get(row_pos)
+                if scores.get(f"ad_similarity_{subspace}_status", pd.Series(dtype=object)).get(
+                    row_pos
+                )
                 == AD_OUT_OF_DOMAIN
             )
         )
@@ -1436,17 +1467,18 @@ def score_similarity_matrix_domain(
     scores["ad_method"] = SIMILARITY_MATRIX_METHOD
     scores["ad_methods"] = SIMILARITY_MATRIX_METHOD
     scores["ad_methods_out"] = [
-        SIMILARITY_MATRIX_METHOD if status == AD_OUT_OF_DOMAIN else ""
-        for status in statuses
+        SIMILARITY_MATRIX_METHOD if status == AD_OUT_OF_DOMAIN else "" for status in statuses
     ]
     scores["ad_similarity_status"] = statuses
     scores["ad_similarity_subspaces_out"] = out_subspaces
     support_columns = [
-        f"ad_similarity_{subspace}_support_score" for subspace in per_subspace_scores
+        f"ad_similarity_{subspace}_support_score"
+        for subspace in per_subspace_scores
         if f"ad_similarity_{subspace}_support_score" in scores.columns
     ]
     threshold_columns = [
-        f"ad_similarity_{subspace}_threshold" for subspace in per_subspace_scores
+        f"ad_similarity_{subspace}_threshold"
+        for subspace in per_subspace_scores
         if f"ad_similarity_{subspace}_threshold" in scores.columns
     ]
     if support_columns:
@@ -1466,7 +1498,11 @@ def score_similarity_matrix_domain(
     )
     for column in AD_COLUMNS:
         if column not in scores.columns:
-            scores[column] = np.nan if column.endswith(("score", "distance", "similarity", "threshold", "excess")) else ""
+            scores[column] = (
+                np.nan
+                if column.endswith(("score", "distance", "similarity", "threshold", "excess"))
+                else ""
+            )
     scores = scores[AD_COLUMNS]
     summary = _summarize_scores(scores)
     summary.update(
@@ -1526,13 +1562,15 @@ def has_modern_applicability_domain(applicability_domain: Mapping[str, Any]) -> 
     return bool(
         ad.get("manifest_path")
         or ad.get("methods")
-        or ad.get("primary_method") in {
+        or ad.get("primary_method")
+        in {
             BOUNDING_BOX_METHOD,
             ISOLATION_FOREST_METHOD,
             SIMILARITY_MATRIX_METHOD,
             COMBINED_METHOD,
         }
-        or ad.get("method") in {
+        or ad.get("method")
+        in {
             BOUNDING_BOX_METHOD,
             ISOLATION_FOREST_METHOD,
             SIMILARITY_MATRIX_METHOD,
@@ -1667,7 +1705,9 @@ def fit_modern_applicability_domain(
     manifest = {
         "available": True,
         "version": MODERN_AD_VERSION,
-        "primary_method": COMBINED_METHOD if len(method_payloads) > 1 else next(iter(method_payloads)),
+        "primary_method": (
+            COMBINED_METHOD if len(method_payloads) > 1 else next(iter(method_payloads))
+        ),
         "method": COMBINED_METHOD if len(method_payloads) > 1 else next(iter(method_payloads)),
         "model_id": model_id,
         "feature_space": feature_space,
@@ -1695,9 +1735,9 @@ def fit_modern_applicability_domain(
             "isolation_forest_offset"
         )
     if SIMILARITY_MATRIX_METHOD in method_payloads:
-        manifest["similarity_matrix_manifest_path"] = method_payloads[
-            SIMILARITY_MATRIX_METHOD
-        ].get("manifest_path")
+        manifest["similarity_matrix_manifest_path"] = method_payloads[SIMILARITY_MATRIX_METHOD].get(
+            "manifest_path"
+        )
         manifest["activity_cliffs_reusable"] = True
     if feature_metadata:
         manifest.update(dict(feature_metadata))
@@ -1749,21 +1789,34 @@ def _combine_modern_scores(method_scores: Mapping[str, pd.DataFrame]) -> pd.Data
             status = AD_UNAVAILABLE
         statuses.append(status)
         out_methods = []
-        if combined.get("ad_bounding_box_status", pd.Series(dtype=object)).get(row_index) == AD_OUT_OF_DOMAIN:
+        if (
+            combined.get("ad_bounding_box_status", pd.Series(dtype=object)).get(row_index)
+            == AD_OUT_OF_DOMAIN
+        ):
             out_methods.append(BOUNDING_BOX_METHOD)
-        if combined.get("ad_isolation_forest_status", pd.Series(dtype=object)).get(row_index) == AD_OUT_OF_DOMAIN:
+        if (
+            combined.get("ad_isolation_forest_status", pd.Series(dtype=object)).get(row_index)
+            == AD_OUT_OF_DOMAIN
+        ):
             out_methods.append(ISOLATION_FOREST_METHOD)
-        if combined.get("ad_similarity_status", pd.Series(dtype=object)).get(row_index) == AD_OUT_OF_DOMAIN:
+        if (
+            combined.get("ad_similarity_status", pd.Series(dtype=object)).get(row_index)
+            == AD_OUT_OF_DOMAIN
+        ):
             out_methods.append(SIMILARITY_MATRIX_METHOD)
         methods_out.append(";".join(out_methods))
 
     combined["ad_status"] = statuses
     combined["ad_methods_out"] = methods_out
-    combined["ad_violation_count"] = combined.get("ad_bounding_box_violation_count", pd.Series([0] * row_count))
+    combined["ad_violation_count"] = combined.get(
+        "ad_bounding_box_violation_count", pd.Series([0] * row_count)
+    )
     combined["ad_violating_features"] = combined.get(
         "ad_bounding_box_violating_features", pd.Series([""] * row_count)
     )
-    combined["ad_max_excess"] = combined.get("ad_bounding_box_max_excess", pd.Series([np.nan] * row_count))
+    combined["ad_max_excess"] = combined.get(
+        "ad_bounding_box_max_excess", pd.Series([np.nan] * row_count)
+    )
     feature_space = ""
     for scores in method_scores.values():
         if "ad_feature_space" in scores and not scores["ad_feature_space"].dropna().empty:
@@ -1772,7 +1825,9 @@ def _combine_modern_scores(method_scores: Mapping[str, pd.DataFrame]) -> pd.Data
     combined["ad_feature_space"] = feature_space
     for column in AD_COLUMNS:
         if column not in combined.columns:
-            combined[column] = np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+            combined[column] = (
+                np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+            )
     return combined[AD_COLUMNS]
 
 
@@ -1796,7 +1851,12 @@ def score_modern_applicability_domain(
             feature_space="",
             reason="No modern applicability domain is available for this model.",
         )
-        return {"available": False, "reason": "No modern applicability domain is available for this model.", "scores": scores, "summary": _summarize_scores(scores)}
+        return {
+            "available": False,
+            "reason": "No modern applicability domain is available for this model.",
+            "scores": scores,
+            "summary": _summarize_scores(scores),
+        }
 
     methods = manifest.get("methods") or {}
     method_scores: Dict[str, pd.DataFrame] = {}
@@ -1805,7 +1865,9 @@ def score_modern_applicability_domain(
         scored = score_bounding_box_domain(
             feature_frame=feature_frame,
             applicability_domain=manifest,
-            output_dir=(Path(output_dir).expanduser() / BOUNDING_BOX_METHOD) if output_dir else None,
+            output_dir=(
+                (Path(output_dir).expanduser() / BOUNDING_BOX_METHOD) if output_dir else None
+            ),
             score_label=score_label,
             metadata_path=metadata_path,
         )
@@ -1815,7 +1877,9 @@ def score_modern_applicability_domain(
         scored = score_isolation_forest_domain(
             feature_frame=feature_frame,
             applicability_domain=manifest,
-            output_dir=(Path(output_dir).expanduser() / ISOLATION_FOREST_METHOD) if output_dir else None,
+            output_dir=(
+                (Path(output_dir).expanduser() / ISOLATION_FOREST_METHOD) if output_dir else None
+            ),
             score_label=score_label,
             metadata_path=metadata_path,
         )
@@ -1825,7 +1889,9 @@ def score_modern_applicability_domain(
         scored = score_similarity_matrix_domain(
             feature_frame=feature_frame,
             applicability_domain=manifest,
-            output_dir=(Path(output_dir).expanduser() / SIMILARITY_MATRIX_METHOD) if output_dir else None,
+            output_dir=(
+                (Path(output_dir).expanduser() / SIMILARITY_MATRIX_METHOD) if output_dir else None
+            ),
             score_label=score_label,
             metadata_path=metadata_path,
             row_indices=row_indices,
@@ -1875,7 +1941,9 @@ def append_ad_scores_to_csv(csv_path: str | Path, scores: pd.DataFrame) -> List[
     ad_frame = scores.copy()
     for column in AD_COLUMNS:
         if column not in ad_frame.columns:
-            ad_frame[column] = np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+            ad_frame[column] = (
+                np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+            )
     ad_frame = ad_frame[AD_COLUMNS].reset_index(drop=True)
     frame = pd.concat([frame.reset_index(drop=True), ad_frame], axis=1)
     frame.to_csv(path, index=False)
@@ -2029,9 +2097,7 @@ def build_modern_ad_plots(scores: pd.DataFrame, output_dir: str | Path) -> Dict[
     artifacts: Dict[str, str] = {}
     artifacts.update(build_bounding_box_plots(scores, target_dir / BOUNDING_BOX_METHOD))
     artifacts.update(build_isolation_forest_plots(scores, target_dir / ISOLATION_FOREST_METHOD))
-    artifacts.update(
-        build_similarity_matrix_plots(scores, target_dir / SIMILARITY_MATRIX_METHOD)
-    )
+    artifacts.update(build_similarity_matrix_plots(scores, target_dir / SIMILARITY_MATRIX_METHOD))
     if {"ad_bounding_box_status", "ad_isolation_forest_status"}.issubset(scores.columns):
         crosstab = pd.crosstab(
             scores["ad_bounding_box_status"],
@@ -2044,7 +2110,13 @@ def build_modern_ad_plots(scores: pd.DataFrame, output_dir: str | Path) -> Dict[
             plt.yticks(range(len(crosstab.index)), crosstab.index)
             for row_index, row_label in enumerate(crosstab.index):
                 for col_index, col_label in enumerate(crosstab.columns):
-                    plt.text(col_index, row_index, int(crosstab.loc[row_label, col_label]), ha="center", va="center")
+                    plt.text(
+                        col_index,
+                        row_index,
+                        int(crosstab.loc[row_label, col_label]),
+                        ha="center",
+                        va="center",
+                    )
             plt.xlabel("Isolation Forest")
             plt.ylabel("Bounding box")
             plt.title("AD method concordance")
@@ -2151,7 +2223,9 @@ def prepare_tabular_features_for_ad(
     additions: List[pd.DataFrame] = []
     for frame in feature_frames:
         columns_to_add = [
-            column for column in feature_columns if column in frame.columns and column not in assembled
+            column
+            for column in feature_columns
+            if column in frame.columns and column not in assembled
         ]
         if columns_to_add:
             additions.append(frame[columns_to_add].reset_index(drop=True))
@@ -2183,7 +2257,9 @@ def score_record_applicability_domain(
         )
         for column in AD_COLUMNS:
             if column not in scores.columns:
-                scores[column] = np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+                scores[column] = (
+                    np.nan if column.endswith(("score", "decision", "threshold", "excess")) else ""
+                )
         return {
             "available": False,
             "reason": "No modern applicability domain is available for this model.",
@@ -2240,7 +2316,9 @@ def score_record_applicability_domain(
             or {}
         )
         try:
-            smiles_columns = ["smiles"] if "smiles" in input_frame.columns else record.task.smiles_columns
+            smiles_columns = (
+                ["smiles"] if "smiles" in input_frame.columns else record.task.smiles_columns
+            )
             fingerprints = backend.fingerprint_from_csv(
                 input_csv=input_csv,
                 model_path=record.model_path,

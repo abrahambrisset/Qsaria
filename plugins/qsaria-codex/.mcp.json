@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "qsaria": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--no-sync",
+        "cscopilot-mcp",
+        "--profile",
+        "qsaria",
+        "--llm-policy",
+        "disabled",
+        "--log-level",
+        "info",
+        "--no-chatgpt-compat",
+        "--no-prompts",
+        "--no-resources"
+      ],
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 3600,
+      "required": true
+    }
+  }
+}

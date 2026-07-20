@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from cs_copilot.tools.prediction import external_evaluation as external_evaluation_module
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
 from cs_copilot.tools.prediction.external_evaluation import evaluate_model_on_external_dataset
 
@@ -126,6 +128,36 @@ def test_external_evaluation_appends_metadata_and_artifacts(tmp_path):
     assert first["metrics"]["accuracy"] == 1.0
     assert Path(first["artifacts"]["plots"]["Y"]["confusion_matrix"]).exists()
     assert Path(first["artifacts"]["plots"]["Y"]["roc_curve"]).exists()
+
+
+def test_external_evaluation_preserves_legacy_id_and_suffixes_only_on_collision(
+    tmp_path,
+    monkeypatch,
+):
+    record = _record(tmp_path)
+    test_csv = tmp_path / "external.csv"
+    pd.DataFrame({"smiles": ["CCO", "CCN"], "Y": [0, 1]}).to_csv(
+        test_csv,
+        index=False,
+    )
+    fixed_now = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+    monkeypatch.setattr(external_evaluation_module, "project_now", lambda: fixed_now)
+
+    results = [
+        evaluate_model_on_external_dataset(
+            record=record,
+            backend=_BinaryBackend(),
+            test_csv=str(test_csv),
+            evaluation_label="same panel",
+        )
+        for _ in range(3)
+    ]
+
+    assert [result["evaluation_id"] for result in results] == [
+        "same_panel_20260102_030405",
+        "same_panel_20260102_030405_123456",
+        "same_panel_20260102_030405_123456_2",
+    ]
 
 
 def test_external_evaluation_requires_all_targets_before_writing(tmp_path):
