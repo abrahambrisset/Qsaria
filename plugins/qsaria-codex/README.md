@@ -1,5 +1,9 @@
 # Qsaria for Codex
 
+Current bundle: `0.2.0`. The only named scientific protocol is
+`standard_qsar`; advanced holdout, repeated holdout, cross-validation,
+scaffold, cluster, and full-train workflows use explicit validation strategies.
+
 This repo-local plugin lets Codex coordinate Qsaria without launching an
 additional LLM inside the MCP server. The server exposes deterministic Qsaria
 operations; Codex remains the only coordinator and reasoning layer.
@@ -10,7 +14,7 @@ Codex-specific skills and project-agent templates only.
 Codex plugins do not currently install project agents as a native plugin
 component. The distributable templates therefore live under `assets/agents/`
 and are copied explicitly into the repository's `.codex/agents/` directory.
-V1 adds no hook and no separate asynchronous runner.
+Version 0.2.0 adds no hook and no separate asynchronous runner.
 
 ## Runtime boundaries
 

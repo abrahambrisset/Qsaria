@@ -17,6 +17,9 @@ persist models, or write the final report.
 3. Identify molecular and target columns while preserving explicit user
    choices. Return `needs_user_input` when ambiguity changes scientific meaning.
 4. Call the curation facade with explicit task type and units when known.
+   Structure standardization always uses `chembl_structure_v1`; there is no
+   public backend selector or fallback standardizer. Preserve row-level
+   `standardization_failed` evidence and continue when usable compounds remain.
 5. Summarize the curated dataset and write the curation report when requested.
 6. Verify every artifact id and preserve row counts, exclusions, normalized
    SMILES, targets, units, duplicate handling, warnings, and blockers.

@@ -33,8 +33,7 @@ from .training_orchestration import (
     is_multiclass_task,
 )
 
-ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_only", "rdkit_basic_only", "rdkit_all_only"}
-PROMOTED_STATUSES = {"production", "validated", "robust_validated"}
+ABLATION_REPRESENTATIONS = {"morgan_only", "rdkit_all"}
 EVALUATION_KINDS = {
     "external_dataset",
     "internal_holdout_reuse",
@@ -147,7 +146,6 @@ def _protocol(record: PredictionModelRecord) -> str:
     for source in (record.training_data_summary, record.selection_hints, record.tags):
         value = (
             (source or {}).get("validation_protocol")
-            or (source or {}).get("benchmark_mode")
             or (source or {}).get("protocol")
         )
         if value:
@@ -469,7 +467,7 @@ class EnsembleToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Inspect catalog models and derive ensemble selection evidence."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         evidence = [
             self._candidate_evidence(record, target, task_type)
             for record in self.catalog.list_models()
@@ -577,7 +575,7 @@ class EnsembleToolkit(Toolkit):
                 raise ValueError("Classification ensembles support only majority_vote aggregation.")
         elif aggregation_strategy != "median":
             raise ValueError("Regression ensembles support only median aggregation.")
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         model_ids = _coerce_list(model_ids)
         selected, selected_evidence, all_evidence = self._select_components(
             target=target,
@@ -772,7 +770,7 @@ class EnsembleToolkit(Toolkit):
 
     def summarize_ensemble(self, model_id: str, agent: Optional[Agent] = None) -> Dict[str, Any]:
         """Summarize a persisted ensemble model."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
         if not _is_ensemble_backend(record.backend_name):
@@ -836,7 +834,7 @@ class EnsembleToolkit(Toolkit):
         """Evaluate an ensemble and its components on a labelled dataset."""
         if evaluation_kind not in EVALUATION_KINDS:
             raise ValueError(f"Unsupported evaluation_kind: {evaluation_kind}")
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         model_id = _resolve_catalog_model_id(self.catalog, model_id)
         record = self.catalog.get_model(model_id)
         if not _is_ensemble_backend(record.backend_name):

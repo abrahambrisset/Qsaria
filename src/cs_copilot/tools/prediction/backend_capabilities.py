@@ -123,11 +123,6 @@ def get_backend_capabilities(
         raise KeyError(f"No backend capabilities registered for `{backend_name}`.") from exc
 
 
-def describe_backend_capabilities() -> Dict[str, Dict[str, object]]:
-    """Return all known backend capabilities as serializable dictionaries."""
-    return {name: capabilities.as_dict() for name, capabilities in BACKEND_CAPABILITIES.items()}
-
-
 def enrich_backend_environment(
     backend_name: str,
     environment: Mapping[str, Any],
@@ -153,35 +148,6 @@ def backend_requires_feature_preparation(
         backend_name,
         registry=registry,
     ).requires_feature_preparation
-
-
-def normalize_capability_task_type(task_type: str) -> str:
-    normalized = str(task_type or "").strip().lower()
-    if normalized in {"binary_classification", "classification"}:
-        return "classification"
-    if normalized in {"multiclass", "multiclass_classification"}:
-        return "multiclass_classification"
-    return normalized
-
-
-def backend_supports_task_type(
-    backend_name: str,
-    task_type: str,
-    *,
-    registry: Mapping[str, BackendCapabilities] | None = None,
-) -> bool:
-    capabilities = get_backend_capabilities(backend_name, registry=registry)
-    return normalize_capability_task_type(task_type) in capabilities.supported_task_types
-
-
-def backend_supports_multi_target(
-    backend_name: str,
-    task_type: str,
-    *,
-    registry: Mapping[str, BackendCapabilities] | None = None,
-) -> bool:
-    capabilities = get_backend_capabilities(backend_name, registry=registry)
-    return normalize_capability_task_type(task_type) in capabilities.multi_target_task_types
 
 
 def backend_supports_component_orchestration(

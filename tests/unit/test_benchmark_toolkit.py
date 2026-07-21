@@ -77,11 +77,9 @@ def _fake_validation_assessment(
     protocol: str, random_r2: float, hardest_name: str, hardest_r2: float
 ) -> dict:
     aggregated = {
-        "random": {"r2_mean": random_r2, "r2_std": 0.01 if protocol == "robust_qsar" else 0.0},
+        "random": {"r2_mean": random_r2, "r2_std": 0.0},
         hardest_name: {"r2_mean": hardest_r2},
     }
-    if protocol == "robust_qsar":
-        aggregated["random"]["num_runs"] = 3
     return {
         "hardest_split": hardest_name,
         "delta_vs_random": {hardest_name: {"r2": hardest_r2 - random_r2}},
@@ -90,16 +88,57 @@ def _fake_validation_assessment(
     }
 
 
-def test_resolve_benchmark_protocol_contract():
-    toolkit = BenchmarkToolkit()
-    assert toolkit._resolve_benchmark_protocol("benchmark_fast_local") == "fast_local"
-    assert toolkit._resolve_benchmark_protocol("benchmark_standard_qsar") == "standard_qsar"
-    assert toolkit._resolve_benchmark_protocol("benchmark_robust_qsar") == "robust_qsar"
-    assert toolkit._resolve_benchmark_protocol("benchmark_challenging_qsar") == "challenging_qsar"
-    assert toolkit._resolve_benchmark_protocol("fast_local") == "fast_local"
-    assert toolkit._resolve_benchmark_protocol("standard_qsar") == "standard_qsar"
-    assert toolkit._resolve_benchmark_protocol("robust_qsar") == "robust_qsar"
-    assert toolkit._resolve_benchmark_protocol("challenging_qsar") == "challenging_qsar"
+def test_benchmark_public_contract_has_no_benchmark_mode():
+    import inspect
+
+    parameters = inspect.signature(BenchmarkToolkit.benchmark_qsar_models).parameters
+
+    assert "benchmark_mode" not in parameters
+    assert parameters["validation_strategy"].default is None
+
+
+def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path):
+    calls = []
+
+    class _TrainingFacade:
+        def train_qsar_model(self, **kwargs):
+            calls.append(kwargs)
+            return {"train_csv": kwargs["train_csv"]}
+
+    toolkit = BenchmarkToolkit(training_toolkit=_TrainingFacade())
+    strategy = {
+        "type": "repeated_holdout",
+        "split_family": "scaffold",
+        "n_repeats": 3,
+    }
+    seed_policy = {"split_runs": [{"seed": 42}], "model_seed": 42}
+    for backend_name, representation_name in (
+        ("chemprop", "molecular_graph"),
+        ("lightgbm", "rdkit_all"),
+    ):
+        toolkit._train_candidate(
+            candidate={
+                "candidate_id": f"{backend_name}_{representation_name}",
+                "backend_name": backend_name,
+                "representation_name": representation_name,
+            },
+            train_csv=str(tmp_path / "curated.csv"),
+            task_type="regression",
+            smiles_column="smiles",
+            target_columns=["Y"],
+            benchmark_protocol="repeated_scaffold_holdout",
+            candidate_dir=tmp_path / backend_name,
+            allow_heavy_compute=False,
+            training_profile="benchmark",
+            campaign_seed_policy=seed_policy,
+            validation_strategy=strategy,
+            agent=_fake_agent(),
+        )
+
+    assert [call["validation_strategy"] for call in calls] == [strategy, strategy]
+    assert {call["validation_protocol"] for call in calls} == {
+        "repeated_scaffold_holdout"
+    }
 
 
 def test_expand_candidates_includes_heavy_tabicl_all():
@@ -195,30 +234,6 @@ def test_benchmark_qsar_models_requires_explicit_benchmark_request(tmp_path):
     assert not (tmp_path / "benchmark_output").exists()
 
 
-def test_benchmark_qsar_models_rejects_plain_validation_protocol_mode(tmp_path):
-    train_csv = tmp_path / "dataset_curated.csv"
-    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
-
-    toolkit = BenchmarkToolkit()
-    agent = _fake_agent()
-
-    result = toolkit.benchmark_qsar_models(
-        train_csv=str(train_csv),
-        task_type="regression",
-        target_columns=["Y"],
-        smiles_column="smiles",
-        benchmark_mode="standard_qsar",
-        benchmark_requested=True,
-        output_dir=str(tmp_path / "benchmark_output"),
-        agent=agent,
-    )
-
-    assert result["benchmark_started"] is False
-    assert result["blocked"] is True
-    assert "plain validation protocol" in result["reason"]
-    assert not (tmp_path / "benchmark_output").exists()
-
-
 def test_benchmark_qsar_models_rejects_post_single_training_without_scope(tmp_path):
     train_csv = tmp_path / "dataset_curated.csv"
     pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
@@ -238,7 +253,6 @@ def test_benchmark_qsar_models_rejects_post_single_training_without_scope(tmp_pa
         task_type="regression",
         target_columns=["Y"],
         smiles_column="smiles",
-        benchmark_mode="benchmark_standard_qsar",
         benchmark_requested=True,
         output_dir=str(tmp_path / "benchmark_output"),
         agent=agent,
@@ -327,7 +341,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         train_time = {"chemprop": 12.0, "lightgbm": 9.0, "tabicl": 10.0}[backend_name]
         feature_columns = [] if backend_name == "chemprop" else ["feature_a", "feature_b"]
         resolved_representation = representation_name or (
-            "molecular_graph" if backend_name == "chemprop" else "morgan_rdkit_basic"
+            "molecular_graph" if backend_name == "chemprop" else "rdkit_all"
         )
 
         result = {
@@ -402,7 +416,6 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         task_type="regression",
         target_columns=["Y"],
         smiles_column="smiles",
-        benchmark_mode="benchmark_standard_qsar",
         output_dir=str(output_dir),
         bundle_dir=str(bundle_dir),
         benchmark_requested=True,
@@ -412,6 +425,9 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     assert Path(result["summary_path"]).exists()
     assert Path(result["leaderboard_path"]).exists()
     assert Path(result["report_path"]).exists()
+    assert result["workflow_kind"] == "benchmark"
+    assert result["validation_protocol"] == "standard_qsar"
+    assert "benchmark_mode" not in result
     assert result["campaign_seed_policy"]["mode"] == "generated_per_benchmark_campaign"
     assert result["campaign_seed_policy"]["shared_across_candidates"] is True
     assert (
@@ -439,6 +455,8 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         assert (model_root / "model").exists()
         assert (model_root / "artifacts").exists()
         metadata = json.loads((model_root / "metadata.json").read_text())
+        assert metadata["training_data_summary"]["workflow_kind"] == "benchmark"
+        assert "benchmark_mode" not in metadata["training_data_summary"]
         persisted_seed_policy = metadata["training_data_summary"]["seed_policy"]
         assert persisted_seed_policy["split_runs"] == result["campaign_seed_policy"]["split_runs"]
         assert (

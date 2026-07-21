@@ -51,14 +51,6 @@ def _positive_label(labels: List[Any]) -> Any:
     return labels[-1]
 
 
-def _safe_metric_columns(df: pd.DataFrame, target_column: str) -> pd.DataFrame:
-    if target_column not in df.columns:
-        return pd.DataFrame()
-    predictions = pd.to_numeric(df[target_column], errors="coerce")
-    cleaned = pd.DataFrame({"y_pred": predictions}).dropna()
-    return cleaned
-
-
 def _load_split_truth_and_predictions(
     *,
     dataset: pd.DataFrame,

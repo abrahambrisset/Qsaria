@@ -22,7 +22,6 @@ class CurationRequest:
     preferred_target_columns: List[str] = field(default_factory=list)
     curation_policy: Optional[str] = None
     duplicate_conflict_threshold: Optional[float] = None
-    curation_backend: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -34,7 +33,6 @@ class CurationRequest:
             "preferred_target_columns": list(self.preferred_target_columns),
             "curation_policy": self.curation_policy,
             "duplicate_conflict_threshold": self.duplicate_conflict_threshold,
-            "curation_backend": self.curation_backend,
         }
 
 
@@ -88,9 +86,6 @@ class CurationResult:
     duplicate_conflicting_groups: int = 0
     duplicate_conflicting_rows_removed: int = 0
     curation_backend: Optional[str] = None
-    curation_backend_used: Optional[str] = None
-    curation_backend_fallback_used: bool = False
-    curation_backend_fallback_reason: Optional[str] = None
     curation_identity_key_type: Optional[str] = None
     curation_artifacts: Dict[str, Any] = field(default_factory=dict)
     curation_diagnostics: Dict[str, Any] = field(default_factory=dict)
@@ -134,9 +129,6 @@ class CurationResult:
             "duplicate_conflicting_groups": self.duplicate_conflicting_groups,
             "duplicate_conflicting_rows_removed": self.duplicate_conflicting_rows_removed,
             "curation_backend": self.curation_backend,
-            "curation_backend_used": self.curation_backend_used,
-            "curation_backend_fallback_used": self.curation_backend_fallback_used,
-            "curation_backend_fallback_reason": self.curation_backend_fallback_reason,
             "curation_identity_key_type": self.curation_identity_key_type,
             "curation_artifacts": dict(self.curation_artifacts),
             "curation_diagnostics": dict(self.curation_diagnostics),

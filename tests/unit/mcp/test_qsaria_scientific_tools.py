@@ -18,8 +18,10 @@ from cs_copilot.mcp.errors import MCPToolError
 from cs_copilot.mcp.qsaria.adapter import QsariaToolSpec, build_qsaria_tool, is_qsaria_spec
 from cs_copilot.mcp.qsaria.contracts import HANDOFF_SCHEMA_VERSION
 from cs_copilot.mcp.qsaria.experiments import ExperimentManager
-from cs_copilot.mcp.qsaria.toolkit_hub import ToolkitHub, _read_safe_catalog_type
+from cs_copilot.mcp.qsaria.toolkit_hub import ToolkitHub
 from cs_copilot.mcp.tool_specs.qsaria import SPECS
+from cs_copilot.tools.curation.dataset_curation_toolkit import DatasetCurationToolkit
+from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 
 
@@ -60,6 +62,15 @@ def test_qsaria_scientific_surface_matches_audited_tool_counts():
         assert sum(spec.mcp_name.startswith(prefix) for spec in SPECS) == count
     assert not any(spec.method == "prepare_training_dataset" for spec in SPECS)
     assert all(is_qsaria_spec(spec) for spec in SPECS)
+
+
+def test_removed_public_inputs_are_absent_from_runtime_facades():
+    assert "curation_backend" not in inspect.signature(
+        DatasetCurationToolkit.curate_qsar_dataset
+    ).parameters
+    assert "benchmark_mode" not in inspect.signature(
+        BenchmarkToolkit.benchmark_qsar_models
+    ).parameters
 
 
 def test_catalog_mutation_specs_are_explicit_and_locked():
@@ -1231,8 +1242,7 @@ def test_qsaria_toolkit_hub_does_not_import_agent_factories_or_teams():
 def test_catalog_write_scope_rebinds_every_consumer_after_registry_replacement(tmp_path):
     source = tmp_path / "catalog.json"
     source.write_text('{"schema_version": 2, "models": []}\n', encoding="utf-8")
-    safe_catalog_type = _read_safe_catalog_type()
-    canonical = safe_catalog_type.load(str(source))
+    canonical = PredictionModelCatalog.load(str(source))
     replacement = PredictionModelCatalog.load(str(source))
     assert type(replacement) is PredictionModelCatalog
 
@@ -1260,4 +1270,4 @@ def test_catalog_write_scope_rebinds_every_consumer_after_registry_replacement(t
     assert inference.registry_toolkit.catalog is canonical
     assert ensemble.catalog is canonical
     assert benchmark.registry_toolkit.catalog is canonical
-    assert isinstance(canonical, safe_catalog_type)
+    assert type(canonical) is PredictionModelCatalog

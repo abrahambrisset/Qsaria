@@ -15,7 +15,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import pandas as pd
 
@@ -36,61 +36,6 @@ OUTLIER_PLOT_MARKER_STYLES: Mapping[str, Mapping[str, Any]] = {
 
 class OutlierAnalysisError(ValueError):
     """Raised when a public outlier-analysis request is invalid."""
-
-
-@dataclass(frozen=True)
-class SelectionPrediction:
-    """One normalized validation or OOF prediction used for selection."""
-
-    source_row_index: int
-    y_true: Any
-    y_pred: Any
-    fold_label: str
-    repeat_index: Optional[int] = None
-    ad_status: Optional[str] = None
-    activity_cliff_flag: bool = False
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "source_row_index": self.source_row_index,
-            "y_true": self.y_true,
-            "y_pred": self.y_pred,
-            "fold_label": self.fold_label,
-            "repeat_index": self.repeat_index,
-            "ad_status": self.ad_status,
-            "activity_cliff_flag": self.activity_cliff_flag,
-        }
-
-
-@dataclass(frozen=True)
-class OutlierSelectionSummary:
-    """Compact, serializable description of one completed selection study."""
-
-    task_type: str
-    eligible_count: int
-    selected_count: int
-    selection_fraction: float = OUTLIER_ANALYSIS_SELECTION_FRACTION
-    rmse_multiplier: float = OUTLIER_ANALYSIS_RMSE_MULTIPLIER
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "contract_version": OUTLIER_ANALYSIS_CONTRACT_VERSION,
-            "task_type": self.task_type,
-            "eligible_count": self.eligible_count,
-            "selected_count": self.selected_count,
-            "selection_fraction": self.selection_fraction,
-            "rmse_multiplier": self.rmse_multiplier,
-        }
-
-
-class OutlierAnalysisAdapter(Protocol):
-    """Minimal backend adapter contract for selection/refit orchestration."""
-
-    def selection_prediction(self, *args: Any, **kwargs: Any) -> pd.DataFrame:
-        """Return the temporary validation prediction frame in row order."""
-
-    def train_final_variant(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
-        """Train one baseline or filtered final variant without retuning."""
 
 
 @dataclass(frozen=True)
@@ -403,41 +348,6 @@ def select_outliers(
     }:
         return _classification_selection(selection_frame)
     return _regression_selection(selection_frame, selection_fraction=selection_fraction)
-
-
-def build_selection_study(
-    *,
-    prediction_frame: pd.DataFrame,
-    source_row_indices: Sequence[int],
-    target_column: str,
-    task_type: str,
-    fold_label: str,
-    repeat_index: Optional[int] = None,
-    ad_statuses: Optional[Sequence[Any]] = None,
-    activity_cliff_annotations: Optional[pd.DataFrame] = None,
-    selection_fraction: float = OUTLIER_ANALYSIS_SELECTION_FRACTION,
-) -> tuple[pd.DataFrame, Dict[str, Any]]:
-    """Create one canonical selection table from a backend validation prediction.
-
-    Backends remain responsible for fitting their temporary selection model,
-    calculating their train-only AD statuses and producing development-only AC
-    annotations.  This shared function guarantees that the resulting audit
-    rows use exactly the same policy and column names everywhere.
-    """
-    rows = selection_predictions_from_frame(
-        prediction_frame,
-        source_row_indices=source_row_indices,
-        target_column=target_column,
-        fold_label=fold_label,
-        repeat_index=repeat_index,
-    )
-    rows = attach_ad_annotations(rows, ad_statuses=ad_statuses)
-    rows = attach_activity_cliff_annotations(rows, annotations=activity_cliff_annotations)
-    return select_outliers(
-        rows,
-        task_type=task_type,
-        selection_fraction=selection_fraction,
-    )
 
 
 def filtered_development_frame(

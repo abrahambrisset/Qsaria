@@ -1,4 +1,7 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
@@ -18,7 +21,7 @@ def _catalog_record(model_id, model_path):
     )
 
 
-def test_catalog_load_bootstraps_missing_local_catalog(monkeypatch, tmp_path):
+def test_catalog_load_is_non_mutating_when_catalog_is_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", tmp_path / "internal")
     catalog_path = tmp_path / "local" / "model_catalog.json"
 
@@ -26,8 +29,24 @@ def test_catalog_load_bootstraps_missing_local_catalog(monkeypatch, tmp_path):
 
     assert catalog.records == []
     assert catalog.schema_version == 2
-    assert catalog_path.exists()
-    assert catalog_path.read_text() == '{\n  "schema_version": 2,\n  "models": []\n}\n'
+    assert not catalog_path.exists()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "not-json",
+        json.dumps({"schema_version": 1, "models": []}),
+        json.dumps({"schema_version": 2, "models": {}}),
+    ],
+)
+def test_catalog_rejects_empty_malformed_and_pre_v2_payloads(tmp_path, payload):
+    catalog_path = tmp_path / "model_catalog.json"
+    catalog_path.write_text(payload)
+
+    with pytest.raises(ValueError):
+        PredictionModelCatalog.load(str(catalog_path))
 
 
 def test_catalog_load_existing_is_lock_free(monkeypatch, tmp_path):
@@ -41,6 +60,36 @@ def test_catalog_load_existing_is_lock_free(monkeypatch, tmp_path):
 
     assert catalog.records == []
     assert not lock_path.exists()
+
+
+def test_internal_metadata_discovery_ignores_removed_root_aliases(monkeypatch, tmp_path):
+    internal_root = tmp_path / "internal"
+    model_root = internal_root / "legacy_aliases"
+    model_root.mkdir(parents=True)
+    (model_root / "best.pkl").write_text("placeholder")
+    (model_root / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_id": "legacy_aliases",
+                "backend_name": "lightgbm",
+                "artifacts": {"model_path": "best.pkl"},
+                "task": {
+                    "task_type": "regression",
+                    "smiles_columns": ["smiles"],
+                    "target_columns": ["target"],
+                },
+                "training_data": {"rows": 99},
+                "metrics": {"test": {"r2": 0.9}},
+            }
+        )
+    )
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+
+    catalog = PredictionModelCatalog.load(str(tmp_path / "missing_catalog.json"))
+    record = catalog.get_model("legacy_aliases")
+
+    assert record.training_data_summary == {}
+    assert record.known_metrics == {}
 
 
 def test_prediction_model_record_roundtrip_with_catalog_metadata():
@@ -85,7 +134,7 @@ def test_catalog_recommend_prefers_target_matching_entry(tmp_path):
     catalog_path = tmp_path / "model_catalog.json"
     catalog_path.write_text("""
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "models": [
     {
       "model_id": "solubility_model",
@@ -140,7 +189,7 @@ def test_catalog_search_excludes_missing_paths_by_default(tmp_path):
     catalog_path = tmp_path / "model_catalog.json"
     catalog_path.write_text("""
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "models": [
     {
       "model_id": "missing_model",

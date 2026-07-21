@@ -362,31 +362,6 @@ class ChempropBackend(PredictionBackend):
             )
         return sanitized
 
-    def _resolve_artifact_path(
-        self,
-        model_record: PredictionModelRecord,
-        raw_path: Optional[str],
-    ) -> Optional[Path]:
-        if not raw_path:
-            return None
-
-        candidate = Path(raw_path).expanduser()
-        candidates = [candidate]
-        if not candidate.is_absolute():
-            if model_record.metadata_path:
-                candidates.append(Path(model_record.metadata_path).expanduser().parent / candidate)
-            model_path = Path(model_record.model_path).expanduser()
-            candidates.append(model_path.parent / candidate)
-            candidates.append(model_path.parent.parent / candidate)
-
-        for item in candidates:
-            try:
-                if item.exists():
-                    return item.resolve()
-            except Exception:
-                continue
-        return None
-
     def _extract_epoch_progress(self, line: str) -> tuple[Optional[int], Optional[int]]:
         match = EPOCH_PROGRESS_RE.search(line)
         if not match:

@@ -273,10 +273,6 @@ def build_qsar_split_payload(
     )
 
 
-def build_tabular_split_payload(**kwargs: Any) -> List[Dict[str, Any]]:
-    return build_qsar_split_payload(**kwargs)
-
-
 def build_repeated_kfold_split_payloads(
     *,
     df: pd.DataFrame,

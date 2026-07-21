@@ -7,10 +7,6 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from rdkit import Chem
 
-from cs_copilot.tools.chemistry.standardize import standardize_smiles
-from cs_copilot.tools.curation.backends.legacy_rdkit_v1 import (
-    standardize_with_legacy_rdkit_v1,
-)
 from cs_copilot.tools.curation.identity import (
     has_explicit_stereochemistry,
     strip_stereochemistry_from_smiles,
@@ -36,61 +32,22 @@ def _mol_to_molblock(mol: Chem.Mol) -> str:
     return Chem.MolToMolBlock(mol, kekulize=False)
 
 
-def _legacy_row_fallback(raw: str | None) -> Tuple[str | None, str | None, bool, bool]:
-    if not raw:
-        return None, None, False, False
-    standardized = standardize_smiles(raw)
-    qsar_identity = strip_stereochemistry_from_smiles(standardized) if standardized else None
-    parent_structure_changed = bool(standardized and standardized != raw)
-    stereo_removed = bool(
-        standardized
-        and qsar_identity
-        and has_explicit_stereochemistry(standardized)
-        and qsar_identity != standardized
-    )
-    return standardized, qsar_identity, parent_structure_changed, stereo_removed
-
-
-def _apply_legacy_row_fallback(
-    raw: str | None,
-    checker_issues: str,
-    reason: str,
-) -> Tuple[str | None, str | None, bool, bool, str, str]:
-    standardized, qsar_identity, parent_structure_changed, stereo_removed = _legacy_row_fallback(
-        raw
-    )
-    checker_issues = f"{checker_issues}; {reason}" if checker_issues else reason
-    if standardized and qsar_identity:
-        checker_issues += "; legacy_rdkit_row_fallback_applied"
-        status = "chembl_row_fallback_legacy_rdkit"
-    else:
-        status = "standardization_failed"
-    return (
-        standardized,
-        qsar_identity,
-        parent_structure_changed,
-        stereo_removed,
-        checker_issues,
-        status,
-    )
+def ensure_chembl_structure_pipeline_available() -> Tuple[Any, Any]:
+    """Import the mandatory ChEMBL pipeline or fail with an actionable error."""
+    try:
+        from chembl_structure_pipeline import checker, standardizer
+    except Exception as exc:
+        raise RuntimeError(
+            "The mandatory `chembl_structure_pipeline` dependency is unavailable. "
+            "Install the Qsaria project dependencies before initializing dataset curation."
+        ) from exc
+    return checker, standardizer
 
 
 def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any]:
     """Standardize a SMILES series with ChEMBL, then apply QSAR identity policy."""
 
-    try:
-        from chembl_structure_pipeline import checker, standardizer
-    except Exception as exc:
-        legacy = standardize_with_legacy_rdkit_v1(raw_smiles)
-        legacy.update(
-            {
-                "backend_name": "chembl_structure_v1",
-                "used_backend_name": "legacy_rdkit_v1",
-                "fallback_used": True,
-                "fallback_reason": f"chembl_structure_pipeline unavailable: {exc}",
-            }
-        )
-        return legacy
+    checker, standardizer = ensure_chembl_structure_pipeline_available()
 
     rows = []
     for row_index, smiles in raw_smiles.items():
@@ -144,31 +101,21 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
             if standardized and qsar_identity:
                 status = "ok"
             else:
-                (
-                    standardized,
-                    qsar_identity,
-                    parent_structure_changed,
-                    stereo_removed,
-                    checker_issues,
-                    status,
-                ) = _apply_legacy_row_fallback(
-                    raw,
-                    checker_issues,
-                    "chembl_empty_standardized_or_identity",
-                )
+                standardized = None
+                qsar_identity = None
+                parent_structure_changed = False
+                stereo_removed = False
+                reason = "chembl_empty_standardized_or_identity"
+                checker_issues = f"{checker_issues}; {reason}" if checker_issues else reason
+                status = "standardization_failed"
         except Exception as exc:
-            (
-                standardized,
-                qsar_identity,
-                parent_structure_changed,
-                stereo_removed,
-                checker_issues,
-                status,
-            ) = _apply_legacy_row_fallback(
-                raw,
-                checker_issues,
-                f"standardization_error:{exc}",
-            )
+            standardized = None
+            qsar_identity = None
+            parent_structure_changed = False
+            stereo_removed = False
+            reason = f"standardization_error:{exc}"
+            checker_issues = f"{checker_issues}; {reason}" if checker_issues else reason
+            status = "standardization_failed"
 
         rows.append(
             {
@@ -189,9 +136,6 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
 
     return {
         "backend_name": "chembl_structure_v1",
-        "used_backend_name": "chembl_structure_v1",
-        "fallback_used": False,
-        "fallback_reason": None,
         "identity_column": "curation_identity_key",
         "standardization_map": pd.DataFrame(rows),
     }

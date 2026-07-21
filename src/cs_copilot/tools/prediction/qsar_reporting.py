@@ -709,9 +709,7 @@ def _normalized_curation_facts(result: Mapping[str, Any]) -> Dict[str, Any]:
         "rows_in": merged.get("rows_in"),
         "rows_out": merged.get("rows_out"),
         "rows_removed": merged.get("rows_removed"),
-        "curation_backend": merged.get("curation_backend_used") or merged.get("curation_backend"),
-        "backend_fallback_used": merged.get("curation_backend_fallback_used"),
-        "backend_fallback_reason": merged.get("curation_backend_fallback_reason"),
+        "curation_backend": merged.get("curation_backend"),
         "identity_key_type": merged.get("curation_identity_key_type"),
         "artifacts": artifacts,
     }

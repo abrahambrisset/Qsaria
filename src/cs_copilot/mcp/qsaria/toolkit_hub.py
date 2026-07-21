@@ -5,16 +5,12 @@ does not construct an Agno ``Agent`` or ``Team`` and it never attaches a model;
 the small :class:`~cs_copilot.mcp.context.MCPAgentContext` used at invocation
 time is supplied by :mod:`cs_copilot.mcp.qsaria.experiments`.
 
-Catalog-bearing toolkits share one catalog object.  Several legacy read
-methods request ``refresh_from_internal_store(persist=True)`` even though the
-operation is conceptually read-only.  ``_ReadSafeCatalog`` preserves the
-refresh while suppressing that incidental write unless the dedicated Qsaria
-adapter has explicitly opened a catalog-write scope.
+Catalog-bearing toolkits share one catalog object. Catalog reads are
+non-mutating; only explicit persistence operations write to disk.
 """
 
 from __future__ import annotations
 
-import contextvars
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
@@ -30,26 +26,6 @@ ToolkitName = Literal[
     "benchmark",
     "activity_cliffs",
 ]
-
-_CATALOG_WRITE_ENABLED: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "qsaria_mcp_catalog_write_enabled",
-    default=False,
-)
-
-
-def _read_safe_catalog_type():
-    """Build the catalog subclass lazily to keep module import lightweight."""
-
-    from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
-
-    class _ReadSafeCatalog(PredictionModelCatalog):
-        def refresh_from_internal_store(self, persist: bool = False) -> int:
-            return super().refresh_from_internal_store(
-                persist=bool(persist and _CATALOG_WRITE_ENABLED.get())
-            )
-
-    return _ReadSafeCatalog
-
 
 class ToolkitHub:
     """Own the lazily-created toolkit graph used by Qsaria MCP tools."""
@@ -83,8 +59,9 @@ class ToolkitHub:
 
     def _shared_catalog(self) -> Any:
         if self._catalog is None:
-            catalog_cls = _read_safe_catalog_type()
-            self._catalog = catalog_cls.load()
+            from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+
+            self._catalog = PredictionModelCatalog.load()
         return self._catalog
 
     def _shared_backends(self) -> dict[str, Any]:
@@ -106,9 +83,7 @@ class ToolkitHub:
     def _build_training(self) -> Any:
         from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
-        # ``prepare_training_dataset`` remains blocked from the public MCP
-        # surface.  The flag also protects against accidental direct use.
-        return QSARTrainingToolkit(block_prepare_training_dataset=True)
+        return QSARTrainingToolkit()
 
     def _build_registry(self) -> Any:
         from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
@@ -163,12 +138,12 @@ class ToolkitHub:
             self._catalog.refresh_from_internal_store(persist=False)
 
     def reconcile_catalog(self) -> None:
-        """Restore one read-safe catalog after a toolkit replaces its reference.
+        """Restore the shared catalog after a toolkit replaces its reference.
 
         ``ModelRegistryToolkit.persist_registered_model`` intentionally reloads
-        its catalog by assigning a new base ``PredictionModelCatalog``.  In the
+        its catalog by assigning a new ``PredictionModelCatalog``. In the
         Qsaria hub that would detach Registry (and therefore Inference) from the
-        read-safe catalog still held by Ensemble.  Reload the canonical object
+        shared catalog still held by Ensemble. Reload the canonical object
         from disk and rebind every already-created catalog consumer after each
         catalog-write scope, including exceptional exits.
         """
@@ -178,7 +153,7 @@ class ToolkitHub:
                 return
 
             # A replacing toolkit may also have changed the configured source
-            # path.  Prefer that path, then reload the canonical read-safe
+            # path.  Prefer that path, then reload the canonical shared
             # object without changing its identity.
             registry = self._instances.get("registry")
             replacement = getattr(registry, "catalog", None)
@@ -218,15 +193,11 @@ class ToolkitHub:
             return
         with self._lock:
             self.reconcile_catalog()
-            token = _CATALOG_WRITE_ENABLED.set(bool(write))
             try:
                 yield
             finally:
-                try:
-                    if write:
-                        self.reconcile_catalog()
-                finally:
-                    _CATALOG_WRITE_ENABLED.reset(token)
+                if write:
+                    self.reconcile_catalog()
 
 
 @lru_cache(maxsize=1)

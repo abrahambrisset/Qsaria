@@ -9,8 +9,6 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import math
-import os
 import shutil
 import tempfile
 import tomllib
@@ -140,39 +138,9 @@ class ChempropToolkit(Toolkit):
     def __init__(
         self,
         backend: Optional[ChempropBackend] = None,
-        *,
-        register_tools: bool = True,
     ):
         super().__init__("chemprop_prediction")
         self.backend = backend or ChempropBackend()
-        if not register_tools:
-            return
-
-        self.register(self.describe_backend)
-        self.register(self.describe_compute_environment)
-        self.register(self.validate_chemprop_model_path)
-        self.register(self.train_model)
-
-    def _detect_memory_limit_bytes(self) -> Optional[int]:
-        candidates = [
-            Path("/sys/fs/cgroup/memory.max"),
-            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
-        ]
-        for path in candidates:
-            if not path.exists():
-                continue
-            try:
-                raw = path.read_text().strip()
-                if not raw or raw == "max":
-                    continue
-                value = int(raw)
-                # Ignore absurdly large “no real limit” cgroup values.
-                if value <= 0 or value > 1 << 60:
-                    continue
-                return value
-            except Exception:
-                continue
-        return None
 
     def _resolve_chemprop_run_artifacts(self, output_dir: Path) -> Dict[str, Optional[Path]]:
         output_path = output_dir.expanduser().resolve()
@@ -812,41 +780,6 @@ class ChempropToolkit(Toolkit):
             "validation_prediction_input_csv": str(validation_input_path),
             "validation_metrics": metric_values,
             "validation_target_metrics": target_metrics,
-        }
-
-    def _detect_physical_memory_bytes(self) -> Optional[int]:
-        try:
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            page_count = os.sysconf("SC_PHYS_PAGES")
-            if (
-                isinstance(page_size, int)
-                and isinstance(page_count, int)
-                and page_size > 0
-                and page_count > 0
-            ):
-                return page_size * page_count
-        except Exception:
-            return None
-        return None
-
-    def _detect_disk_usage(self, base_path: Optional[Path] = None) -> Dict[str, Optional[float]]:
-        target = (base_path or Path.cwd()).resolve()
-        try:
-            usage = shutil.disk_usage(target)
-        except Exception:
-            return {
-                "disk_path": str(target),
-                "disk_gb_total": None,
-                "disk_gb_free": None,
-                "disk_gb_used": None,
-            }
-
-        gib = 1024**3
-        return {
-            "disk_path": str(target),
-            "disk_gb_total": round(usage.total / gib, 2),
-            "disk_gb_free": round(usage.free / gib, 2),
-            "disk_gb_used": round(usage.used / gib, 2),
         }
 
     def describe_compute_environment(self) -> Dict[str, Any]:
@@ -1531,62 +1464,6 @@ class ChempropToolkit(Toolkit):
             total_completed_at=total_completed_at,
         )
 
-    def _aggregate_split_families(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        families: Dict[str, List[Dict[str, Any]]] = {}
-        for item in split_results:
-            family = item.get("strategy_family") or item.get("strategy")
-            metrics = (item.get("metrics") or {}).get("test") or {}
-            if not family or not metrics:
-                continue
-            families.setdefault(family, []).append(item)
-
-        aggregated: Dict[str, Any] = {}
-        metric_names = ("mse", "mae", "rae", "rmse", "r2", "spearman", "kendall")
-        for family, items in families.items():
-            entry: Dict[str, Any] = {
-                "family": family,
-                "num_runs": len(items),
-                "strategy_labels": [item.get("strategy_label") for item in items],
-                "runs": [],
-                "test_n_values": [],
-            }
-            for item in items:
-                metrics = (item.get("metrics") or {}).get("test") or {}
-                entry["runs"].append(
-                    {
-                        "label": item.get("strategy_label"),
-                        "seed": item.get("seed"),
-                        "metrics": metrics,
-                    }
-                )
-                if metrics.get("n") is not None:
-                    entry["test_n_values"].append(metrics["n"])
-
-            for metric_name in metric_names:
-                values = [
-                    float(((item.get("metrics") or {}).get("test") or {}).get(metric_name))
-                    for item in items
-                    if ((item.get("metrics") or {}).get("test") or {}).get(metric_name) is not None
-                ]
-                if not values:
-                    continue
-                mean_value = sum(values) / len(values)
-                variance = (
-                    sum((value - mean_value) ** 2 for value in values) / len(values)
-                    if len(values) > 1
-                    else 0.0
-                )
-                entry[f"{metric_name}_mean"] = mean_value
-                entry[f"{metric_name}_std"] = math.sqrt(variance)
-                if len(values) == 1:
-                    entry[metric_name] = values[0]
-
-            if entry["test_n_values"]:
-                entry["test_n_mean"] = sum(entry["test_n_values"]) / len(entry["test_n_values"])
-            aggregated[family] = entry
-
-        return aggregated
-
     def _assess_protocol_results(self, split_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         return assess_protocol_results(split_results)
 
@@ -2229,7 +2106,6 @@ class ChempropToolkit(Toolkit):
                     "warnings": [f"Activity-cliff annotation skipped: {exc}"],
                 }
         prediction_state = None
-        qsar_training_state = None
         active_run_record = {
             "status": "running",
             "backend_name": "chemprop",
@@ -2249,8 +2125,6 @@ class ChempropToolkit(Toolkit):
             apply_progress_update(active_run_record, phase, payload)
             if prediction_state is not None:
                 prediction_state["active_training_run"] = dict(active_run_record)
-            if qsar_training_state is not None:
-                qsar_training_state["active_run"] = dict(active_run_record)
             write_active_training_marker(active_marker_path, active_run_record)
 
         def publish_chemprop_progress(payload: Dict[str, Any]) -> None:
@@ -2306,8 +2180,6 @@ class ChempropToolkit(Toolkit):
         if agent is not None:
             prediction_state = get_prediction_state(agent)
             prediction_state["active_training_run"] = dict(active_run_record)
-            qsar_training_state = agent.session_state.setdefault("qsar_training", {})
-            qsar_training_state["active_run"] = dict(active_run_record)
 
         write_active_training_marker(active_marker_path, active_run_record)
 
@@ -2964,8 +2836,6 @@ class ChempropToolkit(Toolkit):
             active_run_record["completed_at"] = project_now().isoformat()
             if prediction_state is not None:
                 prediction_state["active_training_run"] = dict(active_run_record)
-            if qsar_training_state is not None:
-                qsar_training_state["active_run"] = dict(active_run_record)
             write_active_training_marker(active_marker_path, active_run_record)
             return result
         except Exception as exc:
@@ -2973,8 +2843,6 @@ class ChempropToolkit(Toolkit):
             active_run_record["error"] = str(exc)
             if prediction_state is not None:
                 prediction_state["active_training_run"] = dict(active_run_record)
-            if qsar_training_state is not None:
-                qsar_training_state["active_run"] = dict(active_run_record)
             write_active_training_marker(active_marker_path, active_run_record)
             raise
         finally:
@@ -2982,5 +2850,3 @@ class ChempropToolkit(Toolkit):
                 active_marker_path.unlink()
             if prediction_state is not None:
                 prediction_state["active_training_run"] = None
-            if qsar_training_state is not None:
-                qsar_training_state["active_run"] = None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pandas as pd
@@ -56,12 +57,97 @@ def _fake_chembl_backend(raw_smiles: pd.Series):
         )
     return {
         "backend_name": "chembl_structure_v1",
-        "used_backend_name": "chembl_structure_v1",
-        "fallback_used": False,
-        "fallback_reason": None,
         "identity_column": "curation_identity_key",
         "standardization_map": pd.DataFrame(rows),
     }
+
+
+def _failing_chembl_backend(raw_smiles: pd.Series, failed_smiles: set[str]):
+    payload = _fake_chembl_backend(raw_smiles)
+    standardization_map = payload["standardization_map"]
+    failed = standardization_map["raw_smiles"].isin(failed_smiles)
+    for column in ("standardized_smiles", "qsar_identity_smiles", "curation_identity_key"):
+        standardization_map.loc[failed, column] = None
+    standardization_map.loc[failed, "curation_backend_status"] = "standardization_failed"
+    standardization_map.loc[failed, "checker_issues"] = "standardization_error:test"
+    return payload
+
+
+def test_curation_public_contract_has_no_backend_selector() -> None:
+    _curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+
+    assert "curation_backend" not in inspect.signature(
+        DatasetCurationToolkit.curate_qsar_dataset
+    ).parameters
+
+
+def test_curation_initialization_requires_chembl_dependency(monkeypatch) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+
+    def missing_dependency():
+        raise RuntimeError("mandatory chembl dependency missing")
+
+    monkeypatch.setattr(
+        curation_module,
+        "ensure_chembl_structure_pipeline_available",
+        missing_dependency,
+    )
+    with pytest.raises(RuntimeError, match="mandatory chembl"):
+        DatasetCurationToolkit()
+
+
+def test_one_chembl_row_failure_preserves_partial_dataset(tmp_path, monkeypatch) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+    monkeypatch.setattr(
+        curation_module,
+        "standardize_with_chembl_structure_v1",
+        lambda values: _failing_chembl_backend(values, {"CCF"}),
+    )
+    source = tmp_path / "partial.csv"
+    output = tmp_path / "partial_curated.csv"
+    pd.DataFrame(
+        {"smiles": ["CCO", "CCF", "CCC"], "pEC50": [4.0, 5.0, 6.0]}
+    ).to_csv(source, index=False)
+
+    result = DatasetCurationToolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["pEC50"],
+        output_csv=str(output),
+    )
+
+    assert result["ready_for_qsar"] is True
+    assert result["rows_out"] == 2
+    assert result["invalid_smiles_removed"] == 1
+    diagnostics = pd.read_csv(result["curation_artifacts"]["standardization_map_csv"])
+    assert "standardization_failed" in set(diagnostics["curation_backend_status"])
+
+
+def test_all_chembl_row_failures_block_dataset(tmp_path, monkeypatch) -> None:
+    curation_module, DatasetCurationToolkit = _load_curation_toolkit()
+    monkeypatch.setattr(
+        curation_module,
+        "standardize_with_chembl_structure_v1",
+        lambda values: _failing_chembl_backend(values, set(values.dropna())),
+    )
+    source = tmp_path / "unusable.csv"
+    output = tmp_path / "unusable_curated.csv"
+    pd.DataFrame({"smiles": ["CCO", "CCC"], "pEC50": [4.0, 6.0]}).to_csv(
+        source, index=False
+    )
+
+    result = DatasetCurationToolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["pEC50"],
+        output_csv=str(output),
+    )
+
+    assert result["ready_for_qsar"] is False
+    assert result["rows_out"] == 0
+    assert "Dataset is empty after curation." in result["blocking_issues"]
 
 
 def test_stereo_strip_identity_collapses_enantiomeric_smiles() -> None:

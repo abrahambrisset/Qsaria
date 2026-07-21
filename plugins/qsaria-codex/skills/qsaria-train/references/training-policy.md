@@ -42,7 +42,7 @@ those facts contradict the delegated contract.
 
 ## Benchmark and activity cliffs
 
-Benchmark only after an explicit request for a benchmark, head-to-head comparison, multi-backend evaluation, or representation leaderboard. Use a `benchmark_*` mode and set the explicit-request guard. A normal standard or robust training request is not a benchmark.
+Benchmark only after an explicit request for a benchmark, head-to-head comparison, multi-backend evaluation, or representation leaderboard. Set the explicit-request guard. Omit `validation_strategy` for the `standard_qsar` benchmark default; when the user requests an advanced strategy, pass that same strategy to the whole benchmark. A normal standard single-model request is not a benchmark.
 
 Activity Cliff analysis is attached to model evidence. Preserve its exact indexes, split labels, artifacts, applicability-domain context, and warnings. Never invent validation Activity Cliff metrics when prediction artifacts were not exported.
 

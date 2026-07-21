@@ -20,9 +20,9 @@ from cs_copilot.tools.prediction.backend import (
     PredictionTaskSpec,
 )
 from cs_copilot.tools.prediction.backend_capabilities import (
+    BACKEND_CAPABILITIES,
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
-    describe_backend_capabilities,
     get_backend_capabilities,
 )
 from cs_copilot.tools.prediction.backend_factory import build_default_prediction_backends
@@ -169,8 +169,8 @@ def test_backend_capabilities_unknown_backend_is_clear():
         get_backend_capabilities("unknown_backend")
 
 
-def test_describe_backend_capabilities_is_serializable():
-    payload = describe_backend_capabilities()
+def test_backend_capability_records_are_serializable():
+    payload = {name: capability.as_dict() for name, capability in BACKEND_CAPABILITIES.items()}
 
     json.dumps(payload)
     assert payload["chemprop"]["backend_name"] == "chemprop"
@@ -215,7 +215,7 @@ def test_shared_curation_artifact_helpers_are_backend_neutral(tmp_path):
         session_state={
             "qsar_curation": {
                 "last_result": {
-                    "curation_backend_used": "chembl_structure_v1",
+                    "curation_backend": "chembl_structure_v1",
                     "curated_dataset_path": str(dataset),
                     "rows_in": 2,
                     "rows_out": 1,
@@ -375,7 +375,7 @@ def test_chemprop_adapter_rejects_multiclass_classification(tmp_path):
 
 
 def test_chemprop_toolkit_normalizes_multi_target_binary_classification(tmp_path):
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
     train_csv = tmp_path / "chemprop_input.csv"
     pd.DataFrame(
         {
@@ -700,6 +700,29 @@ def test_model_registry_describe_backends_includes_official_capabilities():
     assert descriptions["ensemble"]["capabilities"]["supports_component_orchestration"] is True
 
 
+def test_model_registry_catalog_description_is_non_mutating():
+    class RecordingCatalog:
+        def __init__(self):
+            self.refresh_calls = []
+            self.source_path = Path("catalog.json")
+
+        def refresh_from_internal_store(self, persist=False):
+            self.refresh_calls.append(persist)
+
+        def list_models(self):
+            return []
+
+    catalog = RecordingCatalog()
+    toolkit = ModelRegistryToolkit(
+        backends={},
+        catalog=catalog,
+        register_tools=False,
+    )
+
+    assert toolkit.describe_catalog()["num_models"] == 0
+    assert catalog.refresh_calls == [False, False]
+
+
 def test_chemprop_toolkit_is_backend_only():
     toolkit = ChempropToolkit()
 
@@ -713,7 +736,7 @@ def test_chemprop_toolkit_is_backend_only():
 
 
 def test_chemprop_standard_qsar_forces_single_replicate():
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
     training_policy = {"extra_args": {"num_replicates": 3}}
 
     note = toolkit._apply_protocol_training_overrides(
@@ -725,21 +748,8 @@ def test_chemprop_standard_qsar_forces_single_replicate():
     assert "standard_qsar" in note
 
 
-def test_chemprop_robust_qsar_forces_single_replicate():
-    toolkit = ChempropToolkit(register_tools=False)
-    training_policy = {"extra_args": {"num_replicates": 3}}
-
-    note = toolkit._apply_protocol_training_overrides(
-        training_policy=training_policy,
-        protocol_policy={"protocol": "robust_qsar"},
-    )
-
-    assert training_policy["extra_args"]["num_replicates"] == 1
-    assert "split runs" in note
-
-
 def test_chemprop_repeated_holdout_forces_single_replicate():
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
     training_policy = {"extra_args": {"num_replicates": 3}}
 
     note = toolkit._apply_protocol_training_overrides(
@@ -766,7 +776,7 @@ def test_chemprop_normalizes_repeated_session_prefixed_paths(monkeypatch):
 
 
 def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
     train_csv = tmp_path / "train.csv"
     pd.DataFrame(
         {
@@ -809,7 +819,7 @@ def test_chemprop_toolkit_writes_normalized_replicate_predictions(tmp_path):
 
 
 def test_chemprop_toolkit_excludes_unaligned_replicate_predictions(tmp_path):
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
     train_csv = tmp_path / "train.csv"
     pd.DataFrame(
         {
@@ -877,7 +887,7 @@ def test_chemprop_toolkit_writes_validation_predictions_from_checkpoint(tmp_path
             )
             return {"preds_path": preds_path}
 
-    toolkit = ChempropToolkit(backend=FakeChempropBackend(), register_tools=False)
+    toolkit = ChempropToolkit(backend=FakeChempropBackend())
     train_csv = tmp_path / "train.csv"
     pd.DataFrame(
         {
@@ -1109,7 +1119,7 @@ def test_prediction_registry_register_model_is_session_only(tmp_path):
 def test_model_registry_persistence_uses_governance_recommended_status(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1204,7 +1214,7 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
 def test_model_registry_persists_variant_specific_outlier_artifacts(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1395,7 +1405,7 @@ def test_model_registry_batch_persistence_uses_each_exact_candidate_payload(monk
     ]
 
 
-def test_model_registry_batch_persistence_loads_manifest_and_normalizes_ad_scores(
+def test_model_registry_batch_persistence_rejects_misplaced_ad_scores(
     monkeypatch, tmp_path
 ):
     class FakeBackend:
@@ -1447,23 +1457,19 @@ def test_model_registry_batch_persistence_loads_manifest_and_normalizes_ad_score
         + "\n"
     )
 
-    result = toolkit.register_and_persist_candidates(
-        candidate_manifest_path=str(manifest_path),
-        agent=SimpleNamespace(session_state={}),
-    )
+    with pytest.raises(ValueError, match="split_score_summaries"):
+        toolkit.register_and_persist_candidates(
+            candidate_manifest_path=str(manifest_path),
+            agent=SimpleNamespace(session_state={}),
+        )
 
-    assert result["candidate_count"] == 1
-    assert result["candidate_manifest_path"] == str(manifest_path)
-    assert [name for name, _ in calls] == ["register", "persist"]
-    assert calls[0][1]["applicability_domain"]["split_score_summaries"] == {
-        "test": {"n_in_domain": 12}
-    }
+    assert calls == []
 
 
 def test_model_registry_persistence_copies_modern_applicability_domain(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1548,7 +1554,7 @@ def test_model_registry_persistence_does_not_add_bounding_box_to_iforest_only_ad
 ):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1633,7 +1639,7 @@ def test_model_registry_persistence_does_not_add_bounding_box_to_iforest_only_ad
 def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1743,7 +1749,7 @@ def test_export_prediction_summary_skips_latest_external_evaluation_without_hist
 def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1824,7 +1830,7 @@ def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatc
 def test_model_registry_resolves_persisted_catalog_metadata(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1880,7 +1886,7 @@ def test_model_registry_resolves_persisted_catalog_metadata(monkeypatch, tmp_pat
 def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 
@@ -1949,7 +1955,7 @@ def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, t
 def test_model_registry_persistence_exposes_classification_metadata(monkeypatch, tmp_path):
     internal_root = tmp_path / "internal_models"
     catalog_path = tmp_path / "catalog.json"
-    catalog_path.write_text(json.dumps({"schema_version": 1, "models": []}) + "\n")
+    catalog_path.write_text(json.dumps({"schema_version": 2, "models": []}) + "\n")
     monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
 

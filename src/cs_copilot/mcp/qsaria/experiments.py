@@ -1242,7 +1242,7 @@ class ExperimentManager:
         try:
             package_version = importlib_metadata.version("cs_copilot")
         except importlib_metadata.PackageNotFoundError:
-            package_version = "0.1.0"
+            package_version = "0.2.0"
         return {
             "cs_copilot": package_version,
             "qsaria": package_version,

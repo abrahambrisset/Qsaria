@@ -56,7 +56,7 @@ def latest_curation_artifacts(agent: Agent) -> Dict[str, Any]:
     if not artifacts and not latest.get("curated_dataset_path"):
         return {}
     return {
-        "curation_backend": latest.get("curation_backend_used") or latest.get("curation_backend"),
+        "curation_backend": latest.get("curation_backend"),
         "curated_dataset_path": latest.get("curated_dataset_path"),
         "rows_in": latest.get("rows_in"),
         "rows_out": latest.get("rows_out"),

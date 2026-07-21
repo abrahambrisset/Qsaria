@@ -62,24 +62,21 @@ Agents QSAR
   |
   |-- DatasetCurationToolkit
   |-- QSARTrainingToolkit
+  |     |-- MolecularFeatureToolkit (interne)
+  |     |-- ActivityCliffToolkit (interne)
+  |     |-- ChempropToolkit -> ChempropBackend (interne)
+  |     |-- LightGBMToolkit -> LightGBMBackend (interne)
+  |     |-- TabICLToolkit   -> TabICLBackend (interne)
   |-- ModelRegistryToolkit
   |-- PredictionInferenceToolkit
   |-- BenchmarkToolkit
   |-- EnsembleToolkit
   |-- qsar_report_agent
-        |
-        |-- MolecularFeatureToolkit
-        |-- ActivityCliffToolkit
-        |-- training_orchestration.py
-        |-- backend_factory.py
-        |
-        |-- ChempropToolkit -> ChempropBackend
-        |-- LightGBMToolkit -> LightGBMBackend
-        |-- TabICLToolkit   -> TabICLBackend
 ```
 
-Regle importante: les agents ne doivent pas appeler directement les backends
-internes. Ils passent par les toolkits publics, surtout `QSARTrainingToolkit`
+Regle importante: les agents ne doivent pas appeler directement les moteurs
+backend ni les outils de features internes. Ils passent par les façades
+publiques, surtout `QSARTrainingToolkit` pour l'entraînement.
 pour l'entrainement.
 
 ## 3. Configuration modele LLM
@@ -378,31 +375,10 @@ Prompt exemple:
 
 ### 7.2 Entrainement standard
 
-`standard_qsar` est le preset simple et propre.
-
-Chemprop:
-
-```text
-molecular_graph
-  |-- random 80/10/10
-  |-- scaffold 80/10/10
-```
-
-LightGBM et TabICL:
-
-```text
-morgan_only
-  |-- random 80/10/10
-  |-- scaffold 80/10/10
-
-rdkit_all
-  |-- random 80/10/10
-  |-- scaffold 80/10/10
-
-morgan_count_only
-  |-- random 80/10/10
-  |-- scaffold 80/10/10
-```
+`standard_qsar` est l'unique protocole nomme. Il applique un split random
+80/10/10. Chemprop utilise son graphe moleculaire, LightGBM utilise `rdkit_all`
+avec 50 essais Optuna/TPE par defaut, et TabICL utilise `rdkit_all`. L'analyse
+post-selection des outliers est executee lorsqu'elle est applicable.
 
 Prompts:
 
@@ -419,8 +395,8 @@ Prompts:
 ```
 
 Pour une demande generale d'entrainement, QSARIA doit utiliser
-`standard_qsar`. Il ne doit pas inventer de repeated holdout ou de protocole
-robuste sans demande explicite.
+`standard_qsar`. Il ne doit pas inventer de repeated holdout, scaffold, cluster
+ou cross-validation sans demande explicite.
 
 ### 7.3 Holdout personnalise
 
@@ -469,7 +445,7 @@ si l'utilisateur demande seulement un entrainement standard.
 Prompt:
 
 ```text
-@qsaria Lance un benchmark_standard QSAR pour pEC50.
+@qsaria Lance un benchmark QSAR pour pEC50.
 ```
 
 Benchmark standard:
@@ -477,12 +453,12 @@ Benchmark standard:
 - Chemprop graph;
 - LightGBM sur `morgan_only`, `rdkit_all`, `morgan_count_only`;
 - TabICL sur `morgan_only`, `rdkit_all`, `morgan_count_only`;
-- protocole standard.
+- protocole `standard_qsar` en l'absence de strategie explicite.
 
-Prompt robuste:
+Une strategie avancee se demande explicitement et s'applique a tous les candidats:
 
 ```text
-@qsaria Lance un benchmark_robust QSAR pour pEC50.
+@qsaria Lance un benchmark QSAR pour pEC50 avec un repeated random holdout de 3 repetitions.
 ```
 
 ### 7.6 Inference
@@ -527,14 +503,10 @@ Representations automatiques modernes:
 - `rdkit_all`
 - `morgan_count_only`
 
-Representation avancee explicite:
+Representations avancees explicites:
 
 - `morgan_binary_count_rdkit_all`
-
-Legacy explicite:
-
-- `rdkit_basic_only`
-- `morgan_rdkit_basic`
+- `morgan_rdkit_all`
 
 Prompts:
 
@@ -673,11 +645,11 @@ Le vocabulaire de validation actuellement supporte:
 ### Benchmark
 
 ```text
-@qsaria Lance un benchmark_standard QSAR pour pEC50.
+@qsaria Lance un benchmark QSAR pour pEC50.
 ```
 
 ```text
-@qsaria Lance un benchmark_robust QSAR pour pEC50.
+@qsaria Lance un benchmark QSAR pour pEC50 avec un repeated random holdout de 3 repetitions.
 ```
 
 ### Prediction

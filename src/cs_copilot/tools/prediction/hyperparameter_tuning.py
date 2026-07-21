@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Protocol
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 HYPERPARAMETER_CONTRACT_VERSION = "1.2"
 
@@ -104,18 +104,6 @@ class TuningStudySummary:
         payload = asdict(self)
         payload["trials"] = list(self.trials)
         return payload
-
-
-class TuningAdapter(Protocol):
-    """Backend-specific bridge used by the common tuning registry."""
-
-    engine_name: str
-
-    def validate(self, config: TuningConfig) -> None:
-        """Validate a normalized request before any training work starts."""
-
-    def run(self, *args: Any, **kwargs: Any) -> TuningStudySummary | Dict[str, Any]:
-        """Execute the engine and return a compact, serializable result."""
 
 
 _REGRESSION_TUNING_METRICS = ("r2", "rmse", "mae")

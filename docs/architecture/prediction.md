@@ -13,22 +13,20 @@ Agents
   |
   |-- DatasetCurationToolkit
   |-- QSARTrainingToolkit
+  |     |-- training_orchestration.py
+  |     |-- backend_factory.py
+  |     |-- tabular_representations.py
+  |     |-- MolecularFeatureToolkit
+  |     |-- ActivityCliffToolkit
+  |     |-- ChempropToolkit  -> ChempropBackend
+  |     |-- LightGBMToolkit  -> LightGBMBackend
+  |     |-- TabICLToolkit    -> TabICLBackend
   |-- ModelRegistryToolkit
   |-- PredictionInferenceToolkit
   |-- BenchmarkToolkit
   |-- EnsembleToolkit
+  |     |-- EnsembleBackend
   |-- qsar_report_agent
-        |
-        |-- training_orchestration.py
-        |-- backend_factory.py
-        |-- tabular_representations.py
-        |-- MolecularFeatureToolkit
-        |-- ActivityCliffToolkit
-        |
-        |-- ChempropToolkit  -> ChempropBackend
-        |-- LightGBMToolkit  -> LightGBMBackend
-        |-- TabICLToolkit    -> TabICLBackend
-        |-- EnsembleToolkit  -> EnsembleBackend
 ```
 
 `ChempropToolkit`, `LightGBMToolkit`, and `TabICLToolkit` are backend-internal
@@ -37,9 +35,10 @@ training facade.
 
 ## Public Toolkits
 
-- `QSARTrainingToolkit`: single entry point for training workflows, including
-  `prepare_training_dataset`, `train_qsar_model`, `train_chemprop_model`,
-  `train_lightgbm_model`, and `train_tabicl_model`.
+- `QSARTrainingToolkit`: single agent-facing entry point for training workflows,
+  including `train_qsar_model`, `train_chemprop_model`, `train_lightgbm_model`,
+  and `train_tabicl_model`. Its Python-only `prepare_training_dataset` method is
+  retained for explicit diagnostic exports but is not registered as an agent tool.
 - `ModelRegistryToolkit`: catalog and session registry operations, including
   model registration, persistence, model summaries, catalog recommendations,
   and backend capability descriptions.
@@ -61,14 +60,10 @@ Modern automatic pack:
 - `rdkit_all`
 - `morgan_count_only`
 
-Explicit advanced representation:
+Explicit advanced representations:
 
 - `morgan_binary_count_rdkit_all`
-
-Legacy explicit-only representations:
-
-- `rdkit_basic_only`
-- `morgan_rdkit_basic`
+- `morgan_rdkit_all`
 
 `MolecularFeatureToolkit` owns feature generation for all tabular backends.
 Features are cached by dataset fingerprint, SMILES column, representation, and
@@ -76,22 +71,17 @@ feature parameters. Combined representations reuse the cached RDKit all, Morgan
 binary, and Morgan count feature tables rather than regenerating them per split
 or candidate.
 
-## Training Modes
+## Training Contracts
 
-- `fast_local`: quick smoke test. Tabular backends use `rdkit_all`; Chemprop
-  uses molecular graphs.
-- `standard_qsar`: Chemprop trains one graph candidate; LightGBM/TabICL train
-  exactly `morgan_only`, `rdkit_all`, and `morgan_count_only`, each with one
-  random and one scaffold split.
-- Advanced validation: callers pass `validation_strategy` for custom holdout
-  ratios or repeated holdout.
-- `robust_qsar` and `challenging_qsar`: compatibility protocols retained for
-  existing workflows, but advanced users should prefer explicit
-  `validation_strategy`.
-- `benchmark_standard_qsar`: multi-backend comparison over Chemprop graph plus
-  the simple modern LightGBM/TabICL pack using the standard protocol.
-- `benchmark_robust_qsar`: the same benchmark candidates with the robust
-  protocol. There is no top-N preselection yet.
+- `standard_qsar` is the only named protocol: one random 80/10/10 split.
+- For LightGBM, the standard contract uses `rdkit_all`, Optuna/TPE with 50
+  trials by default, and eligible post-selection outlier analysis.
+- Advanced validation uses explicit `validation_strategy` objects for holdout,
+  repeated holdout, cross-validation, full-train, scaffold, and cluster flows.
+- `local_light`, `local_standard`, `heavy_validation`, and `benchmark` are
+  compute profiles. They control resources and never select validation.
+- Benchmark is a workflow kind, not a protocol. It defaults to
+  `standard_qsar` and propagates one explicit strategy to every candidate.
 
 ## Backend Construction
 
@@ -172,7 +162,7 @@ Each model entry can include:
 ## Non-Goals
 
 - No registry or inference routing through `ChempropToolkit`.
-- No implicit benchmark launch for ordinary `standard_qsar`, `robust_qsar`, or
-  custom `validation_strategy` training requests.
+- No implicit benchmark launch for ordinary `standard_qsar` or custom
+  `validation_strategy` training requests.
 - No hidden training workflow guessed from user text without explicit dataset,
   target, task, and protocol metadata.

@@ -27,7 +27,6 @@ QSAR_RANDOM_STABILITY_BALANCED_ACCURACY_STD_MAX = 0.03
 PROJECT_TIMEZONE = ZoneInfo("Europe/Paris")
 SEED_MIN = 1
 SEED_MAX = 2_147_483_647
-FAST_LOCAL_SPLIT_SIZES = [0.8, 0.2]
 DEFAULT_QSAR_SPLIT_SIZES = [0.8, 0.1, 0.1]
 
 
@@ -83,64 +82,14 @@ def _unique_replay_seeds(count: int, base_seed: int) -> List[int]:
     return seeds
 
 
-def _split_templates(protocol: str) -> List[Dict[str, Any]]:
-    if protocol == "fast_local":
-        return [
-            {"backend_split_type": "random", "primary": True, "split_sizes": FAST_LOCAL_SPLIT_SIZES}
-        ]
-    if protocol == "standard_qsar":
-        return [
-            {
-                "backend_split_type": "random",
-                "primary": True,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            }
-        ]
-    if protocol == "robust_qsar":
-        return [
-            {
-                "backend_split_type": "random",
-                "primary": True,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "backend_split_type": "random",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "backend_split_type": "random",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "label": "scaffold",
-                "backend_split_type": "scaffold_balanced",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-        ]
-    if protocol == "challenging_qsar":
-        return [
-            {
-                "backend_split_type": "random",
-                "primary": True,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "label": "scaffold",
-                "backend_split_type": "scaffold_balanced",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-            {
-                "label": "cluster_kmeans",
-                "backend_split_type": "kmeans",
-                "primary": False,
-                "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
-            },
-        ]
-    return [{"backend_split_type": "random", "primary": True}]
+def _standard_split_templates() -> List[Dict[str, Any]]:
+    return [
+        {
+            "backend_split_type": "random",
+            "primary": True,
+            "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+        }
+    ]
 
 
 def _label_split(template: Dict[str, Any], seed: int) -> str:
@@ -153,12 +102,12 @@ def _label_split(template: Dict[str, Any], seed: int) -> str:
 
 def resolve_seed_policy(
     *,
-    protocol: str,
+    split_templates: List[Dict[str, Any]],
     mode: str = "generated_per_run",
     seed_policy: Optional[Dict[str, Any]] = None,
     base_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Resolve reproducible split/model seeds for a QSAR training protocol."""
+    """Resolve reproducible split/model seeds for an explicit set of split runs."""
     if seed_policy and seed_policy.get("split_runs"):
         replay = dict(seed_policy)
         replay.setdefault("mode", "user_provided_or_replay")
@@ -173,7 +122,9 @@ def resolve_seed_policy(
         replay.setdefault("replay_supported", True)
         return replay
 
-    templates = _split_templates(protocol)
+    templates = [dict(item) for item in split_templates]
+    if not templates:
+        raise ValueError("split_templates must contain at least one split run.")
     provided_seed = _coerce_seed(base_seed)
     needs_campaign_seed = mode == "generated_per_benchmark_campaign" and provided_seed is None
     seed_count = len(templates) + 1 + (1 if needs_campaign_seed else 0)
@@ -484,23 +435,9 @@ def resolve_validation_protocol(
     if not protocol:
         protocol = "standard_qsar"
 
-    if protocol == "fast_local":
-        resolved_seed_policy = resolve_seed_policy(
-            protocol=protocol,
-            mode=seed_policy_mode,
-            seed_policy=seed_policy,
-            base_seed=base_seed,
-        )
-        return {
-            "protocol": "fast_local",
-            "reason": "Single random split optimized for quick local iteration.",
-            "split_runs": resolved_seed_policy["split_runs"],
-            "seed_policy": resolved_seed_policy,
-        }
-
     if protocol == "standard_qsar":
         resolved_seed_policy = resolve_seed_policy(
-            protocol=protocol,
+            split_templates=_standard_split_templates(),
             mode=seed_policy_mode,
             seed_policy=seed_policy,
             base_seed=base_seed,
@@ -512,52 +449,11 @@ def resolve_validation_protocol(
             "seed_policy": resolved_seed_policy,
         }
 
-    if protocol == "robust_qsar":
-        resolved_seed_policy = resolve_seed_policy(
-            protocol=protocol,
-            mode=seed_policy_mode,
-            seed_policy=seed_policy,
-            base_seed=base_seed,
-        )
-        return {
-            "protocol": "robust_qsar",
-            "reason": "Robust validation protocol using multiple random seeds plus one scaffold split.",
-            "split_runs": resolved_seed_policy["split_runs"],
-            "seed_policy": resolved_seed_policy,
-        }
-
-    if protocol == "challenging_qsar":
-        resolved_seed_policy = resolve_seed_policy(
-            protocol=protocol,
-            mode=seed_policy_mode,
-            seed_policy=seed_policy,
-            base_seed=base_seed,
-        )
-        return {
-            "protocol": "challenging_qsar",
-            "reason": (
-                "Challenging validation protocol comparing random, scaffold-aware, "
-                "and cluster-aware splits to reduce optimistic estimates."
-            ),
-            "split_runs": resolved_seed_policy["split_runs"],
-            "seed_policy": resolved_seed_policy,
-        }
-
-    # The profile may alter compute resources, never the scientific default.
-    # A plain training request always receives the fixed 80/10/10 protocol.
-    fallback_protocol = "standard_qsar"
-    resolved_seed_policy = resolve_seed_policy(
-        protocol=fallback_protocol,
-        mode=seed_policy_mode,
-        seed_policy=seed_policy,
-        base_seed=base_seed,
+    raise ValueError(
+        f"Unsupported validation_protocol `{requested_protocol}`. "
+        "The only named protocol is `standard_qsar`; use validation_strategy "
+        "for holdout, repeated holdout, cross-validation, scaffold, cluster, or full-train workflows."
     )
-    return {
-        "protocol": fallback_protocol,
-        "reason": f"Unknown validation protocol `{requested_protocol}`; falling back to a safe default.",
-        "split_runs": resolved_seed_policy["split_runs"],
-        "seed_policy": resolved_seed_policy,
-    }
 
 
 def summarize_training_durations(
@@ -889,11 +785,11 @@ def assess_protocol_results(split_results: List[Dict[str, Any]]) -> Dict[str, An
         governance["recommended_status"] = "experimental"
     elif not hardest_pass or not robustness_pass:
         governance["recommended_status"] = "workflow_demo"
-    elif protocol_name == "robust_qsar":
+    elif random_family.get("num_runs", 0) > 1:
         governance["recommended_status"] = (
             "robust_validated" if random_stability_pass else "workflow_demo"
         )
-    elif protocol_name in {"standard_qsar", "challenging_qsar"}:
+    elif protocol_name:
         governance["recommended_status"] = "validated"
     else:
         governance["recommended_status"] = "experimental"

@@ -410,7 +410,7 @@ def test_create_ensemble_from_catalog_persists_evidence(tmp_path, monkeypatch):
                 model_a,
                 known_metrics={"scaffold": {"r2": 0.61}},
                 training_data_summary={"validation_protocol": "standard_qsar"},
-                inference_profile={"representation_name": "morgan_rdkit_basic"},
+                inference_profile={"representation_name": "morgan_rdkit_all"},
             ),
             _record(
                 "robust_stable",
@@ -420,7 +420,13 @@ def test_create_ensemble_from_catalog_persists_evidence(tmp_path, monkeypatch):
                     "random": {"r2_mean": 0.58, "r2_std": 0.02},
                     "scaffold": {"r2": 0.59},
                 },
-                training_data_summary={"validation_protocol": "robust_qsar"},
+                training_data_summary={
+                    "validation_protocol": "standard_qsar",
+                    "validation_strategy": {
+                        "strategy": "repeated_holdout",
+                        "split_family": "random",
+                    },
+                },
                 inference_profile={"representation_name": "molecular_graph"},
             ),
         ],
@@ -520,3 +526,23 @@ def test_evaluate_ensemble_appends_evaluations_and_writes_artifacts(tmp_path, mo
         payload["evaluations"][0]["evaluation_id"] != payload["evaluations"][1]["evaluation_id"]
         or second
     )
+
+
+def test_ensemble_catalog_inspection_is_non_mutating():
+    class RecordingCatalog:
+        def __init__(self):
+            self.refresh_calls = []
+
+        def refresh_from_internal_store(self, persist=False):
+            self.refresh_calls.append(persist)
+
+        def list_models(self):
+            return []
+
+    catalog = RecordingCatalog()
+    toolkit = EnsembleToolkit(catalog=catalog)
+
+    result = toolkit.inspect_ensemble_candidates(target="pEC50")
+
+    assert result["models_inspected"] == 0
+    assert catalog.refresh_calls == [False]

@@ -517,7 +517,7 @@ def test_chemprop_multiclass_replicates_average_probabilities_before_argmax(tmp_
             f'smiles,profile,profile_prob\nCCN,{predicted_class},"{probabilities}"\n'
         )
 
-    result = ChempropToolkit(register_tools=False)._write_normalized_test_predictions(
+    result = ChempropToolkit()._write_normalized_test_predictions(
         train_csv=str(train_csv),
         output_dir=output_dir,
         task=PredictionTaskSpec(

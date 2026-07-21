@@ -154,6 +154,7 @@ def test_multivariate_tpe_is_lightgbm_only_and_standard_tpe_remains_default():
 
     assert default is not None
     assert default.engine == "optuna_tpe"
+    assert default.n_trials == 50
     assert multivariate is not None
     assert multivariate.engine == "optuna_tpe_multivariate"
     assert multivariate.parameters == default.parameters
@@ -512,7 +513,7 @@ def test_chemprop_cluster_holdout_builds_transient_molecular_descriptors(tmp_pat
         + "\n".join(f"{smiles},{index / 10.0}" for index, smiles in enumerate(molecules))
         + "\n"
     )
-    toolkit = ChempropToolkit(register_tools=False)
+    toolkit = ChempropToolkit()
 
     split = toolkit._build_split_payload(
         train_csv=str(source),
@@ -585,7 +586,7 @@ def test_chemprop_hpopt_receives_train_validation_only_and_keeps_only_summary(tm
             return {"best_params": {"dropout": 0.1}}
 
     backend = FakeChempropBackend()
-    toolkit = ChempropToolkit(backend=backend, register_tools=False)
+    toolkit = ChempropToolkit(backend=backend)
     config = normalize_tuning_config(
         {"n_trials": 3, "parameters": ["depth", "dropout"]},
         backend_name="chemprop",
@@ -634,7 +635,7 @@ def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
     assert config is not None
 
     gpu_backend = FakeChempropBackend()
-    gpu_toolkit = ChempropToolkit(backend=gpu_backend, register_tools=False)
+    gpu_toolkit = ChempropToolkit(backend=gpu_backend)
     gpu_summary = gpu_toolkit._run_chemprop_hpopt(
         source_df=pd.read_csv(source),
         task=_chemprop_task(),
@@ -653,7 +654,7 @@ def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
     assert gpu_summary["selection_protocol"]["execution_resources"]["raytune_use_gpu"] is True
 
     cpu_backend = FakeChempropBackend()
-    cpu_toolkit = ChempropToolkit(backend=cpu_backend, register_tools=False)
+    cpu_toolkit = ChempropToolkit(backend=cpu_backend)
     cpu_summary = cpu_toolkit._run_chemprop_hpopt(
         source_df=pd.read_csv(source),
         task=_chemprop_task(),
@@ -705,7 +706,7 @@ def test_chemprop_hpopt_live_smoke(tmp_path):
         + "\n".join(f"{smiles},{index / 10.0}" for index, smiles in enumerate(molecules))
         + "\n"
     )
-    toolkit = ChempropToolkit(backend=backend, register_tools=False)
+    toolkit = ChempropToolkit(backend=backend)
     config = normalize_tuning_config(
         {"n_trials": 1},
         backend_name="chemprop",

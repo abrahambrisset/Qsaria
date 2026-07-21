@@ -14,7 +14,6 @@ from .backend_capabilities import (
     BackendCapabilities,
     backend_requires_feature_preparation,
     backend_supports_component_orchestration,
-    describe_backend_capabilities,
     enrich_backend_environment,
     get_backend_capabilities,
 )
@@ -41,7 +40,6 @@ __all__ = [
     "BackendCapabilities",
     "BACKEND_CAPABILITIES",
     "get_backend_capabilities",
-    "describe_backend_capabilities",
     "backend_requires_feature_preparation",
     "backend_supports_component_orchestration",
     "enrich_backend_environment",

@@ -7,6 +7,7 @@ from cs_copilot.tools.prediction.qsar_splitters import (
     build_repeated_kfold_split_payloads,
 )
 from cs_copilot.tools.prediction.qsar_training_policy import (
+    DEFAULT_QSAR_SPLIT_SIZES,
     resolve_backend_n_jobs,
     resolve_seed_policy,
     resolve_training_profile,
@@ -14,7 +15,7 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     seed_policy_reporting_text,
     seed_policy_reproducibility_metadata,
 )
-from cs_copilot.tools.prediction.tabular_splitters import build_tabular_split_payload
+from cs_copilot.tools.prediction.qsar_validation_strategy import resolve_validation_strategy
 
 
 def _sample_tabular_df() -> pd.DataFrame:
@@ -78,30 +79,45 @@ def test_seed_policy_helpers_tolerate_loose_agent_values():
     assert metadata["split_runs"] == []
 
 
-def test_robust_qsar_protocol_matches_chemprop_contract():
-    payload = resolve_validation_protocol(
-        requested_protocol="robust_qsar",
+@pytest.mark.parametrize("protocol", ["fast_local", "robust_qsar", "challenging_qsar"])
+def test_removed_named_protocols_are_explicitly_invalid(protocol):
+    with pytest.raises(ValueError, match="only named protocol"):
+        resolve_validation_protocol(
+            requested_protocol=protocol,
+            training_profile="heavy_validation",
+        )
+
+
+def test_repeated_holdout_generates_seeds_without_named_protocol_presets():
+    payload = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={
+            "type": "repeated_holdout",
+            "split_family": "scaffold",
+            "n_repeats": 4,
+        },
         training_profile="heavy_validation",
+        base_seed=42,
     )
 
-    assert payload["protocol"] == "robust_qsar"
-    assert [item["label"] for item in payload["split_runs"][:3]] == [
-        f"random_seed_{item['seed']}" for item in payload["split_runs"][:3]
-    ]
-    assert payload["split_runs"][3]["label"] == "scaffold"
-    assert [item["backend_split_type"] for item in payload["split_runs"]] == [
-        "random",
-        "random",
-        "random",
-        "scaffold_balanced",
-    ]
-    assert payload["seed_policy"]["mode"] == "generated_per_run"
+    assert payload["protocol"] == "repeated_scaffold_holdout"
+    assert len(payload["split_runs"]) == 4
+    assert {item["backend_split_type"] for item in payload["split_runs"]} == {
+        "scaffold_balanced"
+    }
     assert len({item["seed"] for item in payload["split_runs"]}) == 4
 
 
 def test_generated_seed_policy_changes_between_runs():
-    first = resolve_seed_policy(protocol="standard_qsar", mode="generated_per_run")
-    second = resolve_seed_policy(protocol="standard_qsar", mode="generated_per_run")
+    templates = [
+        {
+            "backend_split_type": "random",
+            "primary": True,
+            "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
+        }
+    ]
+    first = resolve_seed_policy(split_templates=templates, mode="generated_per_run")
+    second = resolve_seed_policy(split_templates=templates, mode="generated_per_run")
 
     assert first["mode"] == "generated_per_run"
     assert second["mode"] == "generated_per_run"
@@ -113,8 +129,12 @@ def test_generated_seed_policy_changes_between_runs():
 
 
 def test_user_provided_seed_policy_is_replayable():
-    first = resolve_seed_policy(protocol="robust_qsar", base_seed=42)
-    second = resolve_seed_policy(protocol="robust_qsar", base_seed=42)
+    templates = [
+        {"backend_split_type": "random", "primary": index == 0}
+        for index in range(3)
+    ]
+    first = resolve_seed_policy(split_templates=templates, base_seed=42)
+    second = resolve_seed_policy(split_templates=templates, base_seed=42)
 
     assert first["mode"] == "user_provided_or_replay"
     assert first["reporting_text"] == "Politique de seeds : fournie par l'utilisateur / replay"
@@ -124,8 +144,12 @@ def test_user_provided_seed_policy_is_replayable():
 
 
 def test_benchmark_seed_policy_is_shared_campaign_policy():
+    templates = [
+        {"backend_split_type": "random", "primary": index == 0}
+        for index in range(3)
+    ]
     policy = resolve_seed_policy(
-        protocol="robust_qsar",
+        split_templates=templates,
         mode="generated_per_benchmark_campaign",
     )
 
@@ -203,7 +227,7 @@ def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
 def test_random_split_payload_is_deterministic():
     df = _sample_tabular_df()
 
-    first = build_tabular_split_payload(
+    first = build_qsar_split_payload(
         df=df,
         split_type="random",
         split_sizes=[0.8, 0.1, 0.1],
@@ -211,7 +235,7 @@ def test_random_split_payload_is_deterministic():
         smiles_column="smiles",
         feature_columns=["desc_a", "desc_b", "desc_c"],
     )
-    second = build_tabular_split_payload(
+    second = build_qsar_split_payload(
         df=df,
         split_type="random",
         split_sizes=[0.8, 0.1, 0.1],
@@ -292,7 +316,7 @@ def test_scaffold_and_kmeans_splits_are_deterministic_and_complete():
     df = _sample_tabular_df()
 
     for split_type in ("scaffold_balanced", "kmeans"):
-        payload = build_tabular_split_payload(
+        payload = build_qsar_split_payload(
             df=df,
             split_type=split_type,
             split_sizes=[0.8, 0.1, 0.1],
@@ -300,7 +324,7 @@ def test_scaffold_and_kmeans_splits_are_deterministic_and_complete():
             smiles_column="smiles",
             feature_columns=["desc_a", "desc_b", "desc_c"],
         )
-        repeat = build_tabular_split_payload(
+        repeat = build_qsar_split_payload(
             df=df,
             split_type=split_type,
             split_sizes=[0.8, 0.1, 0.1],
@@ -333,7 +357,7 @@ def test_create_pandas_dataframe_rejects_json_for_read_csv(tmp_path):
 def test_create_pandas_dataframe_loads_json_artifact_with_read_json(tmp_path):
     toolkit = PointerPandasTools()
     json_path = tmp_path / "benchmark_summary.json"
-    json_path.write_text('{"benchmark_protocol": "robust_qsar", "metrics": {"scaffold_r2": 0.6}}')
+    json_path.write_text('{"validation_protocol": "repeated_random_holdout", "metrics": {"scaffold_r2": 0.6}}')
 
     result = toolkit.create_pandas_dataframe(
         dataframe_name="benchmark_summary",
@@ -343,7 +367,7 @@ def test_create_pandas_dataframe_loads_json_artifact_with_read_json(tmp_path):
 
     assert result["dataframe_name"] == "benchmark_summary"
     df = toolkit.dataframes["benchmark_summary"]
-    assert df.loc[0, "benchmark_protocol"] == "robust_qsar"
+    assert df.loc[0, "validation_protocol"] == "repeated_random_holdout"
     assert df.loc[0, "metrics.scaffold_r2"] == 0.6
 
 

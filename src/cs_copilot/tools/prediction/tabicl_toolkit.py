@@ -67,7 +67,6 @@ from .tabicl_backend import (
 )
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
-    LEGACY_TABULAR_REPRESENTATION_NAMES,
 )
 from .training_orchestration import (
     apply_training_profile,
@@ -110,17 +109,9 @@ def _clean_split_source_target_for_task(
 class TabICLToolkit(Toolkit):
     """Backend-specific TabICL training toolkit used behind QSARTrainingToolkit."""
 
-    def __init__(self, backend: Optional[TabICLBackend] = None, *, register_tools: bool = True):
+    def __init__(self, backend: Optional[TabICLBackend] = None):
         super().__init__("tabicl_prediction")
         self.backend = backend or TabICLBackend()
-        if register_tools:
-            self.register(self.describe_tabicl_backend)
-            self.register(self.describe_tabicl_environment)
-            self.register(self.is_tabicl_available)
-            self.register(self.validate_tabicl_model_path)
-            self.register(self.validate_tabicl_checkpoint_path)
-            self.register(self.train_tabicl_model)
-            self.register(self.predict_with_tabicl_from_csv)
 
     def is_tabicl_available(self) -> bool:
         """Return whether the TabICL backend is available in the current environment."""
@@ -442,16 +433,6 @@ class TabICLToolkit(Toolkit):
             protected_profiles=("heavy_validation",),
         )
 
-    def _resolve_tabicl_run_artifacts(self, output_dir: Path) -> Dict[str, Path]:
-        model_dir = output_dir / "model_0"
-        return {
-            "best_model_path": model_dir / "best.pkl",
-            "validation_predictions_path": model_dir / "validation_predictions.csv",
-            "test_predictions_path": model_dir / "test_predictions.csv",
-            "config_path": output_dir / "config.toml",
-            "splits_path": output_dir / "splits.json",
-        }
-
     def _materialize_primary_protocol_artifacts(
         self,
         *,
@@ -525,16 +506,10 @@ class TabICLToolkit(Toolkit):
                     "classification",
                     "multiclass_classification",
                 ],
-                "supported_validation_protocols": [
-                    "fast_local",
-                    "standard_qsar",
-                    "robust_qsar",
-                    "challenging_qsar",
-                ],
+                "supported_validation_protocols": ["standard_qsar"],
                 "supported_split_families": ["random", "scaffold", "cluster_kmeans"],
                 "default_tabular_feature_policy": {
                     "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
-                    "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
                     "default_single_representation": "morgan_rdkit_all",
                     "explicit_user_override": True,
                 },

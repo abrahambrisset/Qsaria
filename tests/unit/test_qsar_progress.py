@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from cs_copilot.tools.prediction.qsar_progress import (
     STATUS_COMPLETED,
@@ -53,7 +54,24 @@ def test_tool_phase_mapping_covers_qsaria_workflow_without_leaking_unknown_tools
     assert phase_for_tool("persist_registered_model") == "Persisting model artifacts"
     assert phase_for_tool("predict_from_csv") == "Generating predictions"
     assert completed_phase_for_tool("predict_from_csv") == "Predictions generated"
+    assert phase_for_tool("prepare_training_dataset") is None
     assert phase_for_tool("not_a_qsaria_tool") is None
+
+
+def test_all_training_backends_and_chainlit_use_the_single_canonical_progress_state():
+    project_root = Path(__file__).resolve().parents[2]
+    for relative_path in (
+        "src/cs_copilot/tools/prediction/chemprop_toolkit.py",
+        "src/cs_copilot/tools/prediction/lightgbm_toolkit.py",
+        "src/cs_copilot/tools/prediction/tabicl_toolkit.py",
+    ):
+        source = (project_root / relative_path).read_text()
+        assert 'prediction_state["active_training_run"]' in source
+        assert 'session_state["qsar_training"]' not in source
+
+    chainlit_source = (project_root / "chainlit_app.py").read_text()
+    assert 'prediction_state.get("active_training_run")' in chainlit_source
+    assert 'session_state.get("qsar_training")' not in chainlit_source
 
 
 def test_active_marker_snapshot_overrides_stale_in_memory_progress(tmp_path):

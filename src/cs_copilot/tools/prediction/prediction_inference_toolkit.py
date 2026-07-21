@@ -289,7 +289,7 @@ class PredictionInferenceToolkit(Toolkit):
                     "terminal_for_evaluation": True,
                 }
             raise
-        self.registry_toolkit.catalog.refresh_from_internal_store(persist=True)
+        self.registry_toolkit.catalog.refresh_from_internal_store(persist=False)
 
         prediction_state.pop("last_failed_external_evaluation", None)
         prediction_state["last_external_evaluation"] = result

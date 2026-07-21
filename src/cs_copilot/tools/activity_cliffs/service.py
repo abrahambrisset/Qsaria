@@ -74,11 +74,6 @@ class ActivityCliffConfig:
     fingerprint_size: int = DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_SIZE
     similarity_metric: str = DEFAULT_ACTIVITY_CLIFF_SIMILARITY_METRIC
 
-    @property
-    def loops_enabled(self) -> bool:
-        return self.mode == "with_feedback_loops" and self.feedback_loops > 0
-
-
 class ActivityCliffIndex(Protocol):
     index_name: str
 

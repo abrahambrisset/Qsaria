@@ -10,7 +10,7 @@
       "displayName": "Qsaria for Claude Code",
       "source": "./plugins/qsaria-claude-code",
       "description": "Coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows from Claude Code.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "Qsaria contributors"
       },

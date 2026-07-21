@@ -11,7 +11,11 @@ from cs_copilot.tools.prediction.prediction_inference_toolkit import PredictionI
 
 
 class _Catalog:
+    def __init__(self):
+        self.refresh_calls = []
+
     def refresh_from_internal_store(self, *, persist=False):
+        self.refresh_calls.append(persist)
         return None
 
 
@@ -116,3 +120,35 @@ def test_failed_external_evaluation_blocks_implicit_blind_prediction(tmp_path):
         agent=agent,
     )
     assert Path(result["preds_path"]).exists()
+    assert toolkit.registry_toolkit.catalog.refresh_calls == []
+
+
+def test_successful_external_evaluation_refreshes_catalog_without_persisting(
+    tmp_path,
+    monkeypatch,
+):
+    record = _record(tmp_path)
+    toolkit = PredictionInferenceToolkit(
+        backends={"mock": _Backend()},
+        registry_toolkit=_Registry(record),
+        register_tools=False,
+    )
+    agent = SimpleNamespace(session_state={})
+    labelled_csv = tmp_path / "labelled.csv"
+    pd.DataFrame({"SMILES": ["CCO"], "pEC50": [6.0]}).to_csv(labelled_csv, index=False)
+    expected = {"model_id": "pxr_model", "status": "completed"}
+    monkeypatch.setattr(
+        "cs_copilot.tools.prediction.prediction_inference_toolkit.evaluate_model_on_external_dataset",
+        lambda **_: expected,
+    )
+
+    result = toolkit.evaluate_model_on_dataset(
+        model_id="pxr_model",
+        test_csv=str(labelled_csv),
+        smiles_column="SMILES",
+        target_columns=["pEC50"],
+        agent=agent,
+    )
+
+    assert result == expected
+    assert toolkit.registry_toolkit.catalog.refresh_calls == [False]

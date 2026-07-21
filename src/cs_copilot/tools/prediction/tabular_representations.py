@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,6 @@ class TabularRepresentationSpec:
     use_rdkit: bool = False
     descriptor_set: Optional[str] = None
     automatic: bool = False
-    legacy: bool = False
     description: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
@@ -68,30 +67,10 @@ TABULAR_REPRESENTATIONS: Dict[str, TabularRepresentationSpec] = {
         automatic=False,
         description="Historical high-validation combined representation retained for compatibility and explicit use.",
     ),
-    "rdkit_basic_only": TabularRepresentationSpec(
-        name="rdkit_basic_only",
-        display_name="Legacy RDKit basic descriptors",
-        use_rdkit=True,
-        descriptor_set="basic",
-        legacy=True,
-        description="Legacy lightweight descriptor set. Use only when explicitly requested.",
-    ),
-    "morgan_rdkit_basic": TabularRepresentationSpec(
-        name="morgan_rdkit_basic",
-        display_name="Legacy Morgan binary + RDKit basic",
-        use_morgan_binary=True,
-        use_rdkit=True,
-        descriptor_set="basic",
-        legacy=True,
-        description="Legacy local-light combined representation. Use only when explicitly requested.",
-    ),
 }
 
 AUTOMATIC_TABULAR_REPRESENTATION_NAMES: Tuple[str, ...] = tuple(
     name for name, spec in TABULAR_REPRESENTATIONS.items() if spec.automatic
-)
-LEGACY_TABULAR_REPRESENTATION_NAMES: Tuple[str, ...] = tuple(
-    name for name, spec in TABULAR_REPRESENTATIONS.items() if spec.legacy
 )
 SUPPORTED_TABULAR_REPRESENTATION_NAMES: Tuple[str, ...] = tuple(TABULAR_REPRESENTATIONS)
 
@@ -113,7 +92,7 @@ def default_tabular_representation_for_protocol(
 ) -> str:
     """Return the single representation used when a protocol is not comparative."""
     normalized = str(protocol or "").strip().lower()
-    if normalized in {"fast_local", "standard_qsar"}:
+    if normalized == "standard_qsar":
         return "rdkit_all"
     # Keep the historical strong default for explicit single-model tabular training.
     if training_profile == "heavy_validation":
@@ -121,16 +100,9 @@ def default_tabular_representation_for_protocol(
     return "morgan_only"
 
 
-def automatic_tabular_representations(
-    *, include_legacy: bool = False
-) -> List[TabularRepresentationSpec]:
+def automatic_tabular_representations() -> List[TabularRepresentationSpec]:
     """Return representation specs used by modern comparative tabular campaigns."""
-    names: Iterable[str]
-    if include_legacy:
-        names = [*AUTOMATIC_TABULAR_REPRESENTATION_NAMES, *LEGACY_TABULAR_REPRESENTATION_NAMES]
-    else:
-        names = AUTOMATIC_TABULAR_REPRESENTATION_NAMES
-    return [get_tabular_representation(name) for name in names]
+    return [get_tabular_representation(name) for name in AUTOMATIC_TABULAR_REPRESENTATION_NAMES]
 
 
 def tabular_candidate_id(backend_name: str, representation_name: str) -> str:
@@ -141,7 +113,6 @@ def tabular_candidate_id(backend_name: str, representation_name: str) -> str:
 def tabular_candidates_for_backend(
     backend_name: str,
     *,
-    include_legacy: bool = False,
     representation_names: Optional[List[str]] = None,
     single_default_protocol: Optional[str] = None,
     training_profile: Optional[str] = None,
@@ -160,7 +131,7 @@ def tabular_candidates_for_backend(
             )
         ]
     else:
-        specs = automatic_tabular_representations(include_legacy=include_legacy)
+        specs = automatic_tabular_representations()
 
     return [
         {
@@ -168,7 +139,6 @@ def tabular_candidates_for_backend(
             "backend_name": normalized_backend,
             "representation_name": spec.name,
             "representation_display_name": spec.display_name,
-            "representation_legacy": spec.legacy,
             "representation_automatic": spec.automatic,
         }
         for spec in specs

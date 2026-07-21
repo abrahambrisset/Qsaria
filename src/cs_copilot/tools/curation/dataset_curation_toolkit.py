@@ -20,15 +20,13 @@ from rdkit import Chem
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.curation.backends import (
+    ensure_chembl_structure_pipeline_available,
     standardize_with_chembl_structure_v1,
-    standardize_with_legacy_rdkit_v1,
 )
 from cs_copilot.tools.curation.policies import (
     CHEMBL_QSAR_POLICY,
     DEFAULT_CURATION_BACKEND,
     DEFAULT_DUPLICATE_CONFLICT_THRESHOLD,
-    LEGACY_CURATION_BACKEND,
-    LEGACY_QSAR_POLICY,
 )
 from cs_copilot.tools.prediction.training_orchestration import (
     is_classification_task,
@@ -495,21 +493,11 @@ def _resolve_classification_duplicates(
     }
 
 
-def _select_curation_backend(curation_backend: str):
-    if curation_backend == DEFAULT_CURATION_BACKEND:
-        return standardize_with_chembl_structure_v1
-    if curation_backend == LEGACY_CURATION_BACKEND:
-        return standardize_with_legacy_rdkit_v1
-    available = [DEFAULT_CURATION_BACKEND, LEGACY_CURATION_BACKEND]
-    raise ValueError(
-        f"Unknown curation_backend: {curation_backend}. Available backends: {available}"
-    )
-
-
 class DatasetCurationToolkit(Toolkit):
     """Tools for preparing QSAR-ready datasets before training."""
 
     def __init__(self):
+        ensure_chembl_structure_pipeline_available()
         super().__init__("qsar_dataset_curation")
         self.register(self.inspect_dataset_schema)
         self.register(self.identify_qsar_columns)
@@ -615,7 +603,6 @@ class DatasetCurationToolkit(Toolkit):
         output_csv: Optional[str] = None,
         dataset_id: Optional[str] = None,
         duplicate_conflict_threshold: float = DEFAULT_DUPLICATE_CONFLICT_THRESHOLD,
-        curation_backend: str = DEFAULT_CURATION_BACKEND,
         report_path: Optional[str] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
@@ -627,7 +614,6 @@ class DatasetCurationToolkit(Toolkit):
             preferred_smiles_column=smiles_column,
             preferred_target_columns=target_columns,
             duplicate_conflict_threshold=duplicate_conflict_threshold,
-            curation_backend=curation_backend,
         )
         df = _load_dataset(dataset_path)
         rows_in = int(len(df))
@@ -636,11 +622,7 @@ class DatasetCurationToolkit(Toolkit):
         warnings: List[str] = []
         blocking_issues: List[str] = []
         actions: List[str] = []
-        backend_policy = (
-            CHEMBL_QSAR_POLICY
-            if curation_backend == DEFAULT_CURATION_BACKEND
-            else LEGACY_QSAR_POLICY
-        )
+        backend_policy = CHEMBL_QSAR_POLICY
         classification_task = is_classification_task(task_type)
         curation_policy = {
             **backend_policy,
@@ -740,15 +722,7 @@ class DatasetCurationToolkit(Toolkit):
             actions.append("check inorganic / organometallic / mixture structures")
 
         original_smiles = working["smiles"].copy()
-        backend_standardizer = _select_curation_backend(curation_backend)
-        backend_result = backend_standardizer(original_smiles)
-        curation_policy["curation_backend_requested"] = backend_result.get("backend_name")
-        curation_policy["curation_backend_used"] = backend_result.get("used_backend_name")
-        curation_policy["curation_backend_fallback_used"] = bool(
-            backend_result.get("fallback_used")
-        )
-        if backend_result.get("fallback_reason"):
-            curation_policy["curation_backend_fallback_reason"] = backend_result["fallback_reason"]
+        backend_result = standardize_with_chembl_structure_v1(original_smiles)
         standardization_map = backend_result["standardization_map"].copy()
         standardization_map = standardization_map.set_index("row_index", drop=False)
         working["raw_smiles"] = standardization_map.reindex(working.index)["raw_smiles"].values
@@ -1026,11 +1000,6 @@ class DatasetCurationToolkit(Toolkit):
 
         if invalid_before_drop == 0:
             warnings.append("No invalid SMILES were removed during curation.")
-        if backend_result.get("fallback_used"):
-            warnings.append(
-                "Requested ChEMBL curation backend fell back to legacy RDKit backend: "
-                + str(backend_result.get("fallback_reason"))
-            )
         parent_changed_count = int(
             standardization_map["parent_structure_changed"].fillna(False).sum()
         )
@@ -1045,15 +1014,6 @@ class DatasetCurationToolkit(Toolkit):
             )
             warnings.append(
                 f"ChEMBL checker flagged {checker_warning_count} standardized parent structures; max penalty={max_checker_penalty}. Rows were retained because checker policy is warn_only."
-            )
-        row_fallback_count = int(
-            (
-                standardization_map["curation_backend_status"] == "chembl_row_fallback_legacy_rdkit"
-            ).sum()
-        )
-        if row_fallback_count:
-            warnings.append(
-                f"{row_fallback_count} rows used legacy RDKit fallback after ChEMBL row-level standardization errors."
             )
         stereo_identity_removed_count = int(
             standardization_map["stereochemistry_removed_for_identity"].fillna(False).sum()
@@ -1181,10 +1141,7 @@ class DatasetCurationToolkit(Toolkit):
         )
         removed_rows.to_csv(removed_rows_path, index=False)
         identity_diagnostics = {
-            "curation_backend_requested": backend_result.get("backend_name"),
-            "curation_backend_used": backend_result.get("used_backend_name"),
-            "curation_backend_fallback_used": bool(backend_result.get("fallback_used")),
-            "curation_backend_fallback_reason": backend_result.get("fallback_reason"),
+            "curation_backend": DEFAULT_CURATION_BACKEND,
             "duplicate_identity_column": duplicate_identity_column,
             "duplicate_conflict_threshold": duplicate_conflict_threshold,
             "duplicate_groups_detected": duplicate_groups_detected,
@@ -1196,7 +1153,6 @@ class DatasetCurationToolkit(Toolkit):
             "backend_status_counts": standardization_map["curation_backend_status"]
             .value_counts(dropna=False)
             .to_dict(),
-            "chembl_row_fallback_legacy_rdkit_rows": row_fallback_count,
             "removed_reason_counts": removed_reason_counts,
             "parent_structure_changed_rows": parent_changed_count,
             "stereochemistry_stripped_for_identity_rows": stereo_identity_removed_count,
@@ -1204,7 +1160,7 @@ class DatasetCurationToolkit(Toolkit):
         identity_diagnostics_path.write_text(json.dumps(identity_diagnostics, indent=2) + "\n")
         manifest = {
             "dataset_id": dataset_id or Path(dataset_path).stem,
-            "curation_backend": backend_result.get("used_backend_name"),
+            "curation_backend": DEFAULT_CURATION_BACKEND,
             "curation_policy": {
                 "stereochemistry_policy": curation_policy.get("stereochemistry_policy"),
                 "duplicate_identity_policy": curation_policy.get("duplicate_identity_policy"),
@@ -1271,10 +1227,7 @@ class DatasetCurationToolkit(Toolkit):
             duplicate_groups_aggregated=duplicate_groups_aggregated,
             duplicate_conflicting_groups=duplicate_conflicting_groups,
             duplicate_conflicting_rows_removed=duplicate_conflicting_rows_removed,
-            curation_backend=backend_result.get("backend_name"),
-            curation_backend_used=backend_result.get("used_backend_name"),
-            curation_backend_fallback_used=bool(backend_result.get("fallback_used")),
-            curation_backend_fallback_reason=backend_result.get("fallback_reason"),
+            curation_backend=DEFAULT_CURATION_BACKEND,
             curation_identity_key_type=(
                 str(working["curation_identity_key_type"].dropna().iloc[0])
                 if "curation_identity_key_type" in working.columns

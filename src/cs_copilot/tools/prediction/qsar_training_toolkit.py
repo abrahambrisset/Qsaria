@@ -655,20 +655,17 @@ class QSARTrainingToolkit(Toolkit):
         lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
-        block_prepare_training_dataset: bool = False,
     ):
         super().__init__("qsar_training")
-        self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit(register_tools=False)
-        self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit(register_tools=False)
-        self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit(register_tools=False)
+        self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
+        self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
+        self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
-        self.block_prepare_training_dataset = block_prepare_training_dataset
 
         self.register(self.describe_qsar_training_environment)
         self.register(self.describe_backend_hyperparameters)
         self.register(self.describe_tuning_engines)
         self.register(self.describe_outlier_analysis)
-        self.register(self.prepare_training_dataset)
         self.register(self.train_qsar_model)
         self.register(self.train_chemprop_model)
         self.register(self.train_lightgbm_model)
@@ -722,14 +719,6 @@ class QSARTrainingToolkit(Toolkit):
         confirm_explicit_export_request: bool = False,
     ) -> Dict[str, Any]:
         """Normalize a QSAR training CSV into canonical `smiles` + target columns."""
-        if self.block_prepare_training_dataset:
-            raise ValueError(
-                "prepare_training_dataset is disabled in the QSAR training workflow. "
-                "For explicit Chemprop, LightGBM, or TabICL training, call "
-                "train_chemprop_model, train_lightgbm_model, or train_tabicl_model directly "
-                "with the curated dataset; those backend tools handle their required input "
-                "preparation."
-            )
         if not confirm_explicit_export_request:
             raise ValueError(
                 "prepare_training_dataset is an export/debug helper, not a required training step. "
@@ -1100,7 +1089,6 @@ class QSARTrainingToolkit(Toolkit):
             "mode": "generated_tabular_features",
             "representation_name": representation_name,
             "representation_display_name": spec.display_name,
-            "representation_legacy": spec.legacy,
             "input_csv": train_csv,
             "base_csv_for_features": base_csv_for_features,
             "prepared_train_csv": tabular["output_csv"],

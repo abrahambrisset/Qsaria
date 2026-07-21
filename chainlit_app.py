@@ -199,9 +199,6 @@ QSAR_REQUEST_PATTERNS = [
     r"\bapplicability domain\b",
     r"\bdomaine d[' ]applicabilite\b",
     r"\bstandard_qsar\b",
-    r"\brobust_qsar\b",
-    r"\bchallenging_qsar\b",
-    r"\bfast_local\b",
     r"\bquick_train\b",
     r"\blipophilicity\b",
     r"\blipophilicite\b",
@@ -1438,8 +1435,6 @@ async def relay(stream):
         session_state = getattr(session_agent, "session_state", None) or {}
         prediction_state = session_state.get("prediction_models") or {}
         active_run = prediction_state.get("active_training_run")
-        if not active_run:
-            active_run = (session_state.get("qsar_training") or {}).get("active_run")
 
         snapshot = load_active_run_snapshot(active_run if isinstance(active_run, dict) else None)
         phase = snapshot.get("phase") or qsar_progress_state.get("phase")

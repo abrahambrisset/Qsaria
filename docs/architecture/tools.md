@@ -43,7 +43,9 @@ tools/
 └── constants.py       Configuration constants
 ```
 
-Each toolkit registers methods as tools via `self.register(method)`. Agents call these tools via the Agno tool-calling mechanism.
+Agent-facing toolkits register their public methods via `self.register(method)`.
+Backend training engines and feature generators remain Python-internal and are
+reached through `QSARTrainingToolkit`, not exposed directly to agents.
 
 ## QSAR Tabular Features
 

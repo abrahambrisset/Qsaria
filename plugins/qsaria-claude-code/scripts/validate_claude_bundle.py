@@ -90,7 +90,7 @@ def _validate_manifest(errors: list[str]) -> None:
     expected = {
         "name": "qsaria-claude-code",
         "displayName": "Qsaria for Claude Code",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "skills": "./skills/",
         "mcpServers": "./.mcp.json",
     }

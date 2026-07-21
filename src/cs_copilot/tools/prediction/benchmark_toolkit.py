@@ -115,19 +115,6 @@ def _matches_latest_training_run(
 class BenchmarkToolkit(Toolkit):
     """Toolkit orchestrating multi-backend QSAR benchmark campaigns."""
 
-    BENCHMARK_MODE_TO_PROTOCOL = {
-        "benchmark_fast_local": "fast_local",
-        "benchmark_standard_qsar": "standard_qsar",
-        "benchmark_robust_qsar": "robust_qsar",
-        "benchmark_challenging_qsar": "challenging_qsar",
-    }
-    BENCHMARK_MODE_ALIASES = {
-        "fast_local": "benchmark_fast_local",
-        "standard_qsar": "benchmark_standard_qsar",
-        "robust_qsar": "benchmark_robust_qsar",
-        "challenging_qsar": "benchmark_challenging_qsar",
-    }
-
     def __init__(
         self,
         *,
@@ -147,18 +134,6 @@ class BenchmarkToolkit(Toolkit):
                 register_tools=False,
             )
         return self.registry_toolkit
-
-    def _resolve_benchmark_protocol(self, benchmark_mode: str) -> str:
-        normalized = benchmark_mode.strip().lower()
-        normalized = self.BENCHMARK_MODE_ALIASES.get(normalized, normalized)
-        protocol = self.BENCHMARK_MODE_TO_PROTOCOL.get(normalized)
-        if protocol is None:
-            raise ValueError(
-                "Unsupported benchmark_mode. Expected one of "
-                f"{sorted(self.BENCHMARK_MODE_TO_PROTOCOL)} "
-                f"or aliases {sorted(self.BENCHMARK_MODE_ALIASES)}."
-            )
-        return protocol
 
     def _resolve_compute_profile(self) -> Dict[str, Any]:
         compute_env = describe_compute_environment()
@@ -207,11 +182,10 @@ class BenchmarkToolkit(Toolkit):
         *,
         include_candidate_variants: bool,
         training_profile: str,
-        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
         return tabular_candidates_for_backend(
             "lightgbm",
-            single_default_protocol=None if include_candidate_variants else benchmark_protocol,
+            single_default_protocol=None if include_candidate_variants else "standard_qsar",
             training_profile=training_profile,
         )
 
@@ -221,7 +195,6 @@ class BenchmarkToolkit(Toolkit):
         include_candidate_variants: bool,
         requested_variants: Optional[List[str]],
         training_profile: str,
-        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
         if requested_variants:
             representation_names: List[str] = []
@@ -239,7 +212,7 @@ class BenchmarkToolkit(Toolkit):
 
         return tabular_candidates_for_backend(
             "tabicl",
-            single_default_protocol=None if include_candidate_variants else benchmark_protocol,
+            single_default_protocol=None if include_candidate_variants else "standard_qsar",
             training_profile=training_profile,
         )
 
@@ -252,7 +225,6 @@ class BenchmarkToolkit(Toolkit):
         include_candidate_variants: bool,
         requested_tabicl_variants: Optional[List[str]],
         training_profile: str,
-        benchmark_protocol: str = "standard_qsar",
     ) -> List[Dict[str, Any]]:
         backends = self._resolve_backends(
             task_type=task_type,
@@ -273,7 +245,6 @@ class BenchmarkToolkit(Toolkit):
                 self._expand_lightgbm_candidates(
                     include_candidate_variants=include_candidate_variants,
                     training_profile=training_profile,
-                    benchmark_protocol=benchmark_protocol,
                 )
             )
         if "tabicl" in backends:
@@ -282,7 +253,6 @@ class BenchmarkToolkit(Toolkit):
                     include_candidate_variants=include_candidate_variants,
                     requested_variants=requested_tabicl_variants,
                     training_profile=training_profile,
-                    benchmark_protocol=benchmark_protocol,
                 )
             )
         return candidates
@@ -353,8 +323,8 @@ class BenchmarkToolkit(Toolkit):
         candidate: Dict[str, Any],
         result: Dict[str, Any],
         train_csv: str,
-        benchmark_mode: str,
         benchmark_protocol: str,
+        validation_strategy: Optional[Dict[str, Any]],
         campaign_root: Path,
         task_type: str,
         smiles_column: str,
@@ -383,9 +353,9 @@ class BenchmarkToolkit(Toolkit):
             task_type=task_type,
             smiles_columns=[smiles_column],
             target_columns=list(target_columns),
-            description=f"Benchmark candidate {candidate['candidate_id']} trained under {benchmark_mode}.",
+            description=f"Benchmark candidate {candidate['candidate_id']} trained under {benchmark_protocol}.",
             tags={
-                "benchmark_mode": benchmark_mode,
+                "workflow_kind": "benchmark",
                 "candidate_id": candidate["candidate_id"],
                 "representation_name": candidate["representation_name"],
             },
@@ -398,12 +368,13 @@ class BenchmarkToolkit(Toolkit):
             source=result.get("candidate_train_csv") or result.get("train_csv"),
             known_metrics=metrics_payload if isinstance(metrics_payload, dict) else {},
             training_data_summary={
-                "benchmark_mode": benchmark_mode,
+                "workflow_kind": "benchmark",
                 "candidate_id": candidate["candidate_id"],
                 "representation_name": candidate["representation_name"],
                 "benchmark_dataset_name": _benchmark_dataset_token(train_csv),
                 "benchmark_target_name": _benchmark_target_token(target_columns),
                 "validation_protocol": benchmark_protocol,
+                "validation_strategy": validation_strategy,
                 "training_profile": training_profile,
                 "campaign_root": str(campaign_root),
                 "seed_policy": result.get("seed_policy") or campaign_seed_policy,
@@ -426,7 +397,7 @@ class BenchmarkToolkit(Toolkit):
                 "representation_name": candidate["representation_name"],
             },
             selection_hints={
-                "benchmark_mode": benchmark_mode,
+                "workflow_kind": "benchmark",
                 "candidate_id": candidate["candidate_id"],
                 "representation_name": candidate["representation_name"],
             },
@@ -614,7 +585,6 @@ class BenchmarkToolkit(Toolkit):
     def _resolve_recommendations(
         self,
         rows: List[Dict[str, Any]],
-        benchmark_protocol: str,
     ) -> Dict[str, Optional[str]]:
         ranked = self._rank_summary_rows(rows)
         best_overall = ranked[0]["candidate_id"] if ranked else None
@@ -645,18 +615,17 @@ class BenchmarkToolkit(Toolkit):
             default=None,
         )
         best_stability = None
-        if benchmark_protocol == "robust_qsar":
-            stability_key = (
-                "random_family_balanced_accuracy_std"
-                if classification_rows
-                else "random_family_r2_std"
+        stability_key = (
+            "random_family_balanced_accuracy_std"
+            if classification_rows
+            else "random_family_r2_std"
+        )
+        stability_rows = [row for row in rows if row.get(stability_key) is not None]
+        if stability_rows:
+            best_stability = min(
+                stability_rows,
+                key=lambda row: row.get(stability_key, float("inf")),
             )
-            stability_rows = [row for row in rows if row.get(stability_key) is not None]
-            if stability_rows:
-                best_stability = min(
-                    stability_rows,
-                    key=lambda row: row.get(stability_key, float("inf")),
-                )
 
         return {
             "best_overall_candidate": best_overall,
@@ -669,8 +638,8 @@ class BenchmarkToolkit(Toolkit):
     def _render_benchmark_report(
         self,
         *,
-        benchmark_mode: str,
         benchmark_protocol: str,
+        validation_strategy: Optional[Dict[str, Any]],
         compute_environment: Dict[str, Any],
         candidate_rows: List[Dict[str, Any]],
         candidate_results: List[Dict[str, Any]],
@@ -678,12 +647,14 @@ class BenchmarkToolkit(Toolkit):
         campaign_seed_policy: Dict[str, Any],
     ) -> str:
         lines: List[str] = []
-        lines.append(f"# Benchmark QSAR Report — {benchmark_mode}")
+        lines.append("# Benchmark QSAR Report")
         lines.append("")
         lines.append("## Executive summary")
         lines.append("")
-        lines.append(f"- Benchmark mode: `{benchmark_mode}`")
-        lines.append(f"- Base protocol: `{benchmark_protocol}`")
+        lines.append("- Workflow kind: `benchmark`")
+        lines.append(f"- Effective protocol: `{benchmark_protocol}`")
+        if validation_strategy:
+            lines.append(f"- Effective validation strategy: `{json.dumps(validation_strategy, sort_keys=True)}`")
         lines.append(f"- Candidates compared: `{len(candidate_rows)}`")
         lines.append(f"- {seed_policy_reporting_text(campaign_seed_policy)}")
         for key, value in recommendations.items():
@@ -850,7 +821,6 @@ class BenchmarkToolkit(Toolkit):
         task_type: str,
         target_columns: List[str] | str,
         smiles_column: str = "smiles",
-        benchmark_mode: str = "benchmark_standard_qsar",
         backends: Optional[List[str] | str] = None,
         include_candidate_variants: bool = True,
         tabicl_candidate_variants: Optional[List[str] | str] = None,
@@ -871,7 +841,7 @@ class BenchmarkToolkit(Toolkit):
                 "blocked": True,
                 "reason": (
                     "`benchmark_qsar_models` requires `benchmark_requested=True`. "
-                    "Use single-backend training tools for ordinary standard_qsar, robust_qsar, "
+                    "Use single-backend training tools for ordinary standard_qsar "
                     "or Activity-Cliff-enriched training workflows."
                 ),
                 "next_step": (
@@ -880,22 +850,6 @@ class BenchmarkToolkit(Toolkit):
                     "with model registration/persistence for the completed single training run."
                 ),
             }
-        if not str(benchmark_mode or "").startswith("benchmark_"):
-            return {
-                "benchmark_started": False,
-                "blocked": True,
-                "reason": (
-                    "`benchmark_qsar_models` only accepts explicit benchmark modes such as "
-                    "`benchmark_standard_qsar`. A plain validation protocol like "
-                    f"`{benchmark_mode}` indicates ordinary single-model training, not a benchmark."
-                ),
-                "next_step": (
-                    "Continue with model registration/persistence for the completed single training "
-                    "run, or call this tool with a `benchmark_*` mode only if the user explicitly "
-                    "asked for a benchmark."
-                ),
-            }
-
         requested_backends = _coerce_list(backends)
         requested_tabicl_variants = _coerce_list(tabicl_candidate_variants)
         target_columns = _coerce_list(target_columns) or []
@@ -925,19 +879,16 @@ class BenchmarkToolkit(Toolkit):
                 ),
             }
 
-        benchmark_protocol = self._resolve_benchmark_protocol(benchmark_mode)
         compute_payload = self._resolve_compute_profile()
         effective_training_profile = training_profile or compute_payload["training_profile"]
         protocol_policy = resolve_validation_strategy(
-            requested_protocol=benchmark_protocol,
+            requested_protocol="standard_qsar",
             validation_strategy=validation_strategy,
             training_profile=effective_training_profile,
             seed_policy_mode="generated_per_benchmark_campaign",
         )
         benchmark_protocol = protocol_policy["protocol"]
-        effective_include_candidate_variants = (
-            include_candidate_variants if benchmark_protocol != "fast_local" else False
-        )
+        effective_include_candidate_variants = include_candidate_variants
         campaign_seed_policy = protocol_policy["seed_policy"]
 
         candidates = self._expand_candidates(
@@ -947,7 +898,6 @@ class BenchmarkToolkit(Toolkit):
             include_candidate_variants=effective_include_candidate_variants,
             requested_tabicl_variants=requested_tabicl_variants,
             training_profile=effective_training_profile,
-            benchmark_protocol=benchmark_protocol,
         )
         if not candidates:
             raise ValueError("No compatible benchmark candidates are available.")
@@ -1000,8 +950,8 @@ class BenchmarkToolkit(Toolkit):
                 candidate=candidate,
                 result=result,
                 train_csv=train_csv,
-                benchmark_mode=benchmark_mode,
                 benchmark_protocol=benchmark_protocol,
+                validation_strategy=protocol_policy.get("validation_strategy"),
                 campaign_root=campaign_root,
                 task_type=task_type,
                 smiles_column=smiles_column,
@@ -1048,7 +998,7 @@ class BenchmarkToolkit(Toolkit):
             )
 
         ranked_rows = self._rank_summary_rows(candidate_rows)
-        recommendations = self._resolve_recommendations(ranked_rows, benchmark_protocol)
+        recommendations = self._resolve_recommendations(ranked_rows)
         feature_cache = {
             "feature_cache_dir": str(campaign_root / "feature_cache"),
             "cache_hits": sum(int(row.get("feature_cache_hits") or 0) for row in candidate_rows),
@@ -1063,8 +1013,8 @@ class BenchmarkToolkit(Toolkit):
         report_path = campaign_root / "benchmark_report.md"
         report_path.write_text(
             self._render_benchmark_report(
-                benchmark_mode=benchmark_mode,
                 benchmark_protocol=benchmark_protocol,
+                validation_strategy=protocol_policy.get("validation_strategy"),
                 compute_environment=compute_payload["compute_environment"],
                 candidate_rows=ranked_rows,
                 candidate_results=candidate_results,
@@ -1074,8 +1024,8 @@ class BenchmarkToolkit(Toolkit):
         )
 
         benchmark_summary = {
-            "benchmark_mode": benchmark_mode,
-            "benchmark_protocol": benchmark_protocol,
+            "workflow_kind": "benchmark",
+            "validation_protocol": benchmark_protocol,
             "train_csv": train_csv,
             "task_type": task_type,
             "target_columns": target_columns,
@@ -1110,8 +1060,8 @@ class BenchmarkToolkit(Toolkit):
         summary_path.write_text(json.dumps(benchmark_summary, indent=2) + "\n")
 
         return {
-            "benchmark_mode": benchmark_mode,
-            "benchmark_protocol": benchmark_protocol,
+            "workflow_kind": "benchmark",
+            "validation_protocol": benchmark_protocol,
             "output_dir": str(campaign_root),
             "campaign_seed_policy": campaign_seed_policy,
             "validation_strategy": protocol_policy.get("validation_strategy"),

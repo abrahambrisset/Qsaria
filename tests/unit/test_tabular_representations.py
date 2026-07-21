@@ -2,21 +2,21 @@ from __future__ import annotations
 
 from cs_copilot.tools.prediction.tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
-    LEGACY_TABULAR_REPRESENTATION_NAMES,
+    SUPPORTED_TABULAR_REPRESENTATION_NAMES,
     default_tabular_representation_for_protocol,
     get_tabular_representation,
     tabular_candidates_for_backend,
 )
 
 
-def test_modern_automatic_pack_excludes_legacy_rdkit_basic():
+def test_modern_automatic_pack_is_the_complete_automatic_contract():
     assert AUTOMATIC_TABULAR_REPRESENTATION_NAMES == (
         "rdkit_all",
         "morgan_only",
         "morgan_count_only",
     )
-    assert "rdkit_basic_only" in LEGACY_TABULAR_REPRESENTATION_NAMES
-    assert "morgan_rdkit_basic" in LEGACY_TABULAR_REPRESENTATION_NAMES
+    assert "rdkit_basic_only" not in SUPPORTED_TABULAR_REPRESENTATION_NAMES
+    assert "morgan_rdkit_basic" not in SUPPORTED_TABULAR_REPRESENTATION_NAMES
 
 
 def test_representation_specs_capture_binary_count_and_rdkit_all():
@@ -28,8 +28,8 @@ def test_representation_specs_capture_binary_count_and_rdkit_all():
     assert spec.descriptor_set == "all"
 
 
-def test_fast_local_default_uses_rdkit_all():
-    assert default_tabular_representation_for_protocol("fast_local") == "rdkit_all"
+def test_standard_qsar_default_uses_rdkit_all():
+    assert default_tabular_representation_for_protocol("standard_qsar") == "rdkit_all"
 
 
 def test_tabular_candidates_use_modern_pack_by_default():
@@ -49,3 +49,7 @@ def test_explicit_combined_representation_remains_available():
     assert [candidate["candidate_id"] for candidate in candidates] == [
         "lightgbm_morgan_binary_count_rdkit_all"
     ]
+
+
+def test_morgan_rdkit_all_remains_available():
+    assert get_tabular_representation("morgan_rdkit_all").descriptor_set == "all"

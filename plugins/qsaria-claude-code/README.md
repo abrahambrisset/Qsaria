@@ -1,5 +1,8 @@
 # Qsaria for Claude Code
 
+Current bundle: `0.2.0`. The only named scientific protocol is
+`standard_qsar`; advanced validation is expressed with an explicit strategy.
+
 This personal plugin makes Claude Code the sole coordinator of deterministic
 Qsaria workflows. Five restricted specialists perform curation, training,
 registry, inference, and reporting work through the existing Qsaria MCP

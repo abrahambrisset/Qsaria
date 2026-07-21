@@ -6,7 +6,7 @@
 - Confirm target columns exist and match the requested regression or classification task.
 - Regression targets must be numeric and non-constant after curation.
 - Preserve the original source path and an audit trail from input rows to curated rows.
-- Standardize structures through the existing toolkit. Prefer `curation_backend=chembl_structure_v1`; use `legacy_rdkit_v1` only when explicitly requested or reported as a fallback. Do not implement alternate chemistry rules in the agent.
+- Standardize structures through the mandatory `chembl_structure_v1` toolkit pipeline. If one row fails, preserve `standardization_failed` evidence and continue with usable rows; never substitute another standardizer.
 - Remove detected inorganic structures, organometallic structures, and true multi-organic-fragment mixtures before standardization. Keep salt/counterion cases distinct from mixtures.
 - Treat ChEMBL checker flags as diagnostics unless the structured artifact explicitly records row removal.
 - Use the toolkit's `strip_then_deduplicate` QSAR identity policy. For regression, retain the default duplicate conflict threshold `0.5` unless the user explicitly changes it: aggregate coherent groups by the toolkit policy and remove strongly conflicting groups.

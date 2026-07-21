@@ -171,12 +171,16 @@ def _seed_policy_for_custom_strategy(
     seed_policy: Optional[Dict[str, Any]],
     base_seed: Optional[int],
 ) -> Dict[str, Any]:
-    # Reuse the robust policy when we need many generated seeds, then relabel runs below.
-    protocol = (
-        "robust_qsar" if run_count > 2 else "standard_qsar" if run_count == 2 else "fast_local"
-    )
+    templates = [
+        {
+            "backend_split_type": "random",
+            "primary": index == 0,
+            "split_sizes": DEFAULT_SPLIT_SIZES,
+        }
+        for index in range(run_count)
+    ]
     policy = resolve_seed_policy(
-        protocol=protocol,
+        split_templates=templates,
         mode=seed_policy_mode,
         seed_policy=seed_policy,
         base_seed=base_seed,
@@ -240,7 +244,7 @@ def resolve_validation_strategy(
     seed_policy_mode: str = "generated_per_run",
     base_seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Resolve a legacy protocol or explicit validation strategy into split runs."""
+    """Resolve the standard protocol or an explicit validation strategy into split runs."""
     strategy = _coerce_strategy(validation_strategy)
     if not strategy:
         return resolve_validation_protocol(

@@ -7,12 +7,15 @@ from types import SimpleNamespace
 import pytest
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
     _compact_registry_payload,
     _compact_training_tool_result,
     _resolve_existing_training_csv,
 )
+from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
 
 
 def _fake_train_result(
@@ -294,25 +297,28 @@ def test_prepare_training_dataset_is_export_only_by_default(tmp_path, monkeypatc
         )
 
 
-def test_prepare_training_dataset_can_be_disabled_for_training_agent(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    with S3.open("pxr_curated.csv", "w") as handle:
-        handle.write("smiles,pEC50\nCCO,4.2\n")
+def test_prepare_training_dataset_is_python_only_not_an_agent_tool():
+    toolkit = QSARTrainingToolkit()
 
-    toolkit = QSARTrainingToolkit(block_prepare_training_dataset=True)
+    assert callable(toolkit.prepare_training_dataset)
+    assert "prepare_training_dataset" not in toolkit.functions
 
-    try:
-        toolkit.prepare_training_dataset(
-            input_csv="pxr_curated.csv",
-            smiles_column="smiles",
-            target_columns=["pEC50"],
-            confirm_explicit_export_request=True,
-        )
-    except ValueError as exc:
-        assert "disabled in the QSAR training workflow" in str(exc)
-        assert "train_lightgbm_model" in str(exc)
-    else:
-        raise AssertionError("agent-scoped prepare_training_dataset should always be blocked")
+
+def test_backend_toolkits_are_internal_and_facade_is_the_only_agent_surface():
+    assert ChempropToolkit().functions == {}
+    assert LightGBMToolkit().functions == {}
+    assert TabICLToolkit().functions == {}
+
+    assert set(QSARTrainingToolkit().functions) == {
+        "describe_qsar_training_environment",
+        "describe_backend_hyperparameters",
+        "describe_tuning_engines",
+        "describe_outlier_analysis",
+        "train_qsar_model",
+        "train_chemprop_model",
+        "train_lightgbm_model",
+        "train_tabicl_model",
+    }
 
 
 def test_training_csv_resolution_falls_back_to_latest_curation(tmp_path, monkeypatch):
@@ -691,7 +697,7 @@ def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_pa
     assert "cross_validation" in result["recommended_registry_payload"]["known_metrics"]
 
 
-def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):
+def test_standard_qsar_tabular_training_uses_rdkit_all_single_candidate(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     captured = {}
 
@@ -723,7 +729,7 @@ def test_fast_local_tabular_training_uses_rdkit_all_single_candidate(tmp_path, m
         task_type="regression",
         output_dir=str(tmp_path / "out"),
         target_columns=["Y"],
-        validation_protocol="fast_local",
+        validation_protocol="standard_qsar",
     )
 
     assert "campaign_started" not in result

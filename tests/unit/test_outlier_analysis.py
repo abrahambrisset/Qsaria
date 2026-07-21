@@ -167,6 +167,12 @@ def test_activity_cliff_annotations_join_by_source_row_index():
 
 
 def test_config_skips_or_rejects_incompatible_requests():
+    default_config, default_reason = normalize_outlier_analysis_config(
+        None, has_validation=True, target_count=1
+    )
+    assert default_config.enabled is True
+    assert default_reason is None
+
     config, reason = normalize_outlier_analysis_config(
         {"enabled": False}, has_validation=True, target_count=1
     )

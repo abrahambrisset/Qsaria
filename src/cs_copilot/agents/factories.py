@@ -25,7 +25,6 @@ from cs_copilot.tools import (
     GTMToolkit,
     ModelRegistryToolkit,
     MolecularDesignerToolkit,
-    MolecularFeatureToolkit,
     PeptideDesignerToolkit,
     PointerPandasTools,
     PredictionInferenceToolkit,
@@ -737,11 +736,10 @@ class QSARTrainingFactory(BaseAgentFactory):
             handoff for model governance.
             """,
             tools=[
-                QSARTrainingToolkit(block_prepare_training_dataset=True),
+                QSARTrainingToolkit(),
                 *_prediction_facade_tools(),
                 BenchmarkToolkit(),
                 ActivityCliffToolkit(),
-                MolecularFeatureToolkit(block_direct_qsar_training=True),
                 PointerPandasTools(),
             ],
             instructions=QSAR_TRAINING_INSTRUCTIONS,
@@ -754,12 +752,7 @@ class QSARTrainingFactory(BaseAgentFactory):
                     "training_runs": [],
                 },
                 "prediction_outputs": {
-                    "latest_predictions_csv": None,
                     "latest_summary": None,
-                },
-                "qsar_training": {
-                    "last_request": {},
-                    "last_result": {},
                 },
             },
         )
@@ -790,10 +783,6 @@ class ModelRegistryFactory(BaseAgentFactory):
                     "prediction_history": [],
                     "catalog_recommendations": {},
                     "training_runs": [],
-                },
-                "qsar_registry": {
-                    "last_request": {},
-                    "last_result": {},
                 },
             },
         )
@@ -828,12 +817,7 @@ class ModelInferenceFactory(BaseAgentFactory):
                     "training_runs": [],
                 },
                 "prediction_outputs": {
-                    "latest_predictions_csv": None,
                     "latest_summary": None,
-                },
-                "qsar_inference": {
-                    "last_request": {},
-                    "last_result": {},
                 },
             },
         )
@@ -855,12 +839,7 @@ class QSARReportFactory(BaseAgentFactory):
             tools=[PointerPandasTools()],
             instructions=QSAR_REPORT_INSTRUCTIONS,
             session_state={
-                "qsar_report": {
-                    "last_request": {},
-                    "last_result": {},
-                },
                 "prediction_outputs": {
-                    "latest_predictions_csv": None,
                     "latest_summary": None,
                 },
             },

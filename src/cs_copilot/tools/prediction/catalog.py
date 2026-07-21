@@ -122,8 +122,23 @@ def _read_catalog_payload(path: Path) -> dict[str, Any]:
         return {"schema_version": 2, "models": []}
     raw = path.read_text(encoding="utf-8")
     if not raw.strip():
-        return {"schema_version": 1, "models": []}
-    return json.loads(raw)
+        raise ValueError(f"Model catalog is empty: {path}")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Model catalog is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Model catalog root must be a JSON object.")
+    if payload.get("schema_version") != 2:
+        raise ValueError(
+            "Unsupported model catalog schema_version. Qsaria 0.2.0 requires schema_version=2."
+        )
+    models = payload.get("models")
+    if not isinstance(models, list):
+        raise ValueError("Model catalog `models` must be a list.")
+    if not all(isinstance(item, dict) for item in models):
+        raise ValueError("Every model catalog entry must be a JSON object.")
+    return payload
 
 
 def _atomic_write_catalog(path: Path, payload: dict[str, Any]) -> None:
@@ -192,9 +207,7 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
 
     model_root = metadata_path.parent
     resolved_model_path = str((model_root / model_path).resolve())
-    training_data_summary = dict(
-        payload.get("training_data_summary", {}) or payload.get("training_data", {}) or {}
-    )
+    training_data_summary = dict(payload.get("training_data_summary", {}) or {})
     for key in ("trained_at", "trained_date", "trained_time", "validation_protocol"):
         if payload.get(key) is not None:
             training_data_summary[key] = payload.get(key)
@@ -218,7 +231,7 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
         limitations=list(payload.get("limitations", []) or []),
         recommended_for=list(payload.get("recommended_for", []) or []),
         not_recommended_for=list(payload.get("not_recommended_for", []) or []),
-        known_metrics=dict(payload.get("known_metrics", {}) or payload.get("metrics", {}) or {}),
+        known_metrics=dict(payload.get("known_metrics", {}) or {}),
         training_data_summary=training_data_summary,
         inference_profile=dict(payload.get("inference_profile", {}) or {}),
         selection_hints=dict(payload.get("selection_hints", {}) or {}),
@@ -286,7 +299,7 @@ class PredictionModelCatalog:
         self,
         records: List[PredictionModelRecord],
         source_path: Path,
-        schema_version: int = 1,
+        schema_version: int = 2,
     ):
         self.records = records
         self.source_path = source_path
@@ -295,16 +308,9 @@ class PredictionModelCatalog:
     @classmethod
     def load(cls, path: Optional[str] = None) -> "PredictionModelCatalog":
         source_path = Path(path).expanduser() if path else DEFAULT_MODEL_CATALOG_PATH
-        if source_path.exists():
-            # Writers publish with os.replace(), so an existing catalog can be
-            # read consistently without creating a lock file.  This keeps
-            # read-only package installations usable.
-            payload = _read_catalog_payload(source_path)
-        else:
-            with model_catalog_lock(source_path):
-                if not source_path.exists():
-                    _atomic_write_catalog(source_path, {"schema_version": 2, "models": []})
-                payload = _read_catalog_payload(source_path)
+        # Loading is deliberately non-mutating. Explicit persistence creates
+        # a missing catalog when needed.
+        payload = _read_catalog_payload(source_path)
         records = _records_from_payload(payload)
         discovered_records = _discover_internal_records(DEFAULT_INTERNAL_MODEL_ROOT)
         if discovered_records:
@@ -315,7 +321,7 @@ class PredictionModelCatalog:
         return cls(
             records=records,
             source_path=source_path,
-            schema_version=int(payload.get("schema_version", 1)),
+            schema_version=2,
         )
 
     def refresh_from_internal_store(self, persist: bool = False) -> int:
@@ -340,10 +346,7 @@ class PredictionModelCatalog:
                 merged.update({record.model_id: record for record in disk_records})
                 merged.update({record.model_id: record for record in discovered_records})
                 self.records = sorted(merged.values(), key=lambda item: item.model_id)
-                self.schema_version = max(
-                    self.schema_version,
-                    int(disk_payload.get("schema_version", 1)),
-                )
+                self.schema_version = 2
                 payload = {
                     "schema_version": self.schema_version,
                     "models": [record.as_dict() for record in self.records],
@@ -354,7 +357,7 @@ class PredictionModelCatalog:
 
     def save(self) -> None:
         payload = {
-            "schema_version": self.schema_version,
+            "schema_version": 2,
             "models": [record.as_dict() for record in self.records],
         }
         with model_catalog_lock(self.source_path):
@@ -384,14 +387,11 @@ class PredictionModelCatalog:
             merged.update({item.model_id: item for item in disk_records})
             merged[record.model_id] = record
             self.records = sorted(merged.values(), key=lambda item: item.model_id)
-            self.schema_version = max(
-                self.schema_version,
-                int(disk_payload.get("schema_version", 1)),
-            )
+            self.schema_version = 2
             _atomic_write_catalog(
                 self.source_path,
                 {
-                    "schema_version": self.schema_version,
+                    "schema_version": 2,
                     "models": [item.as_dict() for item in self.records],
                 },
             )

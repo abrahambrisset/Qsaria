@@ -74,7 +74,6 @@ from .session_state import (
 )
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
-    LEGACY_TABULAR_REPRESENTATION_NAMES,
 )
 from .training_orchestration import (
     apply_training_profile,
@@ -104,16 +103,9 @@ def _ad_status_series(applicability_domain_result: Dict[str, Any]) -> Optional[p
 class LightGBMToolkit(Toolkit):
     """Toolkit exposing LightGBM-backed QSAR orchestration for tabular datasets."""
 
-    def __init__(self, backend: Optional[LightGBMBackend] = None, *, register_tools: bool = True):
+    def __init__(self, backend: Optional[LightGBMBackend] = None):
         super().__init__("lightgbm_prediction")
         self.backend = backend or LightGBMBackend()
-        if register_tools:
-            self.register(self.describe_lightgbm_backend)
-            self.register(self.describe_lightgbm_environment)
-            self.register(self.is_lightgbm_available)
-            self.register(self.validate_lightgbm_model_path)
-            self.register(self.train_lightgbm_model)
-            self.register(self.predict_with_lightgbm_from_csv)
 
     def is_lightgbm_available(self) -> bool:
         """Return whether the LightGBM backend is available in the current environment."""
@@ -756,16 +748,6 @@ class LightGBMToolkit(Toolkit):
             protected_profiles=("heavy_validation",),
         )
 
-    def _resolve_lightgbm_run_artifacts(self, output_dir: Path) -> Dict[str, Path]:
-        model_dir = output_dir / "model_0"
-        return {
-            "best_model_path": model_dir / "best.pkl",
-            "validation_predictions_path": model_dir / "validation_predictions.csv",
-            "test_predictions_path": model_dir / "test_predictions.csv",
-            "config_path": output_dir / "config.toml",
-            "splits_path": output_dir / "splits.json",
-        }
-
     def _materialize_primary_protocol_artifacts(
         self,
         *,
@@ -1216,7 +1198,6 @@ class LightGBMToolkit(Toolkit):
                 "default_task_type": "regression",
                 "default_target_scope": "single_target",
                 "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
-                "legacy_representations": list(LEGACY_TABULAR_REPRESENTATION_NAMES),
                 "default_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
             }
         )

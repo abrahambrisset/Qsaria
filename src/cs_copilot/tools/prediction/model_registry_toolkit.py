@@ -128,19 +128,8 @@ def _load_candidate_manifest(path: str) -> List[Dict[str, Any]]:
 
 
 def _normalize_candidate_registry_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    """Validate registry input and recover one legacy AD field placement.
-
-    Older agent handoffs occasionally lifted ``split_score_summaries`` out of
-    ``applicability_domain``.  It is meaningful metadata, so preserve it in
-    the canonical location instead of silently discarding it.  Other unknown
-    fields remain explicit errors.
-    """
+    """Validate one candidate registry payload against the public contract."""
     normalized = dict(payload)
-    split_score_summaries = normalized.pop("split_score_summaries", None)
-    if split_score_summaries is not None:
-        applicability_domain = _mapping_or_empty(normalized.get("applicability_domain"))
-        applicability_domain.setdefault("split_score_summaries", split_score_summaries)
-        normalized["applicability_domain"] = applicability_domain
     unexpected = sorted(set(normalized) - _REGISTER_MODEL_PAYLOAD_KEYS)
     if unexpected:
         raise ValueError(
@@ -303,7 +292,6 @@ def _hydrate_curation_metadata(
     if report:
         metadata["backend"] = (
             metadata.get("backend")
-            or report.get("curation_backend_used")
             or report.get("curation_backend")
         )
         metadata["curated_dataset_path"] = metadata.get("curated_dataset_path") or report.get(
@@ -490,7 +478,7 @@ class ModelRegistryToolkit(Toolkit):
         self.backends = dict(backends)
         self.default_backend_name = default_backend_name
         self.catalog = catalog or PredictionModelCatalog.load()
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
 
         if register_tools:
             self.register(self.describe_backends)
@@ -517,7 +505,7 @@ class ModelRegistryToolkit(Toolkit):
 
     def describe_catalog(self) -> Dict[str, Any]:
         """Describe the persistent model catalog configured for prediction."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         return {
             "catalog_path": str(self.catalog.source_path),
             "num_models": len(self.catalog.list_models()),
@@ -538,7 +526,7 @@ class ModelRegistryToolkit(Toolkit):
         include_unavailable_paths: bool = False,
     ) -> List[Dict[str, Any]]:
         """List models from the persistent catalog with runtime annotations."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         available_backends = [
             name for name, backend in self.backends.items() if backend.is_available()
         ]
@@ -554,7 +542,7 @@ class ModelRegistryToolkit(Toolkit):
 
     def summarize_catalog_model(self, model_id: str) -> Dict[str, Any]:
         """Return the catalog metadata for one model, enriched with runtime checks."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         return self.annotate_record(self.catalog.get_model(model_id))
 
     def recommend_catalog_model(
@@ -569,7 +557,7 @@ class ModelRegistryToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Recommend the best catalog model for a requested task."""
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         recommendation = self.catalog.recommend(
             task_type=task_type,
             target_hint=target_hint,
@@ -598,7 +586,7 @@ class ModelRegistryToolkit(Toolkit):
         if agent is None:
             raise ValueError("Agent is required to register a catalog model")
 
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         try:
             record = self.catalog.get_model(model_id)
         except ValueError as exc:
@@ -2116,14 +2104,14 @@ class ModelRegistryToolkit(Toolkit):
             if record.metadata_path:
                 return record
             try:
-                self.catalog.refresh_from_internal_store(persist=True)
+                self.catalog.refresh_from_internal_store(persist=False)
                 catalog_record = self.catalog.get_model(model_id)
             except ValueError:
                 return record
             prediction_state["registered"][model_id] = catalog_record.as_dict()
             return catalog_record
 
-        self.catalog.refresh_from_internal_store(persist=True)
+        self.catalog.refresh_from_internal_store(persist=False)
         try:
             record = self.catalog.get_model(model_id)
         except ValueError as exc:

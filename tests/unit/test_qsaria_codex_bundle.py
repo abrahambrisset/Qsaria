@@ -255,8 +255,8 @@ def test_cachebuster_replaces_suffix_without_changing_base_version() -> None:
     finally:
         sys.path.pop(0)
 
-    assert _with_cachebuster("0.1.0", "local-1") == "0.1.0+codex.local-1"
-    assert _with_cachebuster("0.1.0+codex.previous", "local-2") == "0.1.0+codex.local-2"
+    assert _with_cachebuster("0.2.0", "local-1") == "0.2.0+codex.local-1"
+    assert _with_cachebuster("0.2.0+codex.previous", "local-2") == "0.2.0+codex.local-2"
     assert _sanitize_cachebuster(" Local  2026/07/17 ") == "local-2026-07-17"
 
 
@@ -329,7 +329,7 @@ def test_compatibility_detects_source_provenance_drift() -> None:
 
     expected = {
         "schema_version": "1.0",
-        "plugin_version": "0.1.0",
+        "plugin_version": "0.2.0",
         "source": {
             "commit": "abc",
             "tree": "tree-a",
