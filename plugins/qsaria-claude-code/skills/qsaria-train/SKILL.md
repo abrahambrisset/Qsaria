@@ -21,22 +21,33 @@ and compute constraint. Never translate cross-validation into repeated
 holdout, invent split columns, create feature files, or reconstruct registry
 payloads.
 
+Build one strict `request` with `schema_version="2.0"`; fixed backend values
+belong under `backend`, validation under `validation`, and tuning under
+`tuning`. Unknown fields are invalid. Never send runtime paths, split payloads,
+checkpoint/device/offload controls, heartbeat controls, persistence controls,
+or a free-form argument map.
+
+Custom tuning intervals belong only in the backend-matched typed
+`request.tuning.search_space`, and every customized field must also appear in
+`request.tuning.parameters`.
+
 An unqualified standard LightGBM workflow means:
 
-- representation `rdkit_all`;
-- protocol `standard_qsar`, the toolkit's random 80/10/10 campaign;
+- representation `{"kind":"generated","name":"rdkit_all"}`;
+- validation `{"kind":"standard_qsar"}`, the toolkit's fixed random 80/10/10 split;
 - toolkit-default hyperparameter tuning with 50 requested trials when eligible;
 - eligible outlier analysis;
 - baseline and retained outlier-filtered evidence kept distinct.
 
 Words such as `simple` describe presentation, not permission to remove these
-stages. Use explicit `validation_strategy` only when the user requests another
+stages. Use another canonical typed `validation` object only when the user requests another
 split family, ratios, repeated holdout, cross-validation, isolated external
 test, or full-train. Full-train is trained but not internally evaluated.
 
 ## Execute and verify
 
-Call the public training facade directly. Benchmark only when the user requests
+Call the public training facade directly with `train_csv` and the typed
+`request`. Benchmark only when the user requests
 multiple backends or representations. Use Activity Cliff operations only as
 part of the delegated training analysis.
 
@@ -62,5 +73,7 @@ workflow, contract conformance, metrics, gates, persistence evidence, artifact
 ids, model ids, warnings, blockers, and next action. Copy reporting facts and
 tables exactly when returned; never submit a toolkit handoff directly.
 
-Call `qsaria_record_handoff` exactly once immediately before returning and
-return its normalized envelope.
+After scientific execution begins, call `qsaria_record_handoff` exactly once
+immediately before returning and return its normalized envelope. For a strict
+pre-execution request-schema rejection, return only the validation diagnostic
+and do not record a scientific handoff.

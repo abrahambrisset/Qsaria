@@ -363,7 +363,6 @@ class EnsembleBackend(PredictionBackend):
         preds_path: str,
         *,
         return_uncertainty: bool = False,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         ensemble_path = self.validate_model_path(model_record.model_path)
         payload = self._load_payload(ensemble_path)
@@ -444,7 +443,6 @@ class EnsembleBackend(PredictionBackend):
                     model_record=record,
                     preds_path=str(component_path),
                     return_uncertainty=False,
-                    extra_args=extra_args,
                 )
                 frame = _read_csv(component_path)
                 if task_is_classification:
@@ -602,14 +600,7 @@ class EnsembleBackend(PredictionBackend):
             "return_uncertainty": return_uncertainty,
         }
 
-    def train_model(
-        self,
-        train_csv: str,
-        output_dir: str,
-        task: PredictionTaskSpec,
-        *,
-        extra_args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    def train_model(self, request) -> Dict[str, Any]:
         raise BackendNotAvailableError(
             "EnsembleBackend is post-hoc only and does not train component models."
         )

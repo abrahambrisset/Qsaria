@@ -103,9 +103,7 @@ def test_repeated_holdout_generates_seeds_without_named_protocol_presets():
 
     assert payload["protocol"] == "repeated_scaffold_holdout"
     assert len(payload["split_runs"]) == 4
-    assert {item["backend_split_type"] for item in payload["split_runs"]} == {
-        "scaffold_balanced"
-    }
+    assert {item["backend_split_type"] for item in payload["split_runs"]} == {"scaffold_balanced"}
     assert len({item["seed"] for item in payload["split_runs"]}) == 4
 
 
@@ -130,10 +128,7 @@ def test_generated_seed_policy_changes_between_runs():
 
 
 def test_user_provided_seed_policy_is_replayable():
-    templates = [
-        {"backend_split_type": "random", "primary": index == 0}
-        for index in range(3)
-    ]
+    templates = [{"backend_split_type": "random", "primary": index == 0} for index in range(3)]
     first = resolve_seed_policy(split_templates=templates, base_seed=42)
     second = resolve_seed_policy(split_templates=templates, base_seed=42)
 
@@ -145,10 +140,7 @@ def test_user_provided_seed_policy_is_replayable():
 
 
 def test_benchmark_seed_policy_is_shared_campaign_policy():
-    templates = [
-        {"backend_split_type": "random", "primary": index == 0}
-        for index in range(3)
-    ]
+    templates = [{"backend_split_type": "random", "primary": index == 0} for index in range(3)]
     policy = resolve_seed_policy(
         split_templates=templates,
         mode="generated_per_benchmark_campaign",
@@ -219,8 +211,8 @@ def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
     light = toolkit._apply_training_profile({"training_profile": "local_light"})
     standard = toolkit._apply_training_profile({"training_profile": "local_standard"})
 
-    assert int(light["extra_args"]["n_jobs"]) >= 1
-    assert int(standard["extra_args"]["n_jobs"]) >= 1
+    assert int(light["resolved_parameters"]["n_jobs"]) >= 1
+    assert int(standard["resolved_parameters"]["n_jobs"]) >= 1
 
 
 def test_tabicl_description_does_not_advertise_removed_basic_representations():
@@ -366,7 +358,9 @@ def test_create_pandas_dataframe_rejects_json_for_read_csv(tmp_path):
 def test_create_pandas_dataframe_loads_json_artifact_with_read_json(tmp_path):
     toolkit = PointerPandasTools()
     json_path = tmp_path / "benchmark_summary.json"
-    json_path.write_text('{"validation_protocol": "repeated_random_holdout", "metrics": {"scaffold_r2": 0.6}}')
+    json_path.write_text(
+        '{"validation_protocol": "repeated_random_holdout", "metrics": {"scaffold_r2": 0.6}}'
+    )
 
     result = toolkit.create_pandas_dataframe(
         dataframe_name="benchmark_summary",

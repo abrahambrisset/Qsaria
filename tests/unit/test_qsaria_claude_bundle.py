@@ -60,6 +60,7 @@ def test_phase_b_compatibility_signatures_are_current() -> None:
         "experiment": "1.0",
         "handoff": "1.0",
         "report_facts": "2.0",
+        "training": "2.0",
     }
     assert compatibility["source"]["repository"].endswith("/Qsaria")
     assert len(compatibility["source"]["commit"]) == 40
@@ -123,7 +124,7 @@ def test_plugin_activates_the_main_coordinator() -> None:
     settings = json.loads((PLUGIN_ROOT / "settings.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "qsaria-claude-code"
     assert manifest["displayName"] == "Qsaria for Claude Code"
-    assert manifest["version"] == "0.2.1"
+    assert manifest["version"] == "0.3.0"
     assert "agents" not in manifest
     assert settings == {"agent": "qsaria-coordinator"}
 

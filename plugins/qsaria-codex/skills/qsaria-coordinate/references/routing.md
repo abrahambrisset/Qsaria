@@ -34,7 +34,8 @@ contract to Training:
 
 - backend `lightgbm`;
 - representation `rdkit_all`;
-- validation protocol `standard_qsar` with no custom validation strategy;
+- protocol `standard_qsar`;
+- validation object `{"kind":"standard_qsar"}`;
 - toolkit-default hyperparameter tuning, currently 50 requested trials;
 - toolkit-default outlier analysis when scientifically eligible.
 

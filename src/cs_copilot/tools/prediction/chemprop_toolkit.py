@@ -50,6 +50,7 @@ from .outlier_analysis import (
     write_outlier_analysis_artifacts,
     write_outlier_variant_comparison,
 )
+from .qsar_contracts import build_backend_run_request
 from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
@@ -141,6 +142,48 @@ class ChempropToolkit(Toolkit):
     ):
         super().__init__("chemprop_prediction")
         self.backend = backend or ChempropBackend()
+
+    def _train_backend(
+        self,
+        *,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        request = build_backend_run_request(
+            backend="chemprop",
+            train_csv=train_csv,
+            output_dir=output_dir,
+            task_type=task.task_type,
+            smiles_columns=list(task.smiles_columns),
+            target_columns=list(task.target_columns),
+            reaction_columns=list(task.reaction_columns),
+            resolved_parameters=resolved_parameters,
+        )
+        return self.backend.train_model(request, progress_callback=progress_callback)
+
+    def _hpopt_backend(
+        self,
+        *,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        request = build_backend_run_request(
+            backend="chemprop",
+            train_csv=train_csv,
+            output_dir=output_dir,
+            task_type=task.task_type,
+            smiles_columns=list(task.smiles_columns),
+            target_columns=list(task.target_columns),
+            reaction_columns=list(task.reaction_columns),
+            resolved_parameters=resolved_parameters,
+        )
+        return self.backend.hpopt_model(request, progress_callback=progress_callback)
 
     def _resolve_chemprop_run_artifacts(self, output_dir: Path) -> Dict[str, Optional[Path]]:
         output_path = output_dir.expanduser().resolve()
@@ -846,7 +889,7 @@ class ChempropToolkit(Toolkit):
 
     def _apply_training_profile(
         self,
-        extra_args: Optional[Dict[str, Any]],
+        resolved_parameters: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         def _limit(
             profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
@@ -874,7 +917,7 @@ class ChempropToolkit(Toolkit):
             return merged
 
         return apply_training_profile(
-            extra_args,
+            resolved_parameters,
             defaults_for_profile=self._training_defaults_for_profile,
             limit_profile_args=_limit,
             compute_environment=self.describe_compute_environment(),
@@ -888,10 +931,10 @@ class ChempropToolkit(Toolkit):
         protocol_policy: Dict[str, Any],
     ) -> Optional[str]:
         """Apply Chemprop-specific training overrides once the QSAR protocol is known."""
-        extra_args = training_policy.setdefault("extra_args", {})
+        resolved_parameters = training_policy.setdefault("resolved_parameters", {})
         protocol = protocol_policy.get("protocol") or "qsar"
-        requested_replicates = int(extra_args.get("num_replicates") or 1)
-        extra_args["num_replicates"] = 1
+        requested_replicates = int(resolved_parameters.get("num_replicates") or 1)
+        resolved_parameters["num_replicates"] = 1
         if requested_replicates != 1:
             return (
                 f"Chemprop {protocol} protocols use one replicate per split. "
@@ -971,11 +1014,11 @@ class ChempropToolkit(Toolkit):
             "train_csv": chemprop_input["chemprop_training_input_csv"],
             "output_dir": output_dir,
             "task": task,
-            "extra_args": backend_train_args,
+            "resolved_parameters": backend_train_args,
         }
         if progress_callback is not None:
             backend_kwargs["progress_callback"] = progress_callback
-        result = self.backend.train_model(**backend_kwargs)
+        result = self._train_backend(**backend_kwargs)
         result.update(
             self._compute_training_metrics(
                 train_csv=chemprop_input["chemprop_training_input_csv"],
@@ -1276,11 +1319,6 @@ class ChempropToolkit(Toolkit):
         """Execute native Chemprop HPO on train/validation only and clean it up."""
         ChempropHpoptAdapter().validate(config)
         output_dir.mkdir(parents=True, exist_ok=True)
-        if config.search_space:
-            raise HyperparameterTuningError(
-                "Chemprop native hpopt V1 owns its `basic` search space; custom search_space "
-                "is not yet supported."
-            )
         resolved_compute_environment = dict(
             compute_environment or self.describe_compute_environment()
         )
@@ -1332,6 +1370,11 @@ class ChempropToolkit(Toolkit):
                     # keyword.  Passing only the non-fixed names makes a direct
                     # user value genuinely fixed throughout the HPO campaign.
                     "search_parameter_keywords": list(config.parameters),
+                    "custom_tuning_space": (
+                        {"backend": "chemprop", **config.search_space}
+                        if config.search_space
+                        else None
+                    ),
                     "data_seed": seed,
                 }
             )
@@ -1365,11 +1408,11 @@ class ChempropToolkit(Toolkit):
                 "train_csv": chemprop_input["chemprop_training_input_csv"],
                 "output_dir": str(temporary_path / "ray_output"),
                 "task": task,
-                "extra_args": hpopt_args,
+                "resolved_parameters": hpopt_args,
             }
             if progress_callback is not None:
                 backend_kwargs["progress_callback"] = progress_callback
-            backend_result = self.backend.hpopt_model(**backend_kwargs)
+            backend_result = self._hpopt_backend(**backend_kwargs)
             best_parameters = self._extract_hpopt_parameters(
                 temporary_path,
                 list(config.parameters),
@@ -1395,7 +1438,8 @@ class ChempropToolkit(Toolkit):
             "selection_protocol": {
                 "tracking_metric": "val_loss",
                 "search_parameter_keywords": list(config.parameters),
-                "basic_architecture_space": True,
+                "custom_search_space": dict(config.search_space),
+                "basic_architecture_space": not bool(config.search_space),
                 "raytune_search_algorithm": "hyperopt",
                 "raytune_trial_scheduler": "FIFO",
                 "raytune_num_workers": 1,
@@ -1985,7 +2029,7 @@ class ChempropToolkit(Toolkit):
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
         bundle_path: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -2009,36 +2053,38 @@ class ChempropToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         active_marker_path = root_output_path / ".training_in_progress"
         trained_at = project_now()
-        cleaned_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        cleaned_resolved_parameters, extra_activity_args = split_activity_cliff_args(
+            resolved_parameters
+        )
         requested_hyperparameter_tuning = (
             hyperparameter_tuning
             if hyperparameter_tuning is not None
-            else cleaned_extra_args.pop("hyperparameter_tuning", None)
+            else cleaned_resolved_parameters.pop("hyperparameter_tuning", None)
         )
         requested_outlier_analysis = (
             outlier_analysis
             if outlier_analysis is not None
-            else cleaned_extra_args.pop("outlier_analysis", None)
+            else cleaned_resolved_parameters.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
-            else cleaned_extra_args.pop("validation_strategy", None)
+            else cleaned_resolved_parameters.pop("validation_strategy", None)
         )
         requested_ad_methods = (
             applicability_domain_methods
             if applicability_domain_methods is not None
-            else cleaned_extra_args.pop("applicability_domain_methods", None)
+            else cleaned_resolved_parameters.pop("applicability_domain_methods", None)
         )
         requested_similarity_top_k = (
             similarity_top_k_neighbors
             if similarity_top_k_neighbors is not None
-            else cleaned_extra_args.pop("similarity_top_k_neighbors", None)
+            else cleaned_resolved_parameters.pop("similarity_top_k_neighbors", None)
         )
         requested_similarity_percentile = (
             similarity_threshold_percentile
             if similarity_threshold_percentile is not None
-            else cleaned_extra_args.pop("similarity_threshold_percentile", None)
+            else cleaned_resolved_parameters.pop("similarity_threshold_percentile", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -2049,13 +2095,13 @@ class ChempropToolkit(Toolkit):
             "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
             **extra_activity_args,
         }
-        training_policy = self._apply_training_profile(cleaned_extra_args)
+        training_policy = self._apply_training_profile(cleaned_resolved_parameters)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
-            seed_policy=training_policy["extra_args"].get("seed_policy"),
-            base_seed=training_policy["extra_args"].get("data_seed")
-            or training_policy["extra_args"].get("random_state"),
+            seed_policy=training_policy["resolved_parameters"].get("seed_policy"),
+            base_seed=training_policy["resolved_parameters"].get("data_seed")
+            or training_policy["resolved_parameters"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
         has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
@@ -2074,7 +2120,9 @@ class ChempropToolkit(Toolkit):
             training_policy=training_policy,
             protocol_policy=protocol_policy,
         )
-        training_policy["extra_args"]["data_seed"] = protocol_policy["seed_policy"]["model_seed"]
+        training_policy["resolved_parameters"]["data_seed"] = protocol_policy["seed_policy"][
+            "model_seed"
+        ]
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=smiles_columns or ["smiles"],
@@ -2083,9 +2131,9 @@ class ChempropToolkit(Toolkit):
         )
         if (
             is_classification_task(task.task_type)
-            and training_policy["extra_args"].get("metric") == "rmse"
+            and training_policy["resolved_parameters"].get("metric") == "rmse"
         ):
-            training_policy["extra_args"].pop("metric")
+            training_policy["resolved_parameters"].pop("metric")
         activity_cliffs: Dict[str, Any] = {}
         if task.task_type == "regression" and len(task.target_columns) == 1:
             try:
@@ -2214,7 +2262,7 @@ class ChempropToolkit(Toolkit):
         }
         direct_architecture_parameters = {
             key: value
-            for key, value in cleaned_extra_args.items()
+            for key, value in cleaned_resolved_parameters.items()
             if key in tunable_architecture_parameters
         }
         hpo_eligible = has_validation
@@ -2238,12 +2286,12 @@ class ChempropToolkit(Toolkit):
                 run_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key != "seed_policy"
                     },
                     "split_type": split_run["backend_split_type"],
                     "split_sizes": split_run.get("split_sizes")
-                    or training_policy["extra_args"].get("split_sizes"),
+                    or training_policy["resolved_parameters"].get("split_sizes"),
                     "data_seed": split_run["seed"],
                 }
                 if label in cv_split_payloads:
@@ -2544,7 +2592,7 @@ class ChempropToolkit(Toolkit):
                 final_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key != "seed_policy"
                     },
                     "split_type": "final_refit",
@@ -2689,7 +2737,7 @@ class ChempropToolkit(Toolkit):
             result["profile_reason"] = training_policy["profile_reason"]
             result["effective_train_args"] = {
                 key: value
-                for key, value in training_policy["extra_args"].items()
+                for key, value in training_policy["resolved_parameters"].items()
                 if key != "seed_policy"
             }
             result["effective_train_args"]["model_seed"] = protocol_policy["seed_policy"].get(

@@ -2,18 +2,18 @@
 
 ## Default and explicit overrides
 
-- For an unqualified single-model request, use `validation_protocol="standard_qsar"` and omit `validation_strategy`.
-- `standard_qsar` is the fixed random 80/10/10 train/validation/test campaign implemented by the toolkit.
-- Use `validation_strategy` only for an explicit split family, split ratio, holdout, repeated holdout, cross-validation, fold count, repetition count, isolated external test, or full-dataset final training request.
+- For an unqualified single-model request, use `validation={"kind":"standard_qsar"}`.
+- `standard_qsar` is the fixed random 80/10/10 train/validation/test split implemented by the toolkit.
+- Use another typed `validation` object only for an explicit split family, split ratio, holdout, repeated holdout, cross-validation, fold count, repetition count, isolated external test, or full-dataset final training request.
 - Never translate cross-validation into repeated holdout.
-- A full-train request uses `{"type":"full_train"}`. It is trained but not evaluated and has no internal test metrics.
+- A full-train request uses `{"kind":"full_train"}`. It is trained but not evaluated and has no internal test metrics.
 
 ## Canonical vocabulary
 
-- `type`: `holdout`, `repeated_holdout`, `cross_validation`, `full_train`
-- `split_family`: `random`, `scaffold`, `cluster`; cross-validation currently accepts the toolkit-supported families only
+- `kind`: `standard_qsar`, `holdout`, `repeated_holdout`, `cross_validation`, `full_train`
+- `split_family`: `random`, `scaffold`, `cluster` for holdouts; cross-validation currently accepts only `random`
 - `split_sizes`: `[train, test]` or `[train, validation, test]`
-- `n_folds` or `folds`, `n_splits`, `n_repeats`, `outer_test_size`, `final_refit`, `selection_metric`
+- `n_folds`, `n_repeats`, `outer_test_size`, `final_refit`, `selection_metric`
 
 Use `outer_test_size` for an isolated cross-validation test set. Never invent aliases. Never create split columns outside the training facade.
 

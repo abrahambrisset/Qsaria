@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .qsar_contracts import BackendRunRequest
+
 
 class PredictionBackendError(Exception):
     """Base exception for prediction backend failures."""
@@ -167,17 +169,9 @@ class PredictionBackend(ABC):
         preds_path: str,
         *,
         return_uncertainty: bool = False,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run batch prediction from a CSV input file."""
 
     @abstractmethod
-    def train_model(
-        self,
-        train_csv: str,
-        output_dir: str,
-        task: PredictionTaskSpec,
-        *,
-        extra_args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    def train_model(self, request: BackendRunRequest) -> Dict[str, Any]:
         """Train a model and return metadata about the training outputs."""

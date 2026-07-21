@@ -51,6 +51,10 @@ CONTRACT_CONSTANTS = {
         "src/cs_copilot/tools/prediction/qsar_reporting.py",
         "REPORT_FACTS_SCHEMA_VERSION",
     ),
+    "training": (
+        "src/cs_copilot/tools/prediction/qsar_contracts.py",
+        "TRAINING_CONTRACT_VERSION",
+    ),
 }
 SUPPORTED_CLIENTS = ["codex_v1", "claude_code_v1"]
 COORDINATOR_CONTRACT = "external_mcp_coordinator_v1"

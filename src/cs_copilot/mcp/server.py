@@ -257,8 +257,26 @@ def _register_tools(
             ),
             structured_output=True if profile == "qsaria" else False,
         )
+        if profile == "qsaria":
+            _close_qsaria_tool_schema(server, spec.mcp_name)
         registered.add(spec.mcp_name)
     logger.info("Registered %d MCP tools", len(registered))
+
+
+def _close_qsaria_tool_schema(server: Any, tool_name: str) -> None:
+    """Reject unknown top-level MCP arguments and publish that strict schema.
+
+    FastMCP preserves the strict configuration of nested Pydantic request
+    models, but its generated root argument model otherwise ignores unknown
+    keys.  Qsaria treats that root model as part of the scientific contract,
+    so close and rebuild it immediately after registration.
+    """
+
+    tool = server._tool_manager._tools[tool_name]
+    argument_model = tool.fn_metadata.arg_model
+    argument_model.model_config["extra"] = "forbid"
+    argument_model.model_rebuild(force=True)
+    tool.parameters = argument_model.model_json_schema(by_alias=True)
 
 
 def _dedupe(values: tuple[str, ...] | list[str]) -> list[str]:

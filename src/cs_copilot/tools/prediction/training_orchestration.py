@@ -270,7 +270,7 @@ TrainingProfileLimiter = Callable[[str, Dict[str, Any], bool], Dict[str, Any]]
 
 
 def apply_training_profile(
-    extra_args: Optional[Mapping[str, Any]],
+    resolved_parameters: Optional[Mapping[str, Any]],
     *,
     defaults_for_profile: TrainingDefaultsProvider,
     limit_profile_args: Optional[TrainingProfileLimiter] = None,
@@ -278,7 +278,7 @@ def apply_training_profile(
     protected_profiles: Iterable[str] = ("heavy_validation", "benchmark"),
 ) -> Dict[str, Any]:
     """Apply shared training-profile resolution around backend-specific defaults."""
-    requested = dict(extra_args or {})
+    requested = dict(resolved_parameters or {})
     requested_profile = requested.pop("training_profile", None)
     requested_validation_protocol = requested.pop("validation_protocol", None)
     allow_heavy_compute = bool(requested.pop("allow_heavy_compute", False))
@@ -302,7 +302,7 @@ def apply_training_profile(
         "training_profile": profile,
         "profile_reason": resolved["reason"],
         "validation_protocol": requested_validation_protocol,
-        "extra_args": merged,
+        "resolved_parameters": merged,
     }
 
 
@@ -317,8 +317,8 @@ def materialize_primary_protocol_artifacts(
     root_model_dir.mkdir(parents=True, exist_ok=True)
 
     file_map = {
-        primary_run.get("model_path")
-        or primary_run.get("best_model_path"): root_model_dir / model_filename,
+        primary_run.get("model_path") or primary_run.get("best_model_path"): root_model_dir
+        / model_filename,
         primary_run.get("validation_predictions_path"): root_model_dir
         / "validation_predictions.csv",
         primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
@@ -655,9 +655,9 @@ def build_applicability_domain_for_training(
                 if ad_metrics:
                     split_score_summaries[label].update(ad_metrics)
                 elif label in {"validation", "test"}:
-                    split_score_summaries[label][
-                        "metrics_unavailable_reason"
-                    ] = f"No {label}_predictions_path artifact was available."
+                    split_score_summaries[label]["metrics_unavailable_reason"] = (
+                        f"No {label}_predictions_path artifact was available."
+                    )
                 canonical_path = (prediction_artifact_paths or {}).get(label)
                 if canonical_path and str(canonical_path) != str(predictions_path or ""):
                     try:

@@ -47,6 +47,7 @@ from .outlier_analysis import (
     write_outlier_analysis_artifacts,
     write_outlier_variant_comparison,
 )
+from .qsar_contracts import build_backend_run_request
 from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
@@ -106,6 +107,26 @@ class LightGBMToolkit(Toolkit):
     def __init__(self, backend: Optional[LightGBMBackend] = None):
         super().__init__("lightgbm_prediction")
         self.backend = backend or LightGBMBackend()
+
+    def _train_backend(
+        self,
+        *,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        request = build_backend_run_request(
+            backend="lightgbm",
+            train_csv=train_csv,
+            output_dir=output_dir,
+            task_type=task.task_type,
+            smiles_columns=list(task.smiles_columns),
+            target_columns=list(task.target_columns),
+            reaction_columns=list(task.reaction_columns),
+            resolved_parameters=resolved_parameters,
+        )
+        return self.backend.train_model(request)
 
     def is_lightgbm_available(self) -> bool:
         """Return whether the LightGBM backend is available in the current environment."""
@@ -314,11 +335,11 @@ class LightGBMToolkit(Toolkit):
         if baseline_run is None:
             if progress_callback is not None:
                 progress_callback("Training baseline refit", {"detail": "train + validation"})
-            baseline_run = self.backend.train_model(
+            baseline_run = self._train_backend(
                 train_csv=train_csv,
                 output_dir=str(output_dir / "baseline"),
                 task=task,
-                extra_args={
+                resolved_parameters={
                     **base_args,
                     **selected_parameters,
                     "split_payload": final_payload,
@@ -353,11 +374,11 @@ class LightGBMToolkit(Toolkit):
                     "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
                 )
             try:
-                filtered_run = self.backend.train_model(
+                filtered_run = self._train_backend(
                     train_csv=train_csv,
                     output_dir=str(output_dir / "outlier_filtered"),
                     task=task,
-                    extra_args={
+                    resolved_parameters={
                         **base_args,
                         **selected_parameters,
                         "split_payload": filtered_payload,
@@ -526,13 +547,15 @@ class LightGBMToolkit(Toolkit):
                 base_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key not in {"seed_policy", "split_payload", "validation_strategy"}
                     },
                     "feature_columns": feature_columns,
                     "categorical_feature_columns": categorical_feature_columns,
                     "split_type": "final_refit",
-                    "random_state": int(training_policy["extra_args"].get("random_state") or 0),
+                    "random_state": int(
+                        training_policy["resolved_parameters"].get("random_state") or 0
+                    ),
                     "validation_protocol": "cross_validation",
                     "final_refit": True,
                     "refit_on_train_validation": True,
@@ -567,7 +590,7 @@ class LightGBMToolkit(Toolkit):
                             },
                         }
                     ]
-                    run = self.backend.train_model(
+                    run = self._train_backend(
                         train_csv=train_csv,
                         output_dir=str(
                             output_dir
@@ -577,7 +600,7 @@ class LightGBMToolkit(Toolkit):
                             / variant_id
                         ),
                         task=task,
-                        extra_args={**base_args, **parameters, "split_payload": payload},
+                        resolved_parameters={**base_args, **parameters, "split_payload": payload},
                     )
                     run.update(
                         {
@@ -715,10 +738,10 @@ class LightGBMToolkit(Toolkit):
 
     def _apply_training_profile(
         self,
-        extra_args: Optional[Dict[str, Any]],
+        resolved_parameters: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         compute_env = self.describe_compute_environment()
-        requested_n_jobs = (extra_args or {}).get("n_jobs")
+        requested_n_jobs = (resolved_parameters or {}).get("n_jobs")
 
         def _limit(
             profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
@@ -741,7 +764,7 @@ class LightGBMToolkit(Toolkit):
             return merged
 
         return apply_training_profile(
-            extra_args,
+            resolved_parameters,
             defaults_for_profile=self._training_defaults_for_profile,
             limit_profile_args=_limit,
             compute_environment=compute_env,
@@ -1275,7 +1298,7 @@ class LightGBMToolkit(Toolkit):
             raise HyperparameterTuningError(
                 "LightGBM tuning requires numeric feature columns or a prepared tabular representation."
             )
-        split_sizes = split_run.get("split_sizes") or training_policy["extra_args"].get(
+        split_sizes = split_run.get("split_sizes") or training_policy["resolved_parameters"].get(
             "split_sizes"
         )
         split_payload = split_run.get("split_payload") or build_qsar_split_payload(
@@ -1337,7 +1360,7 @@ class LightGBMToolkit(Toolkit):
         base_args = {
             **{
                 key: value
-                for key, value in training_policy["extra_args"].items()
+                for key, value in training_policy["resolved_parameters"].items()
                 if key not in {"seed_policy", "split_payload", "validation_strategy"}
             },
             "feature_columns": effective_feature_columns,
@@ -1385,11 +1408,11 @@ class LightGBMToolkit(Toolkit):
                 )
 
             def evaluate(candidate_parameters: Dict[str, Any]) -> Dict[str, Any]:
-                candidate = self.backend.train_model(
+                candidate = self._train_backend(
                     train_csv=train_csv,
                     output_dir=temporary_dir,
                     task=task,
-                    extra_args={
+                    resolved_parameters={
                         **base_args,
                         **candidate_parameters,
                         "split_payload": temporary_payload,
@@ -1509,11 +1532,11 @@ class LightGBMToolkit(Toolkit):
                     "Identifying validation outliers", {"detail": "fitting selected model"}
                 )
             with tempfile.TemporaryDirectory(prefix="qsaria_lightgbm_selection_") as selection_dir:
-                selection_run = self.backend.train_model(
+                selection_run = self._train_backend(
                     train_csv=train_csv,
                     output_dir=selection_dir,
                     task=task,
-                    extra_args={
+                    resolved_parameters={
                         **base_args,
                         **selected_parameters,
                         "split_payload": [{"train": train_indices, "val": validation_indices}],
@@ -1600,11 +1623,11 @@ class LightGBMToolkit(Toolkit):
         ]
         if progress_callback is not None:
             progress_callback("Training baseline refit", {"detail": "train + validation"})
-        final_run = self.backend.train_model(
+        final_run = self._train_backend(
             train_csv=train_csv,
             output_dir=resolved_output_dir,
             task=task,
-            extra_args={
+            resolved_parameters={
                 **base_args,
                 **selected_parameters,
                 "split_payload": final_split_payload,
@@ -1819,7 +1842,7 @@ class LightGBMToolkit(Toolkit):
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
         bundle_path: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1848,36 +1871,38 @@ class LightGBMToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         root_output_path.mkdir(parents=True, exist_ok=True)
 
-        requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_resolved_parameters, extra_activity_args = split_activity_cliff_args(
+            resolved_parameters
+        )
         requested_hyperparameter_tuning = (
             hyperparameter_tuning
             if hyperparameter_tuning is not None
-            else requested_extra_args.pop("hyperparameter_tuning", None)
+            else requested_resolved_parameters.pop("hyperparameter_tuning", None)
         )
         requested_outlier_analysis = (
             outlier_analysis
             if outlier_analysis is not None
-            else requested_extra_args.pop("outlier_analysis", None)
+            else requested_resolved_parameters.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
-            else requested_extra_args.pop("validation_strategy", None)
+            else requested_resolved_parameters.pop("validation_strategy", None)
         )
         requested_ad_methods = (
             applicability_domain_methods
             if applicability_domain_methods is not None
-            else requested_extra_args.pop("applicability_domain_methods", None)
+            else requested_resolved_parameters.pop("applicability_domain_methods", None)
         )
         requested_similarity_top_k = (
             similarity_top_k_neighbors
             if similarity_top_k_neighbors is not None
-            else requested_extra_args.pop("similarity_top_k_neighbors", None)
+            else requested_resolved_parameters.pop("similarity_top_k_neighbors", None)
         )
         requested_similarity_percentile = (
             similarity_threshold_percentile
             if similarity_threshold_percentile is not None
-            else requested_extra_args.pop("similarity_threshold_percentile", None)
+            else requested_resolved_parameters.pop("similarity_threshold_percentile", None)
         )
         activity_args = {
             "activity_cliff_index": activity_cliff_index,
@@ -1888,17 +1913,17 @@ class LightGBMToolkit(Toolkit):
             "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
             **extra_activity_args,
         }
-        requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
-        requested_extra_args.setdefault(
+        requested_resolved_parameters.setdefault("feature_columns", normalized_feature_columns)
+        requested_resolved_parameters.setdefault(
             "categorical_feature_columns",
             normalized_categorical_feature_columns,
         )
-        requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
+        requested_resolved_parameters.setdefault("split_sizes", normalized_split_sizes)
         if random_state is not None:
-            requested_extra_args.setdefault("random_state", random_state)
-        requested_extra_args.setdefault("split_type", split_type)
-        requested_extra_args.setdefault("validation_protocol", validation_protocol)
-        direct_model_args = dict(requested_extra_args)
+            requested_resolved_parameters.setdefault("random_state", random_state)
+        requested_resolved_parameters.setdefault("split_type", split_type)
+        requested_resolved_parameters.setdefault("validation_protocol", validation_protocol)
+        direct_model_args = dict(requested_resolved_parameters)
 
         target_column = normalized_target_columns[0] if normalized_target_columns else None
         activity_cliffs: Dict[str, Any] = {}
@@ -1921,12 +1946,12 @@ class LightGBMToolkit(Toolkit):
                     "warnings": [f"Activity-cliff annotation skipped: {exc}"],
                 }
 
-        training_policy = self._apply_training_profile(requested_extra_args)
+        training_policy = self._apply_training_profile(requested_resolved_parameters)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
-            seed_policy=training_policy["extra_args"].get("seed_policy"),
-            base_seed=training_policy["extra_args"].get("random_state"),
+            seed_policy=training_policy["resolved_parameters"].get("seed_policy"),
+            base_seed=training_policy["resolved_parameters"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
         has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
@@ -1941,7 +1966,9 @@ class LightGBMToolkit(Toolkit):
             target_count=len(normalized_target_columns),
             activity_cliff_feedback=bool(activity_args.get("activity_cliff_feedback")),
         )
-        training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
+        training_policy["resolved_parameters"]["random_state"] = protocol_policy["seed_policy"][
+            "model_seed"
+        ]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
         prediction_state = get_prediction_state(agent) if agent is not None else None
@@ -2284,7 +2311,7 @@ class LightGBMToolkit(Toolkit):
                 run_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key != "seed_policy"
                     },
                     "feature_columns": normalized_feature_columns,
@@ -2307,11 +2334,11 @@ class LightGBMToolkit(Toolkit):
                     {"detail": f"run {run_index} of {len(protocol_policy['split_runs'])}"},
                 )
 
-                single_result = self.backend.train_model(
+                single_result = self._train_backend(
                     train_csv=train_csv,
                     output_dir=str(run_output_dir),
                     task=task,
-                    extra_args=run_args,
+                    resolved_parameters=run_args,
                 )
 
                 if label.startswith("cv_repeat_"):
@@ -2394,7 +2421,7 @@ class LightGBMToolkit(Toolkit):
                     run_args = {
                         **{
                             key: value
-                            for key, value in training_policy["extra_args"].items()
+                            for key, value in training_policy["resolved_parameters"].items()
                             if key != "seed_policy"
                         },
                         "feature_columns": normalized_feature_columns,
@@ -2415,11 +2442,11 @@ class LightGBMToolkit(Toolkit):
                         {"detail": f"{variant_id} on fixed {label} holdout"},
                     )
 
-                    variant_result = self.backend.train_model(
+                    variant_result = self._train_backend(
                         train_csv=train_csv,
                         output_dir=str(run_output_dir),
                         task=task,
-                        extra_args=run_args,
+                        resolved_parameters=run_args,
                     )
                     completed_at = project_now()
                     variant_result["strategy"] = baseline_result.get("strategy")
@@ -2496,7 +2523,7 @@ class LightGBMToolkit(Toolkit):
             final_args = {
                 **{
                     key: value
-                    for key, value in training_policy["extra_args"].items()
+                    for key, value in training_policy["resolved_parameters"].items()
                     if key != "seed_policy"
                 },
                 "feature_columns": normalized_feature_columns,
@@ -2508,11 +2535,11 @@ class LightGBMToolkit(Toolkit):
                 "final_refit": True,
                 "early_stopping_rounds": 0,
             }
-            final_refit_run = self.backend.train_model(
+            final_refit_run = self._train_backend(
                 train_csv=train_csv,
                 output_dir=str(final_output_dir),
                 task=task,
-                extra_args=final_args,
+                resolved_parameters=final_args,
             )
             final_completed_at = project_now()
             final_refit_run["strategy"] = "final_refit"
@@ -2580,7 +2607,7 @@ class LightGBMToolkit(Toolkit):
                 base_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key not in {"seed_policy", "split_payload", "validation_strategy"}
                     },
                     "feature_columns": list(
@@ -2800,7 +2827,7 @@ class LightGBMToolkit(Toolkit):
         result["effective_train_args"] = {
             **{
                 key: value
-                for key, value in training_policy["extra_args"].items()
+                for key, value in training_policy["resolved_parameters"].items()
                 if key != "seed_policy"
             },
             "device_type": final_primary_run.get("effective_train_args", {}).get("device_type"),
@@ -2914,7 +2941,6 @@ class LightGBMToolkit(Toolkit):
         target_columns: Optional[List[str] | str] = None,
         feature_columns: Optional[List[str] | str] = None,
         categorical_feature_columns: Optional[List[str] | str] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run LightGBM batch prediction from a tabular CSV input file."""
         normalized_target_columns = (
@@ -2959,5 +2985,4 @@ class LightGBMToolkit(Toolkit):
             input_csv=input_csv,
             model_record=model_record,
             preds_path=preds_path,
-            extra_args=extra_args,
         )

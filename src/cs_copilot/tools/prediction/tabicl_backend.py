@@ -33,6 +33,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
+from .qsar_contracts import TabICLRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import project_now
 from .training_orchestration import (
@@ -183,20 +184,21 @@ class TabICLBackend(PredictionBackend):
 
     def _resolve_checkpoint_config(
         self,
-        extra_args: Optional[Dict[str, Any]],
+        resolved_parameters: Optional[Dict[str, Any]],
         *,
         task_type: str = "regression",
     ) -> Dict[str, Any]:
-        extra_args = dict(extra_args or {})
+        resolved_parameters = dict(resolved_parameters or {})
         checkpoint_version = str(
-            extra_args.get("checkpoint_version") or self._default_checkpoint_for_task(task_type)
+            resolved_parameters.get("checkpoint_version")
+            or self._default_checkpoint_for_task(task_type)
         )
         checkpoint_dir = Path(
-            extra_args.get("checkpoint_dir") or DEFAULT_TABICL_CHECKPOINT_DIR
+            resolved_parameters.get("checkpoint_dir") or DEFAULT_TABICL_CHECKPOINT_DIR
         ).expanduser()
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / checkpoint_version
-        allow_auto_download = bool(extra_args.get("allow_auto_download", False))
+        allow_auto_download = bool(resolved_parameters.get("allow_auto_download", False))
         return {
             "checkpoint_version": checkpoint_version,
             "checkpoint_dir": checkpoint_dir.resolve(),
@@ -220,64 +222,11 @@ class TabICLBackend(PredictionBackend):
             ) from exc
         return TabICLClassifier
 
-    def _sanitize_train_extra_args(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        raw = dict(extra_args or {})
-        allowed = {
-            "n_estimators",
-            "norm_methods",
-            "feat_shuffle_method",
-            "outlier_threshold",
-            "batch_size",
-            "kv_cache",
-            "model_path",
-            "allow_auto_download",
-            "checkpoint_version",
-            "device",
-            "use_amp",
-            "use_fa3",
-            "offload_mode",
-            "disk_offload_dir",
-            "random_state",
-            "n_jobs",
-            "verbose",
-            "inference_config",
-            "class_shuffle_method",
-            "softmax_temperature",
-            "average_logits",
-            "support_many_classes",
-            "checkpoint_dir",
-            "save_model_weights",
-            "save_training_data",
-            "save_kv_cache",
-            "split_sizes",
-            "split_type",
-            "validation_protocol",
-            "feature_columns",
-            "split_payload",
-            "heartbeat_seconds",
-            "heartbeat_path",
-            "heartbeat_label",
-            "heartbeat_run_index",
-            "heartbeat_total_runs",
-            "final_refit",
-            "classification_threshold",
-            "class_labels",
-        }
-        dropped = sorted(key for key in raw if key not in allowed)
-        sanitized = {key: value for key, value in raw.items() if key in allowed}
-        if dropped:
-            raise InvalidPredictionInputError(
-                "Unsupported TabICL train arguments: "
-                + ", ".join(dropped)
-                + ". Use describe_backend_hyperparameters('tabicl') for the supported contract."
-            )
-        return sanitized
-
     def _select_feature_columns(
         self,
         df: pd.DataFrame,
         target_columns: List[str],
-        extra_args: Dict[str, Any],
+        resolved_parameters: Dict[str, Any],
     ) -> List[str]:
         excluded = set(target_columns)
         numeric_columns = [
@@ -288,7 +237,7 @@ class TabICLBackend(PredictionBackend):
             and pd.api.types.is_numeric_dtype(df[column])
         ]
 
-        explicit = extra_args.get("feature_columns")
+        explicit = resolved_parameters.get("feature_columns")
         if explicit:
             if isinstance(explicit, str):
                 explicit = [explicit]
@@ -382,7 +331,6 @@ class TabICLBackend(PredictionBackend):
         preds_path: str,
         *,
         return_uncertainty: bool = False,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
             raise InvalidPredictionInputError(
@@ -458,14 +406,10 @@ class TabICLBackend(PredictionBackend):
             "feature_columns": feature_columns,
         }
 
-    def train_model(
-        self,
-        train_csv: str,
-        output_dir: str,
-        task: PredictionTaskSpec,
-        *,
-        extra_args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    def train_model(self, request: TabICLRunRequest) -> Dict[str, Any]:
+        train_csv = request.train_csv
+        output_dir = request.output_dir
+        task = PredictionTaskSpec(**request.task_payload())
         self._ensure_available()
         task_is_classification = is_classification_task(task.task_type)
         if task.task_type != "regression" and not task_is_classification:
@@ -475,7 +419,7 @@ class TabICLBackend(PredictionBackend):
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("TabICL requires exactly one target column.")
 
-        sanitized_args = self._sanitize_train_extra_args(extra_args)
+        sanitized_args = request.parameter_payload()
         checkpoint_cfg = self._resolve_checkpoint_config(
             sanitized_args,
             task_type=task.task_type,

@@ -37,25 +37,21 @@ class FakeBackend(PredictionBackend):
             raise ValueError("missing")
         return path
 
-    def predict_from_csv(
-        self, input_csv, model_record, preds_path, *, return_uncertainty=False, extra_args=None
-    ):
+    def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False):
         df = pd.read_csv(input_csv)
         pd.DataFrame({"prediction": df["x"].astype(float) + self.offset}).to_csv(
             preds_path, index=False
         )
         return {"predictions_path": preds_path}
 
-    def train_model(self, train_csv, output_dir, task, *, extra_args=None):
+    def train_model(self, request):
         raise NotImplementedError
 
 
 class TabularFakeBackend(FakeBackend):
     backend_name = "fake_tabular"
 
-    def predict_from_csv(
-        self, input_csv, model_record, preds_path, *, return_uncertainty=False, extra_args=None
-    ):
+    def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False):
         df = pd.read_csv(input_csv)
         pd.DataFrame({"prediction": df["fp_0000"].astype(float) + self.offset}).to_csv(
             preds_path, index=False
@@ -69,9 +65,7 @@ class BinaryFakeBackend(FakeBackend):
         self.labels = labels
         self.positive_probability = positive_probability
 
-    def predict_from_csv(
-        self, input_csv, model_record, preds_path, *, return_uncertainty=False, extra_args=None
-    ):
+    def predict_from_csv(self, input_csv, model_record, preds_path, *, return_uncertainty=False):
         pd.DataFrame(
             {
                 "prediction": self.labels,
@@ -178,6 +172,10 @@ def test_ensemble_backend_predicts_component_columns(tmp_path):
                         "component_slug": "a",
                         "backend_name": "fake",
                         "model_path": str(model_a),
+                        "training_data_summary": {
+                            "extra_args": {"feature_cache_dir": "/legacy/cache"}
+                        },
+                        "inference_profile": {"extra_args": {"device": "legacy-gpu"}},
                         "task": {
                             "task_type": "regression",
                             "smiles_columns": ["smiles"],

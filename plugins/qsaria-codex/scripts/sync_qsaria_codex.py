@@ -60,6 +60,10 @@ CONTRACT_CONSTANTS = {
         "src/cs_copilot/tools/prediction/qsar_reporting.py",
         "REPORT_FACTS_SCHEMA_VERSION",
     ),
+    "training": (
+        "src/cs_copilot/tools/prediction/qsar_contracts.py",
+        "TRAINING_CONTRACT_VERSION",
+    ),
 }
 
 QSARIA_PROFILE_FILES = (

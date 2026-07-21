@@ -162,6 +162,93 @@ def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
         "codex_v1",
         "claude_code_v1",
     ]
+    assert result["training_contract_version"] == "2.0"
+    assert result["contracts"]["training"] == "2.0"
+    assert result["compatibility"]["typed_training_requests"] is True
+    assert result["compatibility"]["free_training_arguments"] is False
+
+
+def test_qsaria_training_schema_is_closed_and_hides_runtime_fields(qsaria_server):
+    tools = {tool.name: tool for tool in qsaria_server._tool_manager.list_tools()}
+    schema = tools["qsaria_training_train_lightgbm_model"].parameters
+
+    assert set(schema["properties"]) == {"experiment_id", "train_csv", "request"}
+    serialized = str(schema)
+    for forbidden in (
+        "extra_args",
+        "feature_cache_dir",
+        "heartbeat_path",
+        "split_payload",
+        "checkpoint_dir",
+    ):
+        assert forbidden not in serialized
+
+    def assert_closed(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" or "properties" in node:
+                assert node.get("additionalProperties") is False
+            for value in node.values():
+                assert_closed(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_closed(value)
+
+    assert_closed(schema)
+
+
+def test_invalid_training_request_does_not_mutate_experiment(qsaria_server):
+    manager = qsaria_server._tool_manager
+    experiment_id = "exp_server_invalid_contract_123"
+
+    asyncio.run(
+        manager.call_tool(
+            "qsaria_create_experiment",
+            {
+                "user_request": "Reject an invalid typed request",
+                "report_language": "en",
+                "experiment_id": experiment_id,
+            },
+            convert_result=True,
+        )
+    )
+    _, before = asyncio.run(
+        manager.call_tool(
+            "qsaria_get_experiment_state",
+            {"experiment_id": experiment_id},
+            convert_result=True,
+        )
+    )
+
+    with pytest.raises(Exception, match="feature_cache_dir"):
+        asyncio.run(
+            manager.call_tool(
+                "qsaria_training_train_lightgbm_model",
+                {
+                    "experiment_id": experiment_id,
+                    "train_csv": "never-opened.csv",
+                    "request": {
+                        "schema_version": "2.0",
+                        "target_columns": ["activity"],
+                        "task_type": "regression",
+                        "backend": {
+                            "name": "lightgbm",
+                            "feature_cache_dir": "/tmp/forbidden",
+                        },
+                    },
+                },
+                convert_result=True,
+            )
+        )
+
+    _, after = asyncio.run(
+        manager.call_tool(
+            "qsaria_get_experiment_state",
+            {"experiment_id": experiment_id},
+            convert_result=True,
+        )
+    )
+    for field in ("phase", "status", "handoffs", "warnings", "blockers", "updated_at"):
+        assert after[field] == before[field]
 
 
 def test_qsaria_protocol_calls_preserve_structured_content(qsaria_server):

@@ -11,7 +11,7 @@ Read [routing.md](references/routing.md), [verification-and-reporting.md](refere
 
 ## Start safely
 
-1. Call `qsaria_bootstrap` once for the task and verify that the profile reports `llm_policy=disabled`, `target=external_mcp_coordinator_v1`, `codex_v1` among `supported_clients`, compatible contract versions, and its storage-concurrency mode. For S3, require the announced `s3_single_writer` mode and `single_writer_acknowledged=true`; otherwise stop instead of assuming distributed locking.
+1. Call `qsaria_bootstrap` once for the task and verify that the profile reports `llm_policy=disabled`, `target=external_mcp_coordinator_v1`, `codex_v1` among `supported_clients`, `training_contract_version=2.0`, `typed_training_requests=true`, `free_training_arguments=false`, compatible contract versions, and its storage-concurrency mode. For S3, require the announced `s3_single_writer` mode and `single_writer_acknowledged=true`; otherwise stop instead of assuming distributed locking.
 2. Classify the request using the routing reference.
 3. Never reopen the most recent experiment implicitly.
 4. Never call `qsaria_list_experiments` during bootstrap. List history only when the user explicitly asks for it.
@@ -29,6 +29,7 @@ Read [routing.md](references/routing.md), [verification-and-reporting.md](refere
 - Treat `needs_user_input` as a pause and ask one precise question. Do not guess the answer.
 - Retry only a handoff explicitly classified `status=retryable_error`, at most once with the same scientific intent. Report is never dispatched a second time. Do not retry `terminal_failure` or change data, backend, validation, method, or constraints silently.
 - Preserve `blocked_failed_external_evaluation` as a terminal result.
+- Treat a strict MCP request-schema rejection as a pre-execution, corrigible boundary error. It must not mutate the experiment or create a scientific handoff. Correct only an obvious serialization mistake; when the rejected value reflects a real scientific choice, ask the user for a new formulation.
 
 ## Separate execution from maintenance
 

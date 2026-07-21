@@ -38,23 +38,17 @@ def test_custom_holdout_uses_requested_split_sizes():
     assert policy["split_runs"][0]["backend_split_type"] == "random"
 
 
-def test_custom_holdout_accepts_backend_style_ratio_payload():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "holdout",
-            "split_family": "random",
-            "random_split": {
-                "train_ratio": 0.6,
-                "validation_ratio": 0.2,
-                "test_ratio": 0.2,
+def test_custom_holdout_rejects_backend_style_ratio_payload():
+    with pytest.raises(ValueError, match="random_split"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={
+                "type": "holdout",
+                "split_family": "random",
+                "random_split": {"train_ratio": 0.6, "validation_ratio": 0.2, "test_ratio": 0.2},
             },
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert policy["split_runs"][0]["split_sizes"] == [0.6, 0.2, 0.2]
-    assert policy["validation_strategy"]["split_sizes"] == [0.6, 0.2, 0.2]
+            training_profile="heavy_validation",
+        )
 
 
 def test_custom_holdout_accepts_train_test_split_sizes_without_validation():
@@ -72,85 +66,47 @@ def test_custom_holdout_accepts_train_test_split_sizes_without_validation():
     assert policy["validation_strategy"]["split_sizes"] == [0.8, 0.2]
 
 
-def test_custom_holdout_accepts_zero_validation_ratio_as_train_test():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "holdout",
-            "split_family": "random",
-            "train_ratio": 0.8,
-            "validation_ratio": 0.0,
-            "test_ratio": 0.2,
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert policy["split_runs"][0]["split_sizes"] == [0.8, 0.2]
-
-
-def test_custom_holdout_accepts_agent_aliases_from_natural_language():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "method": "holdout",
-            "split_type": "scaffold",
-            "train_fraction": 0.6,
-            "val_fraction": 0.2,
-            "test_fraction": 0.2,
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert policy["protocol"] == "scaffold_holdout"
-    assert policy["split_runs"][0]["split_sizes"] == [0.6, 0.2, 0.2]
-    assert policy["split_runs"][0]["backend_split_type"] == "scaffold_balanced"
-    assert policy["validation_strategy"]["split_family"] == "scaffold"
-
-
-def test_custom_holdout_accepts_holdout_ratio_aliases_for_all_split_families():
-    cases = [
-        ("random_holdout", "random", "random"),
-        ("scaffold_holdout", "scaffold", "scaffold_balanced"),
-        ("cluster_holdout", "cluster", "kmeans"),
-    ]
-
-    for key, family, backend_split_type in cases:
-        policy = resolve_validation_strategy(
+def test_custom_holdout_rejects_ratio_aliases():
+    with pytest.raises(ValueError, match="test_ratio"):
+        resolve_validation_strategy(
             requested_protocol="standard_qsar",
             validation_strategy={
                 "type": "holdout",
-                key: {
-                    "train_ratio": 0.6,
-                    "validation_ratio": 0.2,
-                    "test_ratio": 0.2,
-                },
+                "split_family": "random",
+                "train_ratio": 0.8,
+                "validation_ratio": 0.0,
+                "test_ratio": 0.2,
             },
             training_profile="heavy_validation",
         )
 
-        assert policy["protocol"] == f"{family}_holdout"
-        assert policy["split_runs"][0]["split_sizes"] == [0.6, 0.2, 0.2]
-        assert policy["split_runs"][0]["backend_split_type"] == backend_split_type
-        assert policy["validation_strategy"]["split_family"] == family
+
+def test_custom_holdout_rejects_agent_aliases():
+    with pytest.raises(ValueError, match="Expected one of"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={"method": "holdout", "split_type": "scaffold"},
+            training_profile="heavy_validation",
+        )
 
 
-def test_custom_holdout_top_level_ratios_override_default_split_sizes():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "strategy": "holdout",
-            "validation_ratio": 0.2,
-            "test_ratio": 0.2,
-            "split_seed": 42,
-            "split_sizes": [0.8, 0.1, 0.1],
-        },
-        training_profile="heavy_validation",
-    )
+@pytest.mark.parametrize("alias", ["random_holdout", "scaffold_holdout", "cluster_holdout"])
+def test_custom_holdout_rejects_named_holdout_aliases(alias):
+    with pytest.raises(ValueError, match=alias):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={"type": "holdout", alias: {"train_ratio": 0.6}},
+            training_profile="heavy_validation",
+        )
 
-    assert policy["protocol"] == "random_holdout"
-    assert policy["split_runs"][0]["split_sizes"] == [0.6, 0.2, 0.2]
-    assert policy["validation_strategy"]["split_sizes"] == [0.6, 0.2, 0.2]
-    assert policy["split_runs"][0]["seed"] == 42
+
+def test_custom_holdout_rejects_strategy_alias():
+    with pytest.raises(ValueError, match="Expected one of"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={"strategy": "holdout", "split_sizes": [0.8, 0.1, 0.1]},
+            training_profile="heavy_validation",
+        )
 
 
 def test_repeated_holdout_generates_replayable_runs():
@@ -188,24 +144,17 @@ def test_repeated_holdout_without_seed_generates_distinct_random_splits():
     assert policy["seed_policy"]["mode"] == "generated_per_run"
 
 
-def test_repeated_holdout_accepts_holdout_ratio_alias():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "type": "repeated_holdout",
-            "scaffold_holdout": {
-                "train_ratio": 0.7,
-                "validation_ratio": 0.15,
-                "test_ratio": 0.15,
+def test_repeated_holdout_rejects_holdout_ratio_alias():
+    with pytest.raises(ValueError, match="scaffold_holdout"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={
+                "type": "repeated_holdout",
+                "scaffold_holdout": {"train_ratio": 0.7},
+                "n_repeats": 2,
             },
-            "n_repeats": 2,
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert policy["protocol"] == "repeated_scaffold_holdout"
-    assert all(run["split_sizes"] == [0.7, 0.15, 0.15] for run in policy["split_runs"])
-    assert all(run["backend_split_type"] == "scaffold_balanced" for run in policy["split_runs"])
+            training_profile="heavy_validation",
+        )
 
 
 def test_cross_validation_generates_requested_fold_runs():
@@ -236,23 +185,13 @@ def test_cross_validation_generates_requested_fold_runs():
     assert policy["final_refit"] is True
 
 
-def test_cross_validation_accepts_fold_aliases_and_repeats():
-    policy = resolve_validation_strategy(
-        requested_protocol="standard_qsar",
-        validation_strategy={
-            "method": "cv",
-            "folds": 5,
-            "n_repeats": 5,
-            "seed": 0,
-        },
-        training_profile="heavy_validation",
-    )
-
-    assert len(policy["split_runs"]) == 25
-    assert policy["split_runs"][0]["label"] == "cv_repeat_1_fold_1"
-    assert policy["split_runs"][-1]["label"] == "cv_repeat_5_fold_5"
-    assert policy["validation_strategy"]["n_folds"] == 5
-    assert policy["validation_strategy"]["n_repeats"] == 5
+def test_cross_validation_rejects_fold_aliases():
+    with pytest.raises(ValueError, match="Expected one of"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={"method": "cv", "folds": 5},
+            training_profile="heavy_validation",
+        )
 
 
 def test_cross_validation_payload_uses_validation_not_test_for_inner_fold():
@@ -288,7 +227,7 @@ def test_cross_validation_outer_test_is_fixed_and_absent_from_inner_train_valida
 
 @pytest.mark.parametrize("alias", ["test_size", "test_fold", "test_fraction"])
 def test_cross_validation_rejects_ambiguous_outer_test_aliases(alias):
-    with pytest.raises(ValueError, match="outer_test_size"):
+    with pytest.raises(ValueError, match=alias):
         resolve_validation_strategy(
             requested_protocol="standard_qsar",
             validation_strategy={

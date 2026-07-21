@@ -21,6 +21,7 @@ from cs_copilot.tools.prediction.hyperparameter_tuning import (
     tuning_sampler_metadata,
 )
 from cs_copilot.tools.prediction.lightgbm_toolkit import _ad_status_series
+from cs_copilot.tools.prediction.qsar_contracts import build_backend_run_request
 from cs_copilot.tools.prediction.qsar_training_policy import resolve_validation_protocol
 from cs_copilot.tools.prediction.tabular_representations import (
     default_tabular_representation_for_protocol,
@@ -79,7 +80,7 @@ def test_global_tuning_engine_registry_reports_real_backend_availability():
     assert multivariate["backend_availability"]["chemprop"]["status"] == "not_connected"
     assert multivariate["backend_availability"]["tabicl"]["status"] == "unsupported"
     assert multivariate["stability"] == "experimental"
-    assert multivariate["contract_version"] == "1.2"
+    assert multivariate["contract_version"] == "2.0"
 
 
 def test_sampler_metadata_and_catalog_provenance_keep_multivariate_settings():
@@ -544,17 +545,22 @@ def test_chemprop_backend_keeps_supported_architecture_and_schedule_arguments(
     )
 
     backend.train_model(
-        train_csv=str(source),
-        output_dir=str(tmp_path / "output"),
-        task=_chemprop_task(),
-        extra_args={
-            "depth": 4,
-            "dropout": 0.1,
-            "init_lr": 0.0001,
-            "max_lr": 0.001,
-            "final_lr": 0.00001,
-            "warmup_epochs": 2,
-        },
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(source),
+            output_dir=str(tmp_path / "output"),
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["target"],
+            resolved_parameters={
+                "depth": 4,
+                "dropout": 0.1,
+                "init_lr": 0.0001,
+                "max_lr": 0.001,
+                "final_lr": 0.00001,
+                "warmup_epochs": 2,
+            },
+        )
     )
 
     args = captured["completed"].args
@@ -575,14 +581,14 @@ def test_chemprop_hpopt_receives_train_validation_only_and_keeps_only_summary(tm
             self.train_rows = None
             self.splits = None
 
-        def hpopt_model(self, *, train_csv, output_dir, task, extra_args):
-            self.train_rows = pd.read_csv(train_csv)
-            self.splits = json.loads(open(extra_args["splits_file"]).read())
-            assert extra_args["raytune_num_samples"] == 3
-            assert extra_args["raytune_search_algorithm"] == "hyperopt"
-            assert extra_args["raytune_trial_scheduler"] == "FIFO"
-            assert extra_args["tracking_metric"] == "val_loss"
-            assert extra_args["search_parameter_keywords"] == ["dropout"]
+        def hpopt_model(self, request, *, progress_callback=None):
+            self.train_rows = pd.read_csv(request.train_csv)
+            self.splits = json.loads(open(request.splits_file).read())
+            assert request.raytune_num_samples == 3
+            assert request.raytune_search_algorithm == "hyperopt"
+            assert request.raytune_trial_scheduler == "FIFO"
+            assert request.tracking_metric == "val_loss"
+            assert request.search_parameter_keywords == ["dropout"]
             return {"best_params": {"dropout": 0.1}}
 
     backend = FakeChempropBackend()
@@ -615,13 +621,58 @@ def test_chemprop_hpopt_receives_train_validation_only_and_keeps_only_summary(tm
     assert (tmp_path / "final_run" / "hyperparameter_tuning_summary.json").exists()
 
 
+def test_chemprop_hpopt_propagates_only_typed_custom_distributions(tmp_path):
+    class FakeChempropBackend:
+        def hpopt_model(self, request, *, progress_callback=None):
+            assert request.custom_tuning_space.backend == "chemprop"
+            assert request.custom_tuning_space.depth.low == 3
+            assert request.custom_tuning_space.depth.high == 5
+            assert request.custom_tuning_space.dropout.low == 0.05
+            assert request.custom_tuning_space.dropout.high == 0.25
+            return {"best_params": {"depth": 4, "dropout": 0.1}}
+
+    toolkit = ChempropToolkit(backend=FakeChempropBackend())
+    config = normalize_tuning_config(
+        {
+            "n_trials": 3,
+            "parameters": ["depth", "dropout"],
+            "search_space": {
+                "depth": {"type": "int", "low": 3, "high": 5},
+                "dropout": {"type": "float", "low": 0.05, "high": 0.25},
+            },
+        },
+        backend_name="chemprop",
+        task_type="regression",
+        eligible=True,
+    )
+    source = tmp_path / "source.csv"
+    source.write_text("smiles,target\nCCO,1.0\nCCN,2.0\nCCC,3.0\n")
+
+    summary = toolkit._run_chemprop_hpopt(
+        source_df=pd.read_csv(source),
+        task=_chemprop_task(),
+        split_payload=[{"train": [0], "val": [1], "test": [2]}],
+        config=config,
+        fixed_parameters={},
+        train_args={},
+        output_dir=tmp_path / "custom_space",
+        seed=9,
+    )
+
+    assert summary["selection_protocol"]["basic_architecture_space"] is False
+    assert summary["selection_protocol"]["custom_search_space"] == {
+        "depth": {"type": "int", "low": 3, "high": 5},
+        "dropout": {"type": "float", "low": 0.05, "high": 0.25},
+    }
+
+
 def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
     class FakeChempropBackend:
         def __init__(self):
-            self.extra_args = None
+            self.resolved_parameters = None
 
-        def hpopt_model(self, *, train_csv, output_dir, task, extra_args):
-            self.extra_args = dict(extra_args)
+        def hpopt_model(self, request, *, progress_callback=None):
+            self.resolved_parameters = request.parameter_payload()
             return {"best_params": {"dropout": 0.1}}
 
     source = tmp_path / "source.csv"
@@ -647,10 +698,10 @@ def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
         seed=9,
         compute_environment={"gpu_available": True, "gpu_count": 1},
     )
-    assert gpu_backend.extra_args["raytune_use_gpu"] is True
-    assert gpu_backend.extra_args["raytune_num_gpus"] == 1
-    assert gpu_backend.extra_args["accelerator"] == "gpu"
-    assert gpu_backend.extra_args["devices"] == 1
+    assert gpu_backend.resolved_parameters["raytune_use_gpu"] is True
+    assert gpu_backend.resolved_parameters["raytune_num_gpus"] == 1
+    assert gpu_backend.resolved_parameters["accelerator"] == "gpu"
+    assert gpu_backend.resolved_parameters["devices"] == 1
     assert gpu_summary["selection_protocol"]["execution_resources"]["raytune_use_gpu"] is True
 
     cpu_backend = FakeChempropBackend()
@@ -666,8 +717,8 @@ def test_chemprop_hpopt_reserves_detected_gpu_and_honors_explicit_cpu(tmp_path):
         seed=9,
         compute_environment={"gpu_available": True, "gpu_count": 1},
     )
-    assert "raytune_use_gpu" not in cpu_backend.extra_args
-    assert "raytune_num_gpus" not in cpu_backend.extra_args
+    assert "raytune_use_gpu" not in cpu_backend.resolved_parameters
+    assert "raytune_num_gpus" not in cpu_backend.resolved_parameters
     assert cpu_summary["selection_protocol"]["execution_resources"]["raytune_use_gpu"] is False
 
 

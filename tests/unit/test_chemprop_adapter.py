@@ -23,6 +23,7 @@ from cs_copilot.tools.prediction.chemprop_backend import (
     ChempropBackend,
 )
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
+from cs_copilot.tools.prediction.qsar_contracts import build_backend_run_request
 
 
 def _task() -> PredictionTaskSpec:
@@ -339,16 +340,20 @@ def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
 
     backend.train_model(
-        train_csv=str(train_csv),
-        output_dir=str(tmp_path / "out"),
-        task=_task(),
-        extra_args={
-            "splits_file": str(splits_file),
-            "split_type": "random",
-            "split_sizes": [0.8, 0.1, 0.1],
-            "data_seed": 42,
-            "validation_strategy": {"type": "repeated_holdout"},
-        },
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "out"),
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+            resolved_parameters={
+                "splits_file": str(splits_file),
+                "split_type": "random",
+                "split_sizes": [0.8, 0.1, 0.1],
+                "data_seed": 42,
+            },
+        )
     )
 
     args = captured["args"]
@@ -378,23 +383,28 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
     output_dir = tmp_path / "hpopt_output"
 
     result = backend.hpopt_model(
-        train_csv=str(train_csv),
-        output_dir=str(output_dir),
-        task=_task(),
-        extra_args={
-            "raytune_num_samples": 25,
-            "epochs": 30,
-            "raytune_use_gpu": True,
-            "raytune_num_gpus": 1,
-            "accelerator": "gpu",
-            "devices": 1,
-        },
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(train_csv),
+            output_dir=str(output_dir),
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+            resolved_parameters={
+                "raytune_num_samples": 25,
+                "epochs": 30,
+                "raytune_use_gpu": True,
+                "raytune_num_gpus": 1,
+                "accelerator": "gpu",
+                "devices": 1,
+            },
+        )
     )
 
     args = captured["args"]
     assert args[args.index("--raytune-num-samples") + 1] == "25"
     assert "--raytune-use-gpu" in args
-    assert args[args.index("--raytune-num-gpus") + 1] == "1"
+    assert args[args.index("--raytune-num-gpus") + 1] == "1.0"
     assert args[args.index("--accelerator") + 1] == "gpu"
     assert args[args.index("--devices") + 1] == "1"
     assert Path(args[args.index("--output-dir") + 1]) == output_dir
@@ -411,6 +421,58 @@ def test_chemprop_hpopt_uses_an_isolated_local_ray_runtime(monkeypatch, tmp_path
     assert result["best_config_path"] == str(output_dir / "best_config.toml")
 
 
+def test_chemprop_hpopt_custom_space_uses_strict_internal_worker(monkeypatch, tmp_path):
+    train_csv = tmp_path / "chemprop_training_input.csv"
+    train_csv.write_text("smiles,pEC50\nCCO,5.0\nCCC,6.0\nCCN,4.0\n")
+    captured = {}
+    backend = ChempropBackend()
+    monkeypatch.setattr(backend, "is_available", lambda: True)
+
+    def fake_run_cli(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        job_path = Path(args[-1])
+        captured["job"] = json.loads(job_path.read_text())
+        (kwargs["output_dir"] / "best_config.toml").write_text("depth = [4]\n")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+    output_dir = tmp_path / "hpopt_output"
+    result = backend.hpopt_model(
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(train_csv),
+            output_dir=str(output_dir),
+            task_type="regression",
+            smiles_columns=["smiles"],
+            target_columns=["pEC50"],
+            resolved_parameters={
+                "search_parameter_keywords": ["depth"],
+                "custom_tuning_space": {
+                    "backend": "chemprop",
+                    "depth": {"type": "int", "low": 3, "high": 5},
+                },
+            },
+        )
+    )
+
+    assert captured["args"][0] == sys.executable
+    assert captured["args"][1:3] == [
+        "-m",
+        "cs_copilot.tools.prediction.chemprop_hpopt_worker",
+    ]
+    assert captured["kwargs"]["resolve_chemprop_cli"] is False
+    assert captured["job"]["training_contract_version"] == "2.0"
+    assert captured["job"]["search_space"]["depth"] == {
+        "type": "int",
+        "low": 3,
+        "high": 5,
+        "step": 1,
+        "log": False,
+    }
+    assert result["best_config_path"] == str(output_dir / "best_config.toml")
+
+
 def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):
     train_csv = tmp_path / "multiclass.csv"
     train_csv.write_text("smiles,profile\nCCO,0\nCCC,1\nCCN,2\n")
@@ -424,14 +486,15 @@ def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):
 
     monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
     backend.train_model(
-        train_csv=str(train_csv),
-        output_dir=str(tmp_path / "out"),
-        task=PredictionTaskSpec(
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "out"),
             task_type="multiclass_classification",
             smiles_columns=["smiles"],
             target_columns=["profile"],
-        ),
-        extra_args={"multiclass_num_classes": 3},
+            resolved_parameters={"multiclass_num_classes": 3},
+        )
     )
 
     args = captured["args"]
@@ -449,7 +512,7 @@ def test_chemprop_backend_normalizes_multiclass_prediction_output(monkeypatch, t
 
     def fake_run_cli(args, **kwargs):
         preds_path.write_text(
-            'smiles,profile,profile_prob\nCCO,2,"[0.1, 0.2, 0.7]"\n' 'CCC,0,"[0.8, 0.1, 0.1]"\n'
+            'smiles,profile,profile_prob\nCCO,2,"[0.1, 0.2, 0.7]"\nCCC,0,"[0.8, 0.1, 0.1]"\n'
         )
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +16,23 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.storage import S3
+
 from .model_registry_toolkit import ModelRegistryToolkit
+from .qsar_contracts import (
+    ChempropConfig,
+    ComputeConfig,
+    GeneratedRepresentation,
+    LightGBMConfig,
+    MolecularGraphRepresentation,
+    QsariaBenchmarkRequest,
+    QsariaTrainingRequest,
+    StandardQsarValidation,
+    TabICLConfig,
+    TuningConfig,
+    ValidationConfig,
+    canonical_validation_strategy,
+)
 from .qsar_training_policy import (
     describe_compute_environment,
     resolve_training_profile,
@@ -124,7 +141,26 @@ class BenchmarkToolkit(Toolkit):
         super().__init__("benchmark_prediction")
         self.training_toolkit = training_toolkit or QSARTrainingToolkit()
         self.registry_toolkit = registry_toolkit
-        self.register(self.benchmark_qsar_models)
+        self.register(self._agno_benchmark_qsar_models, name="benchmark_qsar_models")
+        function = self.functions["benchmark_qsar_models"]
+        function.process_entrypoint()
+        function.parameters["additionalProperties"] = False
+        function.skip_entrypoint_processing = True
+
+    def _agno_benchmark_qsar_models(
+        self,
+        train_csv: str,
+        request: QsariaBenchmarkRequest,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        token = f"{time.time_ns():x}"
+        return self.benchmark_qsar_models(
+            train_csv=train_csv,
+            request=request,
+            output_dir=S3.path(f"benchmark/{token}"),
+            bundle_dir=S3.path("training_bundles"),
+            agent=agent,
+        )
 
     def _get_registry_toolkit(self) -> ModelRegistryToolkit:
         if self.registry_toolkit is None:
@@ -265,42 +301,43 @@ class BenchmarkToolkit(Toolkit):
         task_type: str,
         smiles_column: str,
         target_columns: List[str],
-        benchmark_protocol: str,
         candidate_dir: Path,
-        allow_heavy_compute: bool,
-        training_profile: Optional[str],
         campaign_seed_policy: Dict[str, Any],
-        validation_strategy: Optional[Dict[str, Any]],
+        validation: ValidationConfig,
+        compute: ComputeConfig,
         agent: Agent,
         bundle_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        requested_extra_args: Dict[str, Any] = {
-            "validation_protocol": benchmark_protocol,
-            "allow_heavy_compute": allow_heavy_compute,
-            "seed_policy": campaign_seed_policy,
-            "feature_cache_dir": str(candidate_dir.parent / "feature_cache"),
-        }
-        if training_profile:
-            requested_extra_args["training_profile"] = training_profile
-        if validation_strategy is not None:
-            requested_extra_args["validation_strategy"] = validation_strategy
-
+        backend_name = candidate["backend_name"]
+        backend = {
+            "chemprop": ChempropConfig(),
+            "lightgbm": LightGBMConfig(),
+            "tabicl": TabICLConfig(),
+        }[backend_name]
+        representation = (
+            MolecularGraphRepresentation()
+            if backend_name == "chemprop"
+            else GeneratedRepresentation(name=candidate["representation_name"])
+        )
+        seed = campaign_seed_policy.get("model_seed")
+        candidate_validation = validation
+        if isinstance(validation, StandardQsarValidation) and seed is not None:
+            candidate_validation = StandardQsarValidation(seed=int(seed))
+        training_request = QsariaTrainingRequest(
+            smiles_column=smiles_column,
+            target_columns=list(target_columns),
+            task_type=task_type,
+            representation=representation,
+            validation=candidate_validation,
+            tuning=TuningConfig(enabled=backend_name != "tabicl"),
+            compute=compute,
+            backend=backend,
+        )
         bundle_kwargs = {"bundle_dir": bundle_dir} if bundle_dir else {}
         result = self.training_toolkit.train_qsar_model(
             train_csv=train_csv,
-            backend_name=candidate["backend_name"],
-            task_type=task_type,
+            request=training_request,
             output_dir=str(candidate_dir),
-            smiles_column=smiles_column,
-            target_columns=list(target_columns),
-            validation_protocol=benchmark_protocol,
-            representation_name=(
-                None
-                if candidate["backend_name"] == "chemprop"
-                else candidate["representation_name"]
-            ),
-            extra_args=requested_extra_args,
-            validation_strategy=validation_strategy,
             agent=agent,
             **bundle_kwargs,
         )
@@ -616,9 +653,7 @@ class BenchmarkToolkit(Toolkit):
         )
         best_stability = None
         stability_key = (
-            "random_family_balanced_accuracy_std"
-            if classification_rows
-            else "random_family_r2_std"
+            "random_family_balanced_accuracy_std" if classification_rows else "random_family_r2_std"
         )
         stability_rows = [row for row in rows if row.get(stability_key) is not None]
         if stability_rows:
@@ -654,7 +689,9 @@ class BenchmarkToolkit(Toolkit):
         lines.append("- Workflow kind: `benchmark`")
         lines.append(f"- Effective protocol: `{benchmark_protocol}`")
         if validation_strategy:
-            lines.append(f"- Effective validation strategy: `{json.dumps(validation_strategy, sort_keys=True)}`")
+            lines.append(
+                f"- Effective validation strategy: `{json.dumps(validation_strategy, sort_keys=True)}`"
+            )
         lines.append(f"- Candidates compared: `{len(candidate_rows)}`")
         lines.append(f"- {seed_policy_reporting_text(campaign_seed_policy)}")
         for key, value in recommendations.items():
@@ -818,69 +855,30 @@ class BenchmarkToolkit(Toolkit):
     def benchmark_qsar_models(
         self,
         train_csv: str,
-        task_type: str,
-        target_columns: List[str] | str,
-        smiles_column: str = "smiles",
-        backends: Optional[List[str] | str] = None,
-        include_candidate_variants: bool = True,
-        tabicl_candidate_variants: Optional[List[str] | str] = None,
+        request: QsariaBenchmarkRequest,
         output_dir: str = ".files/benchmark_output",
-        allow_heavy_compute: bool = False,
-        training_profile: Optional[str] = None,
-        validation_strategy: Optional[Dict[str, Any]] = None,
-        benchmark_requested: bool = False,
-        agent: Optional[Agent] = None,
         bundle_dir: Optional[str] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
+        if isinstance(request, dict):
+            request = QsariaBenchmarkRequest.model_validate(request)
         if agent is None:
             raise ValueError("Agent is required when running a benchmark campaign")
-        if not benchmark_requested:
-            return {
-                "benchmark_started": False,
-                "blocked": True,
-                "reason": (
-                    "`benchmark_qsar_models` requires `benchmark_requested=True`. "
-                    "Use single-backend training tools for ordinary standard_qsar "
-                    "or Activity-Cliff-enriched training workflows."
-                ),
-                "next_step": (
-                    "If the user explicitly asked for a benchmark or candidate leaderboard, "
-                    "call this tool again with `benchmark_requested=True`; otherwise continue "
-                    "with model registration/persistence for the completed single training run."
-                ),
-            }
-        requested_backends = _coerce_list(backends)
-        requested_tabicl_variants = _coerce_list(tabicl_candidate_variants)
-        target_columns = _coerce_list(target_columns) or []
-
-        if (
-            _matches_latest_training_run(
-                agent,
-                train_csv=train_csv,
-                task_type=task_type,
-                target_columns=target_columns,
-            )
-            and not requested_backends
-            and not requested_tabicl_variants
-        ):
-            return {
-                "benchmark_started": False,
-                "blocked": True,
-                "reason": (
-                    "A single-model QSAR training run for this dataset and target has just "
-                    "completed. Do not start `benchmark_qsar_models` as a follow-up step "
-                    "unless the user explicitly asked for a benchmark with a comparative scope."
-                ),
-                "next_step": (
-                    "Continue with the completed model report. If the user asks for a benchmark, "
-                    "call this tool in that new benchmark request with explicit `backends` or "
-                    "`tabicl_candidate_variants`."
-                ),
-            }
+        task_type = request.task_type
+        target_columns = list(request.target_columns)
+        smiles_column = request.smiles_column
+        requested_backends = list(request.backends)
+        requested_tabicl_variants = list(request.tabicl_candidate_variants)
+        include_candidate_variants = request.include_candidate_variants
+        validation_strategy = canonical_validation_strategy(request.validation)
 
         compute_payload = self._resolve_compute_profile()
-        effective_training_profile = training_profile or compute_payload["training_profile"]
+        effective_training_profile = (
+            compute_payload["training_profile"]
+            if request.compute.profile == "auto"
+            else request.compute.profile
+        )
         protocol_policy = resolve_validation_strategy(
             requested_protocol="standard_qsar",
             validation_strategy=validation_strategy,
@@ -929,12 +927,10 @@ class BenchmarkToolkit(Toolkit):
                     task_type=task_type,
                     smiles_column=smiles_column,
                     target_columns=target_columns,
-                    benchmark_protocol=benchmark_protocol,
                     candidate_dir=candidate_dir,
-                    allow_heavy_compute=allow_heavy_compute,
-                    training_profile=training_profile,
                     campaign_seed_policy=campaign_seed_policy,
-                    validation_strategy=validation_strategy,
+                    validation=request.validation,
+                    compute=request.compute,
                     agent=agent,
                     bundle_dir=bundle_dir,
                 )

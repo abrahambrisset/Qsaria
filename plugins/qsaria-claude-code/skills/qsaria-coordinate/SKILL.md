@@ -14,8 +14,9 @@ plugin specialists. Never act as a sixth specialist.
 
 1. Call `qsaria_bootstrap` once for the request.
 2. Require `llm_policy=disabled`, `target=external_mcp_coordinator_v1`,
-   `claude_code_v1` among `supported_clients`, compatible contract versions,
-   and a safe storage-concurrency mode.
+   `claude_code_v1` among `supported_clients`, `training_contract_version=2.0`,
+   `typed_training_requests=true`, `free_training_arguments=false`, compatible
+   contract versions, and a safe storage-concurrency mode.
 3. Never list or reopen prior experiments automatically.
 4. Open an experiment only from an explicit `experiment_id`.
 5. Create an experiment only at the first required scientific write. New
@@ -92,6 +93,11 @@ explicit `retryable_error`, once, with unchanged scientific intent. Never retry
 Report, `terminal_failure`, or `blocked_failed_external_evaluation`. Never
 change data, backend, representation, validation, method, split, seed, or user
 constraints silently.
+
+A strict request-schema rejection is a pre-execution, corrigible boundary
+error. It must not mutate the experiment or create a scientific handoff.
+Correct only an obvious serialization mistake; ask the user when the rejected
+value represents a scientific choice.
 
 ## Recover without patching
 

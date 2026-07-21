@@ -10,6 +10,13 @@ from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit, _coerce_list
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
+from cs_copilot.tools.prediction.qsar_contracts import (
+    ComputeConfig,
+    QsariaBenchmarkRequest,
+    RepeatedHoldoutValidation,
+    StandardQsarValidation,
+    canonical_validation_strategy,
+)
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 
 
@@ -94,7 +101,16 @@ def test_benchmark_public_contract_has_no_benchmark_mode():
     parameters = inspect.signature(BenchmarkToolkit.benchmark_qsar_models).parameters
 
     assert "benchmark_mode" not in parameters
-    assert parameters["validation_strategy"].default is None
+    assert "validation_strategy" not in parameters
+    assert parameters["request"].annotation == "QsariaBenchmarkRequest"
+
+    schema = BenchmarkToolkit().functions["benchmark_qsar_models"].parameters
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {"train_csv", "request"}
+    serialized = json.dumps(schema)
+    assert "output_dir" not in serialized
+    assert "bundle_dir" not in serialized
+    assert "extra_args" not in serialized
 
 
 def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path):
@@ -106,11 +122,7 @@ def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path)
             return {"train_csv": kwargs["train_csv"]}
 
     toolkit = BenchmarkToolkit(training_toolkit=_TrainingFacade())
-    strategy = {
-        "type": "repeated_holdout",
-        "split_family": "scaffold",
-        "n_repeats": 3,
-    }
+    validation = RepeatedHoldoutValidation(split_family="scaffold", n_repeats=3)
     seed_policy = {"split_runs": [{"seed": 42}], "model_seed": 42}
     for backend_name, representation_name in (
         ("chemprop", "molecular_graph"),
@@ -126,19 +138,17 @@ def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path)
             task_type="regression",
             smiles_column="smiles",
             target_columns=["Y"],
-            benchmark_protocol="repeated_scaffold_holdout",
             candidate_dir=tmp_path / backend_name,
-            allow_heavy_compute=False,
-            training_profile="benchmark",
             campaign_seed_policy=seed_policy,
-            validation_strategy=strategy,
+            validation=validation,
+            compute=ComputeConfig(profile="heavy_validation", allow_heavy_compute=True),
             agent=_fake_agent(),
         )
 
-    assert [call["validation_strategy"] for call in calls] == [strategy, strategy]
-    assert {call["validation_protocol"] for call in calls} == {
-        "repeated_scaffold_holdout"
-    }
+    assert [canonical_validation_strategy(call["request"].validation) for call in calls] == [
+        canonical_validation_strategy(validation),
+        canonical_validation_strategy(validation),
+    ]
 
 
 def test_expand_candidates_includes_heavy_tabicl_all():
@@ -212,58 +222,6 @@ def test_rank_summary_rows_prefers_hardest_split_then_gap():
     assert ranked[0]["candidate_id"] == "b"
 
 
-def test_benchmark_qsar_models_requires_explicit_benchmark_request(tmp_path):
-    train_csv = tmp_path / "dataset_curated.csv"
-    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
-
-    toolkit = BenchmarkToolkit()
-    agent = _fake_agent()
-
-    result = toolkit.benchmark_qsar_models(
-        train_csv=str(train_csv),
-        task_type="regression",
-        target_columns=["Y"],
-        smiles_column="smiles",
-        output_dir=str(tmp_path / "benchmark_output"),
-        agent=agent,
-    )
-
-    assert result["benchmark_started"] is False
-    assert result["blocked"] is True
-    assert "benchmark_requested=True" in result["reason"]
-    assert not (tmp_path / "benchmark_output").exists()
-
-
-def test_benchmark_qsar_models_rejects_post_single_training_without_scope(tmp_path):
-    train_csv = tmp_path / "dataset_curated.csv"
-    pd.DataFrame({"smiles": ["CCO", "CCC"], "Y": [1.0, 2.0]}).to_csv(train_csv, index=False)
-
-    toolkit = BenchmarkToolkit()
-    agent = _fake_agent()
-    agent.session_state["prediction_models"]["training_runs"].append(
-        {
-            "train_csv": str(train_csv),
-            "task_type": "regression",
-            "target_columns": ["Y"],
-        }
-    )
-
-    result = toolkit.benchmark_qsar_models(
-        train_csv=str(train_csv),
-        task_type="regression",
-        target_columns=["Y"],
-        smiles_column="smiles",
-        benchmark_requested=True,
-        output_dir=str(tmp_path / "benchmark_output"),
-        agent=agent,
-    )
-
-    assert result["benchmark_started"] is False
-    assert result["blocked"] is True
-    assert "single-model QSAR training run" in result["reason"]
-    assert not (tmp_path / "benchmark_output").exists()
-
-
 def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     catalog_path = tmp_path / "model_catalog.json"
     internal_root = tmp_path / "internal"
@@ -313,17 +271,19 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     def fake_train_qsar_model(
         *,
         train_csv,
-        backend_name,
-        task_type,
+        request,
         output_dir,
-        smiles_column="smiles",
-        target_columns=None,
-        validation_protocol="standard_qsar",
-        representation_name=None,
-        extra_args=None,
         agent=None,
         **kwargs,
     ):
+        backend_name = request.backend.name
+        task_type = request.task_type
+        smiles_column = request.smiles_column
+        target_columns = request.target_columns
+        validation_protocol = (
+            "standard_qsar" if isinstance(request.validation, StandardQsarValidation) else "custom"
+        )
+        representation_name = getattr(request.representation, "name", None)
         forwarded_bundle_dirs.append(kwargs.get("bundle_dir"))
         root = Path(output_dir)
         model_name = "best.pt" if backend_name == "chemprop" else "best.pkl"
@@ -413,12 +373,12 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
     bundle_dir = tmp_path / "benchmark_bundles"
     result = toolkit.benchmark_qsar_models(
         train_csv=str(train_csv),
-        task_type="regression",
-        target_columns=["Y"],
-        smiles_column="smiles",
+        request=QsariaBenchmarkRequest(
+            task_type="regression",
+            target_columns=["Y"],
+        ),
         output_dir=str(output_dir),
         bundle_dir=str(bundle_dir),
-        benchmark_requested=True,
         agent=agent,
     )
 

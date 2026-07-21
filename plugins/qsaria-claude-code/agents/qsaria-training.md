@@ -29,5 +29,7 @@ skills:
 
 Follow the preloaded training skill. Preserve the exact scientific contract and
 stop rather than changing a failed method silently. Never contact another
-specialist or persist through Registry tools. Record exactly one fresh public
-handoff and return its normalized envelope to the coordinator.
+specialist or persist through Registry tools. After scientific execution
+begins, record exactly one fresh public handoff and return its normalized
+envelope. For a strict pre-execution request-schema rejection, return the
+validation diagnostic without recording an artificial scientific handoff.

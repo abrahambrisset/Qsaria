@@ -32,6 +32,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
+from .qsar_contracts import LightGBMRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
 from .tabular_representations import get_tabular_representation
@@ -149,66 +150,14 @@ class LightGBMBackend(PredictionBackend):
         self._ensure_available()
         return importlib.import_module("lightgbm")
 
-    def _sanitize_train_extra_args(self, extra_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        raw = dict(extra_args or {})
-        allowed = {
-            "feature_columns",
-            "categorical_feature_columns",
-            "split_sizes",
-            "split_type",
-            "split_payload",
-            "excluded_train_indices",
-            "activity_cliff_variant_id",
-            "validation_protocol",
-            "random_state",
-            "n_estimators",
-            "learning_rate",
-            "num_leaves",
-            "subsample",
-            "colsample_bytree",
-            "min_child_samples",
-            "reg_alpha",
-            "reg_lambda",
-            "max_depth",
-            "min_split_gain",
-            "n_jobs",
-            "device_type",
-            "use_gpu",
-            "gpu_fallback_to_cpu",
-            "early_stopping_rounds",
-            "verbosity",
-            "boosting_type",
-            "objective",
-            "metric",
-            "force_col_wise",
-            "force_row_wise",
-            "zero_as_missing",
-            "use_missing",
-            "deterministic",
-            "final_refit",
-            "classification_threshold",
-            "class_labels",
-            "persist_artifacts",
-            "return_prediction_frames",
-            "refit_on_train_validation",
-        }
-        dropped = sorted(key for key in raw if key not in allowed)
-        sanitized = {key: value for key, value in raw.items() if key in allowed}
-        if dropped:
-            raise InvalidPredictionInputError(
-                "Unsupported LightGBM train arguments: " + ", ".join(dropped) + ". "
-                "Use describe_backend_hyperparameters('lightgbm') for the supported contract."
-            )
-        return sanitized
-
     def _resolve_categorical_feature_columns(
         self,
         df: pd.DataFrame,
         *,
         feature_columns: List[str],
-        extra_args: Dict[str, Any],
+        resolved_parameters: Dict[str, Any],
     ) -> List[str]:
-        explicit = extra_args.get("categorical_feature_columns") or []
+        explicit = resolved_parameters.get("categorical_feature_columns") or []
         if isinstance(explicit, str):
             explicit = [explicit]
         columns = [str(column) for column in explicit]
@@ -229,10 +178,10 @@ class LightGBMBackend(PredictionBackend):
         self,
         df: pd.DataFrame,
         task: PredictionTaskSpec,
-        extra_args: Dict[str, Any],
+        resolved_parameters: Dict[str, Any],
     ) -> Tuple[List[str], List[str]]:
         excluded = set(task.target_columns) | set(task.smiles_columns)
-        explicit = extra_args.get("feature_columns")
+        explicit = resolved_parameters.get("feature_columns")
         if isinstance(explicit, str):
             explicit = [explicit]
 
@@ -251,7 +200,7 @@ class LightGBMBackend(PredictionBackend):
             categorical_feature_columns = self._resolve_categorical_feature_columns(
                 df,
                 feature_columns=feature_columns,
-                extra_args=extra_args,
+                resolved_parameters=resolved_parameters,
             )
             missing = [column for column in feature_columns if column not in df.columns]
             if missing:
@@ -281,8 +230,8 @@ class LightGBMBackend(PredictionBackend):
         categorical_feature_columns = self._resolve_categorical_feature_columns(
             df,
             feature_columns=numeric_columns
-            + list(extra_args.get("categorical_feature_columns") or []),
-            extra_args=extra_args,
+            + list(resolved_parameters.get("categorical_feature_columns") or []),
+            resolved_parameters=resolved_parameters,
         )
         feature_columns = list(numeric_columns)
         for column in categorical_feature_columns:
@@ -346,46 +295,48 @@ class LightGBMBackend(PredictionBackend):
             "n": int(len(y_true)),
         }
 
-    def _default_model_params(self, extra_args: Dict[str, Any]) -> Dict[str, Any]:
+    def _default_model_params(self, resolved_parameters: Dict[str, Any]) -> Dict[str, Any]:
         params = {
-            "objective": str(extra_args.get("objective") or "regression"),
-            "boosting_type": str(extra_args.get("boosting_type") or "gbdt"),
-            "learning_rate": float(extra_args.get("learning_rate", 0.05)),
-            "num_leaves": int(extra_args.get("num_leaves", 63)),
-            "subsample": float(extra_args.get("subsample", 0.8)),
-            "colsample_bytree": float(extra_args.get("colsample_bytree", 0.8)),
-            "min_child_samples": int(extra_args.get("min_child_samples", 20)),
-            "n_estimators": int(extra_args.get("n_estimators", 500)),
-            "random_state": int(extra_args.get("random_state", 42)),
-            "n_jobs": int(extra_args.get("n_jobs", 1)),
-            "verbosity": int(extra_args.get("verbosity", -1)),
+            "objective": str(resolved_parameters.get("objective") or "regression"),
+            "boosting_type": str(resolved_parameters.get("boosting_type") or "gbdt"),
+            "learning_rate": float(resolved_parameters.get("learning_rate", 0.05)),
+            "num_leaves": int(resolved_parameters.get("num_leaves", 63)),
+            "subsample": float(resolved_parameters.get("subsample", 0.8)),
+            "colsample_bytree": float(resolved_parameters.get("colsample_bytree", 0.8)),
+            "min_child_samples": int(resolved_parameters.get("min_child_samples", 20)),
+            "n_estimators": int(resolved_parameters.get("n_estimators", 500)),
+            "random_state": int(resolved_parameters.get("random_state", 42)),
+            "n_jobs": int(resolved_parameters.get("n_jobs", 1)),
+            "verbosity": int(resolved_parameters.get("verbosity", -1)),
         }
-        if "max_depth" in extra_args:
-            params["max_depth"] = int(extra_args["max_depth"])
-        if "reg_alpha" in extra_args:
-            params["reg_alpha"] = float(extra_args["reg_alpha"])
-        if "reg_lambda" in extra_args:
-            params["reg_lambda"] = float(extra_args["reg_lambda"])
-        if "min_split_gain" in extra_args:
-            params["min_split_gain"] = float(extra_args["min_split_gain"])
-        if "force_col_wise" in extra_args:
-            params["force_col_wise"] = bool(extra_args["force_col_wise"])
-        if "force_row_wise" in extra_args:
-            params["force_row_wise"] = bool(extra_args["force_row_wise"])
-        if "zero_as_missing" in extra_args:
-            params["zero_as_missing"] = bool(extra_args["zero_as_missing"])
-        if "use_missing" in extra_args:
-            params["use_missing"] = bool(extra_args["use_missing"])
-        if "deterministic" in extra_args:
-            params["deterministic"] = bool(extra_args["deterministic"])
+        if "max_depth" in resolved_parameters:
+            params["max_depth"] = int(resolved_parameters["max_depth"])
+        if "reg_alpha" in resolved_parameters:
+            params["reg_alpha"] = float(resolved_parameters["reg_alpha"])
+        if "reg_lambda" in resolved_parameters:
+            params["reg_lambda"] = float(resolved_parameters["reg_lambda"])
+        if "min_split_gain" in resolved_parameters:
+            params["min_split_gain"] = float(resolved_parameters["min_split_gain"])
+        if "force_col_wise" in resolved_parameters:
+            params["force_col_wise"] = bool(resolved_parameters["force_col_wise"])
+        if "force_row_wise" in resolved_parameters:
+            params["force_row_wise"] = bool(resolved_parameters["force_row_wise"])
+        if "zero_as_missing" in resolved_parameters:
+            params["zero_as_missing"] = bool(resolved_parameters["zero_as_missing"])
+        if "use_missing" in resolved_parameters:
+            params["use_missing"] = bool(resolved_parameters["use_missing"])
+        if "deterministic" in resolved_parameters:
+            params["deterministic"] = bool(resolved_parameters["deterministic"])
         return params
 
-    def _resolve_device_type(self, extra_args: Dict[str, Any]) -> Tuple[str, bool, Dict[str, Any]]:
+    def _resolve_device_type(
+        self, resolved_parameters: Dict[str, Any]
+    ) -> Tuple[str, bool, Dict[str, Any]]:
         compute_env = describe_compute_environment()
         if self._gpu_runtime_blocked_reason:
             return "cpu", False, compute_env
-        explicit_device = extra_args.get("device_type")
-        explicit_use_gpu = extra_args.get("use_gpu")
+        explicit_device = resolved_parameters.get("device_type")
+        explicit_use_gpu = resolved_parameters.get("use_gpu")
         if explicit_device:
             return str(explicit_device).lower(), False, compute_env
         if explicit_use_gpu is not None:
@@ -564,7 +515,6 @@ class LightGBMBackend(PredictionBackend):
         preds_path: str,
         *,
         return_uncertainty: bool = False,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if return_uncertainty:
             raise InvalidPredictionInputError(
@@ -648,14 +598,10 @@ class LightGBMBackend(PredictionBackend):
             "categorical_feature_columns": categorical_feature_columns,
         }
 
-    def train_model(
-        self,
-        train_csv: str,
-        output_dir: str,
-        task: PredictionTaskSpec,
-        *,
-        extra_args: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    def train_model(self, request: LightGBMRunRequest) -> Dict[str, Any]:
+        train_csv = request.train_csv
+        output_dir = request.output_dir
+        task = PredictionTaskSpec(**request.task_payload())
         self._ensure_available()
         task_is_classification = is_classification_task(task.task_type)
         if task.task_type != "regression" and not task_is_classification:
@@ -665,7 +611,7 @@ class LightGBMBackend(PredictionBackend):
         if len(task.target_columns) != 1:
             raise InvalidPredictionInputError("LightGBM V1 requires exactly one target column.")
 
-        sanitized_args = self._sanitize_train_extra_args(extra_args)
+        sanitized_args = request.parameter_payload()
         persist_artifacts = bool(sanitized_args.pop("persist_artifacts", True))
         return_prediction_frames = bool(sanitized_args.pop("return_prediction_frames", False))
         refit_on_train_validation = bool(sanitized_args.pop("refit_on_train_validation", False))

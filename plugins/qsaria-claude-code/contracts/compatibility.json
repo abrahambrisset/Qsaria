@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "phase": "phase_b_integrated_bundle",
-  "plugin_version": "0.2.1",
+  "plugin_version": "0.3.0",
   "client_contract": "claude_code_v1",
   "coordinator_contract": "external_mcp_coordinator_v1",
   "supported_clients": [
@@ -10,16 +10,17 @@
   ],
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "45fdc97411f2c13b69af896f4bfc5381aa224fd6",
-    "tree": "c9669333b847c42c512ee839dcd46a5faec2db52",
-    "signed_tree": "sha256:a996d5c86a2eff1fa066aaddc762581a6c706ebf21ce31603b62a00994cf02d5",
-    "describe": "v0.9.0-qsaria-applicability-domain-16-g45fdc97",
+    "commit": "5797e1b4bd50a5f2679299b6d9b56b027a01f384",
+    "tree": "95b4f9d71980b80d14a584354ded04c431b6a5d7",
+    "signed_tree": "sha256:f10d94be0b0025f159355044b37a17cf40d36b84a9714f24999b56babcf6da14",
+    "describe": "v0.9.0-qsaria-applicability-domain-17-g5797e1b",
     "dirty": true
   },
   "contracts": {
     "experiment": "1.0",
     "handoff": "1.0",
-    "report_facts": "2.0"
+    "report_facts": "2.0",
+    "training": "2.0"
   },
   "signatures": {
     "source_contracts": {
@@ -27,8 +28,8 @@
       "handoff_schema": "sha256:fcb1db75c95bf630607e6236125989545003b0ac7628f18dd74780be31ed74b3",
       "scientific_invariants": "sha256:39bae519f11cbe2735edbed583e33a739af317b5565033b72e6bedf6c5a33a61"
     },
-    "runtime": "sha256:2bea139f70eb8d84a9adc441582b68d31a0526f3f480f58883390b04ee820eb1",
-    "bundle": "sha256:4f2ccf439bd53f766814f96b6f0e335bca3d0603aafc1c31a2f4b19ee4169514"
+    "runtime": "sha256:6451e15fca37fd14b8820079451c0bf87abfca3954ba22e90ff02dad7e8528c4",
+    "bundle": "sha256:5b2f634b92fa43ad486ac4b772aba819782a1c5bb1755c798b601e934819bf14"
   },
   "runtime_bootstrap_validation": "automated_validate_shared_runtime",
   "scientific_pilot": {

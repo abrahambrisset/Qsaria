@@ -37,6 +37,7 @@ from .outlier_analysis import (
     write_outlier_analysis_artifacts,
     write_outlier_variant_comparison,
 )
+from .qsar_contracts import TabICLRunRequest, TabICLWorkerJob, build_backend_run_request
 from .qsar_progress import apply_progress_update
 from .qsar_splitters import (
     build_full_train_split_payload,
@@ -112,6 +113,26 @@ class TabICLToolkit(Toolkit):
     def __init__(self, backend: Optional[TabICLBackend] = None):
         super().__init__("tabicl_prediction")
         self.backend = backend or TabICLBackend()
+
+    def _train_backend(
+        self,
+        *,
+        train_csv: str,
+        output_dir: str,
+        task: PredictionTaskSpec,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        request = build_backend_run_request(
+            backend="tabicl",
+            train_csv=train_csv,
+            output_dir=output_dir,
+            task_type=task.task_type,
+            smiles_columns=list(task.smiles_columns),
+            target_columns=list(task.target_columns),
+            reaction_columns=list(task.reaction_columns),
+            resolved_parameters=resolved_parameters,
+        )
+        return self.backend.train_model(request)
 
     def is_tabicl_available(self) -> bool:
         """Return whether the TabICL backend is available in the current environment."""
@@ -280,11 +301,11 @@ class TabICLToolkit(Toolkit):
                     },
                 }
             ]
-            run = self.backend.train_model(
+            run = self._train_backend(
                 train_csv=train_csv,
                 output_dir=str(output_dir / "outlier_variants" / variant_id),
                 task=task,
-                extra_args={
+                resolved_parameters={
                     **train_args,
                     "split_payload": payload,
                     "split_type": "final_refit",
@@ -390,10 +411,10 @@ class TabICLToolkit(Toolkit):
 
     def _apply_training_profile(
         self,
-        extra_args: Optional[Dict[str, Any]],
+        resolved_parameters: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         compute_env = self.describe_compute_environment()
-        requested_n_jobs = (extra_args or {}).get("n_jobs")
+        requested_n_jobs = (resolved_parameters or {}).get("n_jobs")
 
         def _limit(
             profile: str, merged: Dict[str, Any], allow_heavy_compute: bool
@@ -426,7 +447,7 @@ class TabICLToolkit(Toolkit):
             return merged
 
         return apply_training_profile(
-            extra_args,
+            resolved_parameters,
             defaults_for_profile=self._training_defaults_for_profile,
             limit_profile_args=_limit,
             compute_environment=compute_env,
@@ -649,7 +670,7 @@ class TabICLToolkit(Toolkit):
         split_type: str,
         split_sizes: Optional[List[float]],
         random_state: int,
-        extra_args: Optional[Dict[str, Any]],
+        resolved_parameters: Optional[Dict[str, Any]],
         representation_name: Optional[str] = None,
         prediction_state: Optional[Dict[str, Any]] = None,
         active_marker_path: Optional[Path] = None,
@@ -660,30 +681,38 @@ class TabICLToolkit(Toolkit):
         root_output_path.mkdir(parents=True, exist_ok=True)
         trained_at = project_now()
 
-        requested_extra_args = dict(extra_args or {})
-        requested_validation_strategy = requested_extra_args.pop("validation_strategy", None)
-        requested_ad_methods = requested_extra_args.pop("applicability_domain_methods", None)
-        requested_similarity_top_k = requested_extra_args.pop("similarity_top_k_neighbors", None)
-        requested_similarity_percentile = requested_extra_args.pop(
+        requested_resolved_parameters = dict(resolved_parameters or {})
+        requested_validation_strategy = requested_resolved_parameters.pop(
+            "validation_strategy", None
+        )
+        requested_ad_methods = requested_resolved_parameters.pop(
+            "applicability_domain_methods", None
+        )
+        requested_similarity_top_k = requested_resolved_parameters.pop(
+            "similarity_top_k_neighbors", None
+        )
+        requested_similarity_percentile = requested_resolved_parameters.pop(
             "similarity_threshold_percentile", None
         )
-        requested_extra_args.setdefault("feature_columns", feature_columns)
-        requested_extra_args.setdefault("split_sizes", split_sizes)
-        requested_extra_args.setdefault("random_state", random_state)
-        requested_extra_args.setdefault("split_type", split_type)
-        requested_extra_args.setdefault(
-            "validation_protocol", requested_extra_args.get("validation_protocol")
+        requested_resolved_parameters.setdefault("feature_columns", feature_columns)
+        requested_resolved_parameters.setdefault("split_sizes", split_sizes)
+        requested_resolved_parameters.setdefault("random_state", random_state)
+        requested_resolved_parameters.setdefault("split_type", split_type)
+        requested_resolved_parameters.setdefault(
+            "validation_protocol", requested_resolved_parameters.get("validation_protocol")
         )
 
-        training_policy = self._apply_training_profile(requested_extra_args)
+        training_policy = self._apply_training_profile(requested_resolved_parameters)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
-            seed_policy=training_policy["extra_args"].get("seed_policy"),
-            base_seed=training_policy["extra_args"].get("random_state"),
+            seed_policy=training_policy["resolved_parameters"].get("seed_policy"),
+            base_seed=training_policy["resolved_parameters"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
-        training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
+        training_policy["resolved_parameters"]["random_state"] = protocol_policy["seed_policy"][
+            "model_seed"
+        ]
         task = PredictionTaskSpec(
             task_type=task_type,
             smiles_columns=["smiles"],
@@ -761,7 +790,7 @@ class TabICLToolkit(Toolkit):
                 run_args = {
                     **{
                         key: value
-                        for key, value in training_policy["extra_args"].items()
+                        for key, value in training_policy["resolved_parameters"].items()
                         if key != "seed_policy"
                     },
                     "feature_columns": feature_columns,
@@ -794,11 +823,11 @@ class TabICLToolkit(Toolkit):
                     prediction_state["active_training_run"] = dict(active_run_record)
                 write_active_training_marker(marker_path, active_run_record)
 
-                single_result = self.backend.train_model(
+                single_result = self._train_backend(
                     train_csv=train_csv,
                     output_dir=str(run_output_dir),
                     task=task,
-                    extra_args=run_args,
+                    resolved_parameters=run_args,
                 )
 
                 if label.startswith("cv_repeat_"):
@@ -878,7 +907,7 @@ class TabICLToolkit(Toolkit):
             final_args = {
                 **{
                     key: value
-                    for key, value in training_policy["extra_args"].items()
+                    for key, value in training_policy["resolved_parameters"].items()
                     if key != "seed_policy"
                 },
                 "feature_columns": feature_columns,
@@ -888,11 +917,11 @@ class TabICLToolkit(Toolkit):
                 "validation_protocol": protocol_policy["protocol"],
                 "final_refit": True,
             }
-            final_refit_run = self.backend.train_model(
+            final_refit_run = self._train_backend(
                 train_csv=train_csv,
                 output_dir=str(final_output_dir),
                 task=task,
-                extra_args=final_args,
+                resolved_parameters=final_args,
             )
             final_completed_at = project_now()
             final_refit_run["strategy"] = "final_refit"
@@ -1001,7 +1030,7 @@ class TabICLToolkit(Toolkit):
         result["profile_reason"] = training_policy["profile_reason"]
         result["effective_train_args"] = {
             key: value
-            for key, value in training_policy["extra_args"].items()
+            for key, value in training_policy["resolved_parameters"].items()
             if key != "seed_policy"
         }
         result["training_resources"] = self._summarize_training_resources(
@@ -1044,7 +1073,7 @@ class TabICLToolkit(Toolkit):
         self,
         *,
         job_dir: Path,
-        payload: Dict[str, Any],
+        payload: TabICLWorkerJob,
     ) -> Path:
         job_dir.mkdir(parents=True, exist_ok=True)
         for stale_name in ("result.json", "error.json", "worker.log"):
@@ -1052,7 +1081,7 @@ class TabICLToolkit(Toolkit):
             if stale_path.exists():
                 stale_path.unlink()
         job_path = job_dir / "job.json"
-        job_path.write_text(json.dumps(payload, indent=2) + "\n")
+        job_path.write_text(payload.model_dump_json(indent=2) + "\n")
         return job_path
 
     def _run_training_worker(
@@ -1171,7 +1200,7 @@ class TabICLToolkit(Toolkit):
         similarity_threshold_percentile: float | str | None = None,
         hyperparameter_tuning: Optional[Dict[str, Any]] = None,
         outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
+        resolved_parameters: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         """Train a TabICLv2 model with shared QSAR validation protocols."""
@@ -1195,43 +1224,45 @@ class TabICLToolkit(Toolkit):
         root_output_path = Path(resolved_output_dir)
         root_output_path.mkdir(parents=True, exist_ok=True)
 
-        requested_extra_args, extra_activity_args = split_activity_cliff_args(extra_args)
+        requested_resolved_parameters, extra_activity_args = split_activity_cliff_args(
+            resolved_parameters
+        )
         requested_hyperparameter_tuning = (
             hyperparameter_tuning
             if hyperparameter_tuning is not None
-            else requested_extra_args.pop("hyperparameter_tuning", None)
+            else requested_resolved_parameters.pop("hyperparameter_tuning", None)
         )
         requested_outlier_analysis = (
             outlier_analysis
             if outlier_analysis is not None
-            else requested_extra_args.pop("outlier_analysis", None)
+            else requested_resolved_parameters.pop("outlier_analysis", None)
         )
         requested_validation_strategy = (
             validation_strategy
             if validation_strategy is not None
-            else requested_extra_args.pop("validation_strategy", None)
+            else requested_resolved_parameters.pop("validation_strategy", None)
         )
         requested_ad_methods = (
             applicability_domain_methods
             if applicability_domain_methods is not None
-            else requested_extra_args.pop("applicability_domain_methods", None)
+            else requested_resolved_parameters.pop("applicability_domain_methods", None)
         )
         requested_similarity_top_k = (
             similarity_top_k_neighbors
             if similarity_top_k_neighbors is not None
-            else requested_extra_args.pop("similarity_top_k_neighbors", None)
+            else requested_resolved_parameters.pop("similarity_top_k_neighbors", None)
         )
         requested_similarity_percentile = (
             similarity_threshold_percentile
             if similarity_threshold_percentile is not None
-            else requested_extra_args.pop("similarity_threshold_percentile", None)
+            else requested_resolved_parameters.pop("similarity_threshold_percentile", None)
         )
         if requested_ad_methods is not None:
-            requested_extra_args["applicability_domain_methods"] = requested_ad_methods
+            requested_resolved_parameters["applicability_domain_methods"] = requested_ad_methods
         if requested_similarity_top_k is not None:
-            requested_extra_args["similarity_top_k_neighbors"] = requested_similarity_top_k
+            requested_resolved_parameters["similarity_top_k_neighbors"] = requested_similarity_top_k
         if requested_similarity_percentile is not None:
-            requested_extra_args["similarity_threshold_percentile"] = (
+            requested_resolved_parameters["similarity_threshold_percentile"] = (
                 requested_similarity_percentile
             )
         activity_args = {
@@ -1243,12 +1274,12 @@ class TabICLToolkit(Toolkit):
             "activity_cliff_flag_threshold": activity_cliff_flag_threshold,
             **extra_activity_args,
         }
-        requested_extra_args.setdefault("feature_columns", normalized_feature_columns)
-        requested_extra_args.setdefault("split_sizes", normalized_split_sizes)
+        requested_resolved_parameters.setdefault("feature_columns", normalized_feature_columns)
+        requested_resolved_parameters.setdefault("split_sizes", normalized_split_sizes)
         if random_state is not None:
-            requested_extra_args.setdefault("random_state", random_state)
-        requested_extra_args.setdefault("split_type", split_type)
-        requested_extra_args.setdefault("validation_protocol", validation_protocol)
+            requested_resolved_parameters.setdefault("random_state", random_state)
+        requested_resolved_parameters.setdefault("split_type", split_type)
+        requested_resolved_parameters.setdefault("validation_protocol", validation_protocol)
 
         target_column = normalized_target_columns[0] if normalized_target_columns else None
         activity_cliffs: Dict[str, Any] = {}
@@ -1271,12 +1302,12 @@ class TabICLToolkit(Toolkit):
                     "warnings": [f"Activity-cliff annotation skipped: {exc}"],
                 }
 
-        training_policy = self._apply_training_profile(requested_extra_args)
+        training_policy = self._apply_training_profile(requested_resolved_parameters)
         protocol_policy = self._resolve_validation_protocol(
             requested_protocol=training_policy.get("validation_protocol"),
             training_profile=training_policy["training_profile"],
-            seed_policy=training_policy["extra_args"].get("seed_policy"),
-            base_seed=training_policy["extra_args"].get("random_state"),
+            seed_policy=training_policy["resolved_parameters"].get("seed_policy"),
+            base_seed=training_policy["resolved_parameters"].get("random_state"),
             validation_strategy=requested_validation_strategy,
         )
         has_validation = bool(protocol_policy.get("validation_strategy_type") == "cross_validation")
@@ -1299,7 +1330,9 @@ class TabICLToolkit(Toolkit):
             task_type=task_type,
             eligible=False,
         )
-        training_policy["extra_args"]["random_state"] = protocol_policy["seed_policy"]["model_seed"]
+        training_policy["resolved_parameters"]["random_state"] = protocol_policy["seed_policy"][
+            "model_seed"
+        ]
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
         prediction_state = get_prediction_state(agent) if agent is not None else None
@@ -1319,27 +1352,34 @@ class TabICLToolkit(Toolkit):
 
         job_dir = root_output_path / "_worker_job"
         worker_log_path = job_dir / "worker.log"
-        job_payload = {
-            "train_csv": train_csv,
-            "task_type": task_type,
-            "output_dir": resolved_output_dir,
-            "target_columns": normalized_target_columns,
-            "feature_columns": normalized_feature_columns,
-            "representation_name": representation_name,
-            "split_type": split_type,
-            "split_sizes": normalized_split_sizes,
-            "random_state": protocol_policy["seed_policy"]["model_seed"],
-            "extra_args": {
+        base_run_request = build_backend_run_request(
+            backend="tabicl",
+            train_csv=train_csv,
+            output_dir=resolved_output_dir,
+            task_type=task_type,
+            smiles_columns=["smiles"],
+            target_columns=list(normalized_target_columns),
+            resolved_parameters={
                 **{
                     key: value
-                    for key, value in training_policy["extra_args"].items()
-                    if key != "seed_policy"
+                    for key, value in training_policy["resolved_parameters"].items()
+                    if key not in {"seed_policy", "validation_strategy"}
                 },
+                "feature_columns": normalized_feature_columns,
+                "split_type": split_type,
+                "split_sizes": normalized_split_sizes,
+                "random_state": protocol_policy["seed_policy"]["model_seed"],
                 "validation_protocol": protocol_policy["protocol"],
-                "seed_policy": protocol_policy["seed_policy"],
-                "validation_strategy": requested_validation_strategy,
             },
-        }
+        )
+        if not isinstance(base_run_request, TabICLRunRequest):
+            raise TypeError("TabICL worker requires a TabICLRunRequest.")
+        job_payload = TabICLWorkerJob(
+            run_request=base_run_request,
+            representation_name=representation_name,
+            validation_strategy=requested_validation_strategy,
+            seed_policy=protocol_policy["seed_policy"],
+        )
         job_path = self._write_worker_job(job_dir=job_dir, payload=job_payload)
 
         try:
@@ -1416,7 +1456,7 @@ class TabICLToolkit(Toolkit):
                     train_args={
                         **{
                             key: value
-                            for key, value in training_policy["extra_args"].items()
+                            for key, value in training_policy["resolved_parameters"].items()
                             if key not in {"seed_policy", "split_payload", "validation_strategy"}
                         },
                         "feature_columns": list(
@@ -1536,7 +1576,6 @@ class TabICLToolkit(Toolkit):
         preds_path: str,
         target_columns: Optional[List[str] | str] = None,
         feature_columns: Optional[List[str] | str] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run TabICL batch prediction from a tabular CSV input file."""
         if isinstance(target_columns, str):
@@ -1549,10 +1588,6 @@ class TabICLToolkit(Toolkit):
             if not isinstance(parsed, list):
                 raise ValueError("feature_columns must be a list or a JSON-encoded list.")
             feature_columns = parsed
-
-        model_record_extra = dict(extra_args or {})
-        if feature_columns:
-            model_record_extra.setdefault("feature_columns", feature_columns)
 
         from .backend import PredictionModelRecord
 
@@ -1571,5 +1606,4 @@ class TabICLToolkit(Toolkit):
             input_csv=input_csv,
             model_record=model_record,
             preds_path=preds_path,
-            extra_args=model_record_extra,
         )

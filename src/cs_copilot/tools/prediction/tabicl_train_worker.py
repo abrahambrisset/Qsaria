@@ -13,14 +13,12 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict
 
+from .qsar_contracts import TabICLWorkerJob
 from .tabicl_toolkit import TabICLToolkit
 
 
-def _read_job(job_path: Path) -> Dict[str, Any]:
-    payload = json.loads(job_path.read_text())
-    if not isinstance(payload, dict):
-        raise ValueError("TabICL worker job payload must be a JSON object.")
-    return payload
+def _read_job(job_path: Path) -> TabICLWorkerJob:
+    return TabICLWorkerJob.model_validate_json(job_path.read_text())
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -43,20 +41,25 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         job = _read_job(job_path)
+        run_request = job.run_request
         toolkit = TabICLToolkit()
         result = toolkit._run_protocol_training(
-            train_csv=str(job["train_csv"]),
-            task_type=str(job["task_type"]),
-            resolved_output_dir=str(Path(job["output_dir"]).expanduser().resolve()),
-            target_columns=list(job["target_columns"]),
-            feature_columns=job.get("feature_columns"),
-            split_type=str(job.get("split_type", "random")),
-            split_sizes=job.get("split_sizes"),
-            random_state=int(job.get("random_state", 42)),
-            extra_args=dict(job.get("extra_args") or {}),
-            representation_name=job.get("representation_name"),
+            train_csv=run_request.train_csv,
+            task_type=run_request.task_type,
+            resolved_output_dir=str(Path(run_request.output_dir).expanduser().resolve()),
+            target_columns=list(run_request.target_columns),
+            feature_columns=run_request.feature_columns,
+            split_type=run_request.split_type,
+            split_sizes=run_request.split_sizes,
+            random_state=run_request.random_state,
+            resolved_parameters={
+                **run_request.parameter_payload(),
+                "seed_policy": job.seed_policy,
+                "validation_strategy": job.validation_strategy,
+            },
+            representation_name=job.representation_name,
             prediction_state=None,
-            active_marker_path=Path(job["output_dir"]).expanduser().resolve()
+            active_marker_path=Path(run_request.output_dir).expanduser().resolve()
             / ".training_in_progress",
             worker_pid=os.getpid(),
             worker_status="running",

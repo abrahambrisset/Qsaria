@@ -33,6 +33,12 @@ from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit, _agent
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 from cs_copilot.tools.prediction.model_registry_toolkit import ModelRegistryToolkit
 from cs_copilot.tools.prediction.prediction_inference_toolkit import PredictionInferenceToolkit
+from cs_copilot.tools.prediction.qsar_contracts import (
+    LightGBMConfig,
+    PrecomputedRepresentation,
+    QsariaTrainingRequest,
+    build_backend_run_request,
+)
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
 from cs_copilot.tools.prediction.session_state import (
     bundle_artifacts,
@@ -452,7 +458,7 @@ def test_training_orchestration_applies_profile_with_backend_specific_limits():
     )
 
     assert policy["training_profile"] == "heavy_validation"
-    assert policy["extra_args"]["n_estimators"] == 9999
+    assert policy["resolved_parameters"]["n_estimators"] == 9999
 
 
 def _fake_lightgbm_module():
@@ -549,19 +555,20 @@ def test_lightgbm_final_refit_preserves_explicit_external_test(monkeypatch, tmp_
     ).to_csv(train_csv, index=False)
 
     result = backend.train_model(
-        train_csv=str(train_csv),
-        output_dir=str(tmp_path / "filtered"),
-        task=PredictionTaskSpec(
+        build_backend_run_request(
+            backend="lightgbm",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "filtered"),
             task_type="regression",
             smiles_columns=["smiles"],
             target_columns=["pEC50"],
-        ),
-        extra_args={
-            "feature_columns": ["feature_a"],
-            "final_refit": True,
-            "refit_on_train_validation": True,
-            "split_payload": [{"train": list(range(10)), "test": [10, 11]}],
-        },
+            resolved_parameters={
+                "feature_columns": ["feature_a"],
+                "final_refit": True,
+                "refit_on_train_validation": True,
+                "split_payload": [{"train": list(range(10)), "test": [10, 11]}],
+            },
+        )
     )
 
     assert result["metrics_status"] == "evaluated"
@@ -590,19 +597,20 @@ def test_lightgbm_final_refit_without_external_test_is_allowed(monkeypatch, tmp_
     ).to_csv(train_csv, index=False)
 
     result = backend.train_model(
-        train_csv=str(train_csv),
-        output_dir=str(tmp_path / "cv_final_refit"),
-        task=PredictionTaskSpec(
+        build_backend_run_request(
+            backend="lightgbm",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "cv_final_refit"),
             task_type="regression",
             smiles_columns=["smiles"],
             target_columns=["pEC50"],
-        ),
-        extra_args={
-            "feature_columns": ["feature_a"],
-            "final_refit": True,
-            "refit_on_train_validation": True,
-            "split_payload": [{"train": list(range(10))}],
-        },
+            resolved_parameters={
+                "feature_columns": ["feature_a"],
+                "final_refit": True,
+                "refit_on_train_validation": True,
+                "split_payload": [{"train": list(range(10))}],
+            },
+        )
     )
 
     assert result["metrics_status"] == "not_evaluated"
@@ -737,27 +745,27 @@ def test_chemprop_toolkit_is_backend_only():
 
 def test_chemprop_standard_qsar_forces_single_replicate():
     toolkit = ChempropToolkit()
-    training_policy = {"extra_args": {"num_replicates": 3}}
+    training_policy = {"resolved_parameters": {"num_replicates": 3}}
 
     note = toolkit._apply_protocol_training_overrides(
         training_policy=training_policy,
         protocol_policy={"protocol": "standard_qsar"},
     )
 
-    assert training_policy["extra_args"]["num_replicates"] == 1
+    assert training_policy["resolved_parameters"]["num_replicates"] == 1
     assert "standard_qsar" in note
 
 
 def test_chemprop_repeated_holdout_forces_single_replicate():
     toolkit = ChempropToolkit()
-    training_policy = {"extra_args": {"num_replicates": 3}}
+    training_policy = {"resolved_parameters": {"num_replicates": 3}}
 
     note = toolkit._apply_protocol_training_overrides(
         training_policy=training_policy,
         protocol_policy={"protocol": "repeated_scaffold_holdout"},
     )
 
-    assert training_policy["extra_args"]["num_replicates"] == 1
+    assert training_policy["resolved_parameters"]["num_replicates"] == 1
     assert "repeated_scaffold_holdout" in note
 
 
@@ -939,12 +947,13 @@ def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_p
 
     result = toolkit.train_qsar_model(
         train_csv=str(train_csv),
-        backend_name="lightgbm",
-        task_type="regression",
+        request=QsariaTrainingRequest(
+            task_type="regression",
+            target_columns=["Y"],
+            representation=PrecomputedRepresentation(feature_columns=["feature_a"]),
+            backend=LightGBMConfig(),
+        ),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        feature_columns=["feature_a"],
-        validation_protocol="standard_qsar",
     )
 
     assert result["backend_name"] == "lightgbm"
@@ -1405,9 +1414,7 @@ def test_model_registry_batch_persistence_uses_each_exact_candidate_payload(monk
     ]
 
 
-def test_model_registry_batch_persistence_rejects_misplaced_ad_scores(
-    monkeypatch, tmp_path
-):
+def test_model_registry_batch_persistence_rejects_misplaced_ad_scores(monkeypatch, tmp_path):
     class FakeBackend:
         backend_name = "lightgbm"
 
@@ -2037,7 +2044,7 @@ def test_model_registry_persistence_exposes_classification_metadata(monkeypatch,
 def test_training_plots_build_classification_artifacts(tmp_path):
     predictions_path = tmp_path / "predictions.csv"
     predictions_path.write_text(
-        "Y_true,prediction,positive_probability\n" "0,0,0.1\n" "1,1,0.9\n" "1,0,0.4\n" "0,0,0.2\n"
+        "Y_true,prediction,positive_probability\n0,0,0.1\n1,1,0.9\n1,0,0.4\n0,0,0.2\n"
     )
     splits_path = tmp_path / "splits.json"
     splits_path.write_text(json.dumps([{"train": [0, 1], "test": [0, 1, 2, 3]}]))
@@ -2278,7 +2285,7 @@ def _patch_fake_tabicl_estimator(monkeypatch, backend: TabICLBackend, *, classif
     return init_calls
 
 
-def _tabicl_extra_args(tmp_path, checkpoint_name: str) -> dict:
+def _tabicl_resolved_parameters(tmp_path, checkpoint_name: str) -> dict:
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
     (checkpoint_dir / checkpoint_name).write_text("checkpoint")
@@ -2293,21 +2300,22 @@ def test_tabicl_binary_classification_uses_classifier_checkpoint(monkeypatch, tm
     backend = TabICLBackend()
     init_calls = _patch_fake_tabicl_estimator(monkeypatch, backend, classification=True)
     train_csv = _tabicl_dataset(tmp_path, ["inactive", "active"] * 6)
-    extra_args = {
-        **_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+    resolved_parameters = {
+        **_tabicl_resolved_parameters(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
         "class_shuffle_method": "latin",
         "support_many_classes": False,
     }
 
     result = backend.train_model(
-        str(train_csv),
-        str(tmp_path / "tabicl_binary"),
-        PredictionTaskSpec(
+        build_backend_run_request(
+            backend="tabicl",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "tabicl_binary"),
             task_type="classification",
             smiles_columns=["smiles"],
             target_columns=["label"],
-        ),
-        extra_args=extra_args,
+            resolved_parameters=resolved_parameters,
+        )
     )
 
     assert result["class_count"] == 2
@@ -2323,14 +2331,17 @@ def test_tabicl_multiclass_classification_accepts_three_classes(monkeypatch, tmp
     train_csv = _tabicl_dataset(tmp_path, ["low", "medium", "high"] * 4)
 
     result = backend.train_model(
-        str(train_csv),
-        str(tmp_path / "tabicl_multiclass"),
-        PredictionTaskSpec(
+        build_backend_run_request(
+            backend="tabicl",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "tabicl_multiclass"),
             task_type="multiclass_classification",
             smiles_columns=["smiles"],
             target_columns=["label"],
-        ),
-        extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+            resolved_parameters=_tabicl_resolved_parameters(
+                tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+            ),
+        )
     )
 
     assert result["class_count"] == 3
@@ -2345,14 +2356,17 @@ def test_tabicl_classification_rejects_single_class(monkeypatch, tmp_path):
 
     with pytest.raises(InvalidPredictionInputError, match="at least two classes"):
         backend.train_model(
-            str(train_csv),
-            str(tmp_path / "tabicl_one_class"),
-            PredictionTaskSpec(
+            build_backend_run_request(
+                backend="tabicl",
+                train_csv=str(train_csv),
+                output_dir=str(tmp_path / "tabicl_one_class"),
                 task_type="classification",
                 smiles_columns=["smiles"],
                 target_columns=["label"],
-            ),
-            extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT),
+                resolved_parameters=_tabicl_resolved_parameters(
+                    tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+                ),
+            )
         )
 
 
@@ -2363,13 +2377,17 @@ def test_tabicl_rejects_multi_target_classification(monkeypatch, tmp_path):
 
     with pytest.raises(InvalidPredictionInputError, match="exactly one target"):
         backend.train_model(
-            str(train_csv),
-            str(tmp_path / "tabicl_multi_target"),
-            PredictionTaskSpec(
+            build_backend_run_request(
+                backend="tabicl",
+                train_csv=str(train_csv),
+                output_dir=str(tmp_path / "tabicl_multi_target"),
                 task_type="classification",
                 smiles_columns=["smiles"],
                 target_columns=["label", "other_label"],
-            ),
+                resolved_parameters=_tabicl_resolved_parameters(
+                    tmp_path, DEFAULT_TABICL_CLASSIFIER_CHECKPOINT
+                ),
+            )
         )
 
 
@@ -2379,14 +2397,17 @@ def test_tabicl_regression_uses_regressor_checkpoint(monkeypatch, tmp_path):
     train_csv = _tabicl_dataset(tmp_path, [float(idx) for idx in range(12)], target_column="Y")
 
     result = backend.train_model(
-        str(train_csv),
-        str(tmp_path / "tabicl_regression"),
-        PredictionTaskSpec(
+        build_backend_run_request(
+            backend="tabicl",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "tabicl_regression"),
             task_type="regression",
             smiles_columns=["smiles"],
             target_columns=["Y"],
-        ),
-        extra_args=_tabicl_extra_args(tmp_path, DEFAULT_TABICL_REGRESSOR_CHECKPOINT),
+            resolved_parameters=_tabicl_resolved_parameters(
+                tmp_path, DEFAULT_TABICL_REGRESSOR_CHECKPOINT
+            ),
+        )
     )
 
     assert result["task_kind"] == "regression"

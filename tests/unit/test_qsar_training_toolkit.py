@@ -9,6 +9,17 @@ import pytest
 from cs_copilot.storage import S3
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
+from cs_copilot.tools.prediction.qsar_contracts import (
+    ChempropConfig,
+    CrossValidation,
+    GeneratedRepresentation,
+    LightGBMConfig,
+    MolecularGraphRepresentation,
+    QsariaTrainingRequest,
+    RepeatedHoldoutValidation,
+    TabICLConfig,
+    TuningConfig,
+)
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
     _compact_feature_preparation,
@@ -17,6 +28,32 @@ from cs_copilot.tools.prediction.qsar_training_toolkit import (
     _resolve_existing_training_csv,
 )
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+
+
+def _training_request(
+    backend_name: str,
+    *,
+    representation_name: str = "rdkit_all",
+    validation=None,
+) -> QsariaTrainingRequest:
+    backend = {
+        "chemprop": ChempropConfig(),
+        "lightgbm": LightGBMConfig(),
+        "tabicl": TabICLConfig(),
+    }[backend_name]
+    representation = (
+        MolecularGraphRepresentation()
+        if backend_name == "chemprop"
+        else GeneratedRepresentation(name=representation_name)
+    )
+    return QsariaTrainingRequest(
+        target_columns=["Y"],
+        task_type="regression",
+        representation=representation,
+        validation=validation or {"kind": "standard_qsar"},
+        tuning=TuningConfig(enabled=backend_name != "tabicl"),
+        backend=backend,
+    )
 
 
 def _fake_train_result(
@@ -336,6 +373,30 @@ def test_backend_toolkits_are_internal_and_facade_is_the_only_agent_surface():
     }
 
 
+def test_agno_training_surface_uses_closed_typed_requests_and_hides_runtime_paths():
+    toolkit = QSARTrainingToolkit()
+
+    for name in (
+        "train_qsar_model",
+        "train_chemprop_model",
+        "train_lightgbm_model",
+        "train_tabicl_model",
+    ):
+        schema = toolkit.functions[name].parameters
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]) == {"train_csv", "request"}
+        serialized = json.dumps(schema)
+        for forbidden in (
+            "extra_args",
+            "output_dir",
+            "bundle_dir",
+            "feature_cache_dir",
+            "heartbeat_path",
+            "split_payload",
+        ):
+            assert forbidden not in serialized
+
+
 def test_training_csv_resolution_falls_back_to_latest_curation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     original_prefix = S3.current_prefix()
@@ -481,11 +542,8 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
 
     result = toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name="lightgbm",
-        task_type="regression",
+        request=_training_request("lightgbm"),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        validation_protocol="standard_qsar",
     )
 
     assert called_representations == ["rdkit_all"]
@@ -546,10 +604,8 @@ def test_training_facade_forwards_explicit_bundle_destination(tmp_path, monkeypa
     bundle_dir = tmp_path / "bundles"
     toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name=backend_name,
-        task_type="regression",
+        request=_training_request(backend_name),
         output_dir=str(output_dir),
-        target_columns=["Y"],
         bundle_dir=str(bundle_dir),
     )
 
@@ -584,12 +640,11 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
 
     result = toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name="lightgbm",
-        task_type="regression",
+        request=_training_request(
+            "lightgbm",
+            representation_name="morgan_binary_count_rdkit_all",
+        ),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        validation_protocol="standard_qsar",
-        representation_name="morgan_binary_count_rdkit_all",
     )
 
     assert "campaign_started" not in result
@@ -629,17 +684,16 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
 
     result = toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name="lightgbm",
-        task_type="regression",
+        request=_training_request(
+            "lightgbm",
+            representation_name="morgan_only",
+            validation=RepeatedHoldoutValidation(
+                split_family="random",
+                n_repeats=3,
+                split_sizes=[0.7, 0.15, 0.15],
+            ),
+        ),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        validation_strategy={
-            "type": "repeated_holdout",
-            "split_family": "random",
-            "n_repeats": 3,
-            "split_sizes": [0.7, 0.15, 0.15],
-        },
-        representation_name="morgan_only",
     )
 
     assert result["persistence_plan"]["persist_all_candidates"] is True
@@ -691,17 +745,12 @@ def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_pa
 
     result = toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name="lightgbm",
-        task_type="regression",
+        request=_training_request(
+            "lightgbm",
+            representation_name="morgan_count_only",
+            validation=CrossValidation(n_folds=3, n_repeats=1),
+        ),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        validation_strategy={
-            "type": "cross_validation",
-            "split_family": "random",
-            "n_folds": 3,
-            "n_repeats": 1,
-        },
-        representation_name="morgan_count_only",
     )
 
     assert "candidate_registry_payloads" not in result
@@ -740,11 +789,8 @@ def test_standard_qsar_tabular_training_uses_rdkit_all_single_candidate(tmp_path
 
     result = toolkit.train_qsar_model(
         train_csv=str(tmp_path / "train.csv"),
-        backend_name="tabicl",
-        task_type="regression",
+        request=_training_request("tabicl"),
         output_dir=str(tmp_path / "out"),
-        target_columns=["Y"],
-        validation_protocol="standard_qsar",
     )
 
     assert "campaign_started" not in result

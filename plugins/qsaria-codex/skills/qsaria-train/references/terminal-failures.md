@@ -1,6 +1,6 @@
 # Terminal training failures
 
-A training tool error before a successful result is terminal for the current mission unless the user explicitly authorizes another attempt.
+A scientific or technical error after backend execution starts is terminal for the current mission unless the user explicitly authorizes another attempt. A strict request-schema rejection happens before backend execution: correct an obvious serialization mistake without changing scientific intent, or return the validation details to the coordinator so it can ask the user. Do not record an artificial scientific handoff for that boundary rejection.
 
 Do not recover by:
 

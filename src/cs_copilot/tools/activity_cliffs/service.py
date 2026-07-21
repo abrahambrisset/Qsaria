@@ -74,6 +74,7 @@ class ActivityCliffConfig:
     fingerprint_size: int = DEFAULT_ACTIVITY_CLIFF_FINGERPRINT_SIZE
     similarity_metric: str = DEFAULT_ACTIVITY_CLIFF_SIMILARITY_METRIC
 
+
 class ActivityCliffIndex(Protocol):
     index_name: str
 
@@ -224,9 +225,9 @@ def strip_activity_cliff_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def split_activity_cliff_args(
-    extra_args: Optional[Dict[str, Any]],
+    resolved_parameters: Optional[Dict[str, Any]],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    raw = dict(extra_args or {})
+    raw = dict(resolved_parameters or {})
     activity_args: Dict[str, Any] = {}
     cleaned: Dict[str, Any] = {}
     for key, value in raw.items():

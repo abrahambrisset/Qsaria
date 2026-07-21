@@ -12,6 +12,7 @@ from cs_copilot.tools.prediction.backend import (
     PredictionTaskSpec,
 )
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
+from cs_copilot.tools.prediction.qsar_contracts import build_backend_run_request
 
 
 class PickleableFakeClassifier:
@@ -140,17 +141,20 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
     ).to_csv(train_csv, index=False)
 
     result = backend.train_model(
-        str(train_csv),
-        str(tmp_path / "model"),
-        PredictionTaskSpec(
-            task_type="classification", smiles_columns=["smiles"], target_columns=["active"]
-        ),
-        extra_args={
-            "feature_columns": ["x"],
-            "split_payload": [{"train": list(range(8)), "test": list(range(8, 12))}],
-            "n_estimators": 5,
-            "early_stopping_rounds": 0,
-        },
+        build_backend_run_request(
+            backend="lightgbm",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "model"),
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["active"],
+            resolved_parameters={
+                "feature_columns": ["x"],
+                "split_payload": [{"train": list(range(8)), "test": list(range(8, 12))}],
+                "n_estimators": 5,
+                "early_stopping_rounds": 0,
+            },
+        )
     )
 
     assert result["task_kind"] == "binary_classification"
@@ -188,19 +192,20 @@ def test_lightgbm_multiclass_classification_roundtrip(tmp_path, monkeypatch):
     ).to_csv(train_csv, index=False)
 
     result = backend.train_model(
-        str(train_csv),
-        str(tmp_path / "model"),
-        PredictionTaskSpec(
+        build_backend_run_request(
+            backend="lightgbm",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "model"),
             task_type="multiclass_classification",
             smiles_columns=["smiles"],
             target_columns=["class_label"],
-        ),
-        extra_args={
-            "feature_columns": ["x"],
-            "split_payload": [{"train": list(range(9)), "test": list(range(9, 12))}],
-            "n_estimators": 5,
-            "early_stopping_rounds": 0,
-        },
+            resolved_parameters={
+                "feature_columns": ["x"],
+                "split_payload": [{"train": list(range(9)), "test": list(range(9, 12))}],
+                "n_estimators": 5,
+                "early_stopping_rounds": 0,
+            },
+        )
     )
 
     assert result["task_kind"] == "multiclass_classification"

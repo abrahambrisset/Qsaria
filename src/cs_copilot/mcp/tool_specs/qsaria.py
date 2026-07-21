@@ -65,15 +65,6 @@ def _spec(
     )
 
 
-_TRAINING_BLOCKED_NESTED_INPUTS = (
-    "extra_args.allow_auto_download",
-    "extra_args.checkpoint_dir",
-    "extra_args.disk_offload_dir",
-    "extra_args.feature_cache_dir",
-    "extra_args.hpopt_save_dir",
-)
-
-
 SPECS: list[QsariaToolSpec] = [
     # Dataset Curation Agent — five production toolkit methods.
     _spec(
@@ -176,7 +167,6 @@ SPECS: list[QsariaToolSpec] = [
             "bundle_dir": "training_bundles",
             "output_dir": "training_output",
         },
-        nested_blocked_inputs=_TRAINING_BLOCKED_NESTED_INPUTS,
     ),
     _spec(
         surface="training",
@@ -189,7 +179,6 @@ SPECS: list[QsariaToolSpec] = [
             "bundle_dir": "training_bundles",
             "output_dir": "training_output",
         },
-        nested_blocked_inputs=_TRAINING_BLOCKED_NESTED_INPUTS,
     ),
     _spec(
         surface="training",
@@ -202,7 +191,6 @@ SPECS: list[QsariaToolSpec] = [
             "bundle_dir": "training_bundles",
             "output_dir": "training_output",
         },
-        nested_blocked_inputs=_TRAINING_BLOCKED_NESTED_INPUTS,
     ),
     _spec(
         surface="training",
@@ -215,10 +203,6 @@ SPECS: list[QsariaToolSpec] = [
             "bundle_dir": "training_bundles",
             "output_dir": "training_output",
         },
-        nested_output_paths={
-            "extra_args.disk_offload_dir": "disk_offload",
-        },
-        nested_blocked_inputs=_TRAINING_BLOCKED_NESTED_INPUTS,
     ),
     # Model Registry Agent — eleven production toolkit methods.
     _spec(

@@ -25,6 +25,18 @@ from .chemprop_toolkit import ChempropToolkit
 from .hyperparameter_tuning import describe_backend_hyperparameters, describe_tuning_engines
 from .lightgbm_toolkit import LightGBMToolkit
 from .outlier_analysis import describe_outlier_analysis_policy
+from .qsar_contracts import (
+    ChempropTrainingRequest,
+    GeneratedRepresentation,
+    LightGBMTrainingRequest,
+    PrecomputedRepresentation,
+    QsariaTrainingRequest,
+    ResolvedTrainingPlan,
+    RuntimePaths,
+    StandardQsarValidation,
+    TabICLTrainingRequest,
+    canonical_validation_strategy,
+)
 from .qsar_reporting import build_training_reporting_handoff
 from .qsar_response_compaction import (
     compact_applicability_domain_for_response as _compact_applicability_domain_for_response,
@@ -33,7 +45,7 @@ from .qsar_response_compaction import (
     compact_registry_payload_for_response,
     feature_columns_summary_for_response,
 )
-from .qsar_training_policy import describe_compute_environment
+from .qsar_training_policy import describe_compute_environment, resolve_training_profile
 from .session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
@@ -492,6 +504,12 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
     keep_keys = (
         "campaign_started",
         "campaign_type",
+        "training_contract_version",
+        "requested_contract",
+        "resolved_plan",
+        "effective_parameters",
+        "runtime",
+        "workflow",
         "backend_name",
         "task_type",
         "representation_name",
@@ -665,10 +683,83 @@ class QSARTrainingToolkit(Toolkit):
         self.register(self.describe_backend_hyperparameters)
         self.register(self.describe_tuning_engines)
         self.register(self.describe_outlier_analysis)
-        self.register(self.train_qsar_model)
-        self.register(self.train_chemprop_model)
-        self.register(self.train_lightgbm_model)
-        self.register(self.train_tabicl_model)
+        self.register(self._agno_train_qsar_model, name="train_qsar_model")
+        self.register(self._agno_train_chemprop_model, name="train_chemprop_model")
+        self.register(self._agno_train_lightgbm_model, name="train_lightgbm_model")
+        self.register(self._agno_train_tabicl_model, name="train_tabicl_model")
+        for function in self.functions.values():
+            function.process_entrypoint()
+            function.parameters["additionalProperties"] = False
+            function.skip_entrypoint_processing = True
+
+    @staticmethod
+    def _managed_agno_paths(backend_name: str) -> tuple[str, str]:
+        """Allocate session-scoped Agno paths without exposing them to the model."""
+
+        token = f"{time.time_ns():x}"
+        output_dir = S3.path(f"training/{backend_name}_{token}")
+        bundle_dir = S3.path("training_bundles")
+        return output_dir, bundle_dir
+
+    def _agno_train_qsar_model(
+        self,
+        train_csv: str,
+        request: QsariaTrainingRequest,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        output_dir, bundle_dir = self._managed_agno_paths(request.backend.name)
+        return self.train_qsar_model(
+            train_csv=train_csv,
+            request=request,
+            output_dir=output_dir,
+            bundle_dir=bundle_dir,
+            agent=agent,
+        )
+
+    def _agno_train_chemprop_model(
+        self,
+        train_csv: str,
+        request: ChempropTrainingRequest,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        output_dir, bundle_dir = self._managed_agno_paths("chemprop")
+        return self.train_chemprop_model(
+            train_csv=train_csv,
+            request=request,
+            output_dir=output_dir,
+            bundle_dir=bundle_dir,
+            agent=agent,
+        )
+
+    def _agno_train_lightgbm_model(
+        self,
+        train_csv: str,
+        request: LightGBMTrainingRequest,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        output_dir, bundle_dir = self._managed_agno_paths("lightgbm")
+        return self.train_lightgbm_model(
+            train_csv=train_csv,
+            request=request,
+            output_dir=output_dir,
+            bundle_dir=bundle_dir,
+            agent=agent,
+        )
+
+    def _agno_train_tabicl_model(
+        self,
+        train_csv: str,
+        request: TabICLTrainingRequest,
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        output_dir, bundle_dir = self._managed_agno_paths("tabicl")
+        return self.train_tabicl_model(
+            train_csv=train_csv,
+            request=request,
+            output_dir=output_dir,
+            bundle_dir=bundle_dir,
+            agent=agent,
+        )
 
     def describe_qsar_training_environment(self) -> Dict[str, Any]:
         """Describe compute and backend training availability."""
@@ -1368,239 +1459,85 @@ class QSARTrainingToolkit(Toolkit):
             ),
         }
 
-    def _train_tabular_representation_campaign(
-        self,
-        *,
-        train_csv: str,
-        backend_name: str,
-        task_type: str,
-        output_dir: str,
-        smiles_column: str,
-        target_columns: List[str],
-        validation_protocol: str,
-        validation_strategy: Optional[Dict[str, Any]],
-        activity_cliff_index: str,
-        activity_cliff_feedback: bool,
-        activity_cliff_feedback_loops: int,
-        activity_cliff_similarity_threshold: float,
-        activity_cliff_top_k_neighbors: int,
-        activity_cliff_flag_threshold: float,
-        applicability_domain_methods: Optional[List[str] | str],
-        similarity_top_k_neighbors: int | str | None,
-        similarity_threshold_percentile: float | str | None,
-        extra_args: Dict[str, Any],
-        bundle_dir: Optional[str],
-        agent: Optional[Agent],
-    ) -> Dict[str, Any]:
-        campaign_started_at = time.monotonic()
-        campaign_root = Path(output_dir).expanduser().resolve()
-        campaign_root.mkdir(parents=True, exist_ok=True)
-        feature_cache_dir = str(
-            Path(extra_args.get("feature_cache_dir") or campaign_root / "feature_cache")
-        )
-        candidate_results: List[Dict[str, Any]] = []
-
-        for representation_name in AUTOMATIC_TABULAR_REPRESENTATION_NAMES:
-            candidate_dir = campaign_root / f"{backend_name}_{representation_name}"
-            candidate_extra_args = dict(extra_args)
-            candidate_extra_args["feature_cache_dir"] = feature_cache_dir
-            result = self.train_qsar_model(
-                train_csv=train_csv,
-                backend_name=backend_name,
-                task_type=task_type,
-                output_dir=str(candidate_dir),
-                smiles_column=smiles_column,
-                target_columns=list(target_columns),
-                validation_protocol=validation_protocol,
-                validation_strategy=validation_strategy,
-                representation_name=representation_name,
-                activity_cliff_index=activity_cliff_index,
-                activity_cliff_feedback=activity_cliff_feedback,
-                activity_cliff_feedback_loops=activity_cliff_feedback_loops,
-                activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
-                activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
-                activity_cliff_flag_threshold=activity_cliff_flag_threshold,
-                applicability_domain_methods=applicability_domain_methods,
-                similarity_top_k_neighbors=similarity_top_k_neighbors,
-                similarity_threshold_percentile=similarity_threshold_percentile,
-                extra_args=candidate_extra_args,
-                bundle_dir=bundle_dir,
-                agent=agent,
-            )
-            result["candidate_id"] = f"{backend_name}_{representation_name}"
-            candidate_results.append(result)
-
-        ranked_results = _rank_training_campaign_results(candidate_results)
-        best_result = ranked_results[0]
-        rows = [self._compact_campaign_row(result) for result in ranked_results]
-        payload_by_candidate_id = {
-            result.get("candidate_id"): _candidate_registry_payload(result)
-            for result in candidate_results
-        }
-        candidate_registry_payloads = [
-            {
-                "rank": index,
-                "candidate_id": row.get("backend_name")
-                and f"{row.get('backend_name')}_{row.get('representation_name')}",
-                "backend_name": row.get("backend_name"),
-                "representation_name": row.get("representation_name"),
-                "registry_payload": payload_by_candidate_id.get(
-                    f"{row.get('backend_name')}_{row.get('representation_name')}"
-                ),
-            }
-            for index, row in enumerate(rows, start=1)
-        ]
-        cache_hits = sum(
-            int((result.get("feature_preparation") or {}).get("cache_hits") or 0)
-            for result in candidate_results
-        )
-        cache_misses = sum(
-            int((result.get("feature_preparation") or {}).get("cache_misses") or 0)
-            for result in candidate_results
-        )
-        campaign_result = {
-            "campaign_started": True,
-            "campaign_type": "tabular_representation_campaign",
-            "backend_name": backend_name,
-            "task_type": task_type,
-            "validation_protocol": validation_protocol,
-            "validation_strategy": validation_strategy,
-            "representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
-            "feature_cache_dir": feature_cache_dir,
-            "campaign_duration_seconds": round(time.monotonic() - campaign_started_at, 3),
-            "feature_cache": {
-                "cache_hits": cache_hits,
-                "cache_misses": cache_misses,
-                "feature_cache_dir": feature_cache_dir,
-            },
-            "candidate_results": rows,
-            "ranking": rows,
-            "recommended_candidate": best_result.get("candidate_id")
-            or f"{backend_name}_{best_result.get('representation_name')}",
-            "recommended_representation_name": best_result.get("representation_name"),
-            "recommended_registry_payload": _candidate_registry_payload(best_result),
-            "candidate_registry_payloads": candidate_registry_payloads,
-            "recommended_registry_payloads": [
-                item["registry_payload"] for item in candidate_registry_payloads
-            ],
-            "persistence_plan": {
-                "persist_all_candidates": True,
-                "candidate_count": len(candidate_registry_payloads),
-                "candidate_registry_payloads_key": "candidate_registry_payloads",
-                "required_tool_sequence": (
-                    "Call register_and_persist_candidates with the exact "
-                    "candidate_registry_payloads list and report every returned canonical catalog model_id."
-                ),
-                "recommended_candidate": best_result.get("candidate_id")
-                or f"{backend_name}_{best_result.get('representation_name')}",
-            },
-            "best_model_path": best_result.get("best_model_path") or best_result.get("model_path"),
-            "model_path": best_result.get("best_model_path") or best_result.get("model_path"),
-            "train_csv": train_csv,
-            "candidate_train_csv": best_result.get("candidate_train_csv"),
-            **_feature_columns_summary_from_result(best_result),
-            "feature_preparation": _compact_feature_preparation(
-                best_result.get("feature_preparation") or {}
-            ),
-            "feature_preparation_durations": _compact_feature_preparation_durations(
-                best_result.get("feature_preparation") or {}
-            ),
-            "training_duration_seconds": (
-                (best_result.get("training_durations") or {}).get("total_duration_seconds")
-            ),
-            "validation_assessment": best_result.get("validation_assessment") or {},
-        }
-        summary_path = campaign_root / "qsar_training_campaign_summary.json"
-        campaign_result["summary_path"] = str(summary_path)
-        campaign_result["canonical_summary_path"] = str(summary_path)
-        _materialize_candidate_persistence_manifest(
-            result=campaign_result,
-            output_dir=str(campaign_root),
-        )
-        # Build the handoff only after its manifest paths exist so the
-        # persisted summary and the agent see the same factual provenance.
-        campaign_result["reporting_handoff"] = build_training_reporting_handoff(campaign_result)
-        write_training_summary(summary_path, campaign_result)
-        return _compact_training_tool_result(campaign_result)
-
     def train_qsar_model(
         self,
         train_csv: str,
-        backend_name: str,
-        task_type: str,
+        request: QsariaTrainingRequest,
         output_dir: str,
-        smiles_column: str = "smiles",
-        target_columns: Optional[List[str] | str] = None,
-        validation_protocol: str = "standard_qsar",
-        validation_strategy: Optional[Dict[str, Any]] = None,
-        representation_name: Optional[str] = None,
-        feature_columns: Optional[List[str] | str] = None,
-        categorical_feature_columns: Optional[List[str] | str] = None,
-        activity_cliff_index: str = "sali",
-        activity_cliff_feedback: bool = False,
-        activity_cliff_feedback_loops: int = 0,
-        activity_cliff_similarity_threshold: float = 0.70,
-        activity_cliff_top_k_neighbors: int = 10,
-        activity_cliff_flag_threshold: float = 0.35,
-        applicability_domain_methods: Optional[List[str] | str] = None,
-        similarity_top_k_neighbors: int | str | None = None,
-        similarity_threshold_percentile: float | str | None = None,
-        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
-        outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
         bundle_dir: Optional[str] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train a QSAR model with the requested backend."""
+        """Train a QSAR model from the strict public training contract."""
+        if isinstance(request, dict):
+            request = QsariaTrainingRequest.model_validate(request)
         train_csv = _resolve_existing_training_csv(train_csv, agent)
-        normalized_backend = backend_name.strip().lower()
-        normalized_target_columns = (
-            normalize_json_list_argument(
-                target_columns,
-                argument_name="target_columns",
+        normalized_backend = request.backend.name
+        task_type = request.task_type
+        smiles_column = request.smiles_column
+        normalized_target_columns = list(request.target_columns)
+        validation_protocol = "standard_qsar"
+        requested_validation_strategy = canonical_validation_strategy(request.validation)
+        representation_name: Optional[str]
+        normalized_feature_columns: Optional[List[str]]
+        normalized_categorical_feature_columns: Optional[List[str]]
+        if isinstance(request.representation, GeneratedRepresentation):
+            representation_name = request.representation.name
+            normalized_feature_columns = None
+            normalized_categorical_feature_columns = None
+        elif isinstance(request.representation, PrecomputedRepresentation):
+            representation_name = "precomputed_tabular"
+            normalized_feature_columns = list(request.representation.feature_columns)
+            normalized_categorical_feature_columns = list(
+                request.representation.categorical_feature_columns
             )
-            or []
-        )
-        normalized_feature_columns = normalize_json_list_argument(
-            feature_columns,
-            argument_name="feature_columns",
-        )
-        normalized_categorical_feature_columns = normalize_json_list_argument(
-            categorical_feature_columns,
-            argument_name="categorical_feature_columns",
-        )
-        requested_extra_args = dict(extra_args or {})
-        requested_hyperparameter_tuning = (
-            hyperparameter_tuning
-            if hyperparameter_tuning is not None
-            else requested_extra_args.pop("hyperparameter_tuning", None)
-        )
-        requested_outlier_analysis = (
-            outlier_analysis
-            if outlier_analysis is not None
-            else requested_extra_args.pop("outlier_analysis", None)
-        )
-        requested_validation_strategy = (
-            validation_strategy
-            if validation_strategy is not None
-            else requested_extra_args.pop("validation_strategy", None)
-        )
-        requested_ad_methods = (
-            applicability_domain_methods
-            if applicability_domain_methods is not None
-            else requested_extra_args.pop("applicability_domain_methods", None)
-        )
-        requested_similarity_top_k = (
-            similarity_top_k_neighbors
-            if similarity_top_k_neighbors is not None
-            else requested_extra_args.pop("similarity_top_k_neighbors", None)
-        )
+        else:
+            representation_name = "molecular_graph"
+            normalized_feature_columns = None
+            normalized_categorical_feature_columns = None
+
+        activity_cliff_index = request.activity_cliffs.index
+        activity_cliff_feedback = request.activity_cliffs.feedback
+        activity_cliff_feedback_loops = request.activity_cliffs.feedback_loops
+        activity_cliff_similarity_threshold = request.activity_cliffs.similarity_threshold
+        activity_cliff_top_k_neighbors = request.activity_cliffs.top_k_neighbors
+        activity_cliff_flag_threshold = request.activity_cliffs.flag_threshold
+        requested_ad_methods = list(request.applicability_domain.methods)
+        requested_similarity_top_k = request.applicability_domain.similarity_top_k_neighbors
         requested_similarity_percentile = (
-            similarity_threshold_percentile
-            if similarity_threshold_percentile is not None
-            else requested_extra_args.pop("similarity_threshold_percentile", None)
+            request.applicability_domain.similarity_threshold_percentile
         )
-        requested_extra_args.setdefault("validation_protocol", validation_protocol)
+        requested_hyperparameter_tuning = request.tuning.model_dump(exclude_none=True)
+        search_space = requested_hyperparameter_tuning.get("search_space")
+        if isinstance(search_space, dict):
+            search_space.pop("backend", None)
+            requested_hyperparameter_tuning["search_space"] = {
+                name: value for name, value in search_space.items() if value is not None
+            }
+        requested_outlier_analysis = request.outlier_analysis.model_dump()
+        requested_resolved_parameters = request.backend.model_dump(
+            exclude_none=True,
+            exclude_unset=True,
+        )
+        requested_resolved_parameters.pop("name", None)
+        if normalized_backend == "lightgbm":
+            device = requested_resolved_parameters.pop("device", "auto")
+            if device != "auto":
+                requested_resolved_parameters["device_type"] = device
+        compute_profile = request.compute.profile
+        if compute_profile == "auto":
+            compute_profile = resolve_training_profile(describe_compute_environment())["profile"]
+        requested_resolved_parameters["training_profile"] = compute_profile
+        requested_resolved_parameters["allow_heavy_compute"] = request.compute.allow_heavy_compute
+        requested_resolved_parameters["feature_cache_dir"] = str(
+            (Path(output_dir).expanduser().resolve() / "feature_cache")
+        )
+        requested_resolved_parameters["feature_n_jobs"] = _resolve_feature_n_jobs()
+        requested_resolved_parameters["validation_protocol"] = validation_protocol
+        if (
+            isinstance(request.validation, StandardQsarValidation)
+            and request.validation.seed is not None
+        ):
+            requested_resolved_parameters["random_state"] = request.validation.seed
         bundle_path = (
             str(
                 Path(bundle_dir).expanduser().resolve()
@@ -1609,10 +1546,13 @@ class QSARTrainingToolkit(Toolkit):
             if bundle_dir
             else None
         )
+        backend_resolved_parameters = dict(requested_resolved_parameters)
+        backend_resolved_parameters.pop("feature_cache_dir", None)
+        backend_resolved_parameters.pop("feature_n_jobs", None)
 
         if normalized_backend == "chemprop":
             if requested_validation_strategy is not None:
-                requested_extra_args["validation_strategy"] = requested_validation_strategy
+                requested_resolved_parameters["validation_strategy"] = requested_validation_strategy
             chemprop_kwargs = {"bundle_path": bundle_path} if bundle_path else {}
             result = self.chemprop_toolkit.train_model(
                 train_csv=train_csv,
@@ -1630,7 +1570,7 @@ class QSARTrainingToolkit(Toolkit):
                 applicability_domain_methods=requested_ad_methods,
                 similarity_top_k_neighbors=requested_similarity_top_k,
                 similarity_threshold_percentile=requested_similarity_percentile,
-                extra_args=requested_extra_args,
+                resolved_parameters=backend_resolved_parameters,
                 hyperparameter_tuning=requested_hyperparameter_tuning,
                 outlier_analysis=requested_outlier_analysis,
                 agent=agent,
@@ -1640,33 +1580,6 @@ class QSARTrainingToolkit(Toolkit):
             result.setdefault("representation_name", "molecular_graph")
             result["candidate_train_csv"] = train_csv
         elif normalized_backend in {"lightgbm", "tabicl"}:
-            if (
-                bool(requested_extra_args.pop("representation_campaign", False))
-                and not representation_name
-                and not normalized_feature_columns
-            ):
-                return self._train_tabular_representation_campaign(
-                    train_csv=train_csv,
-                    backend_name=normalized_backend,
-                    task_type=task_type,
-                    output_dir=output_dir,
-                    smiles_column=smiles_column,
-                    target_columns=list(normalized_target_columns),
-                    validation_protocol=validation_protocol,
-                    validation_strategy=requested_validation_strategy,
-                    activity_cliff_index=activity_cliff_index,
-                    activity_cliff_feedback=activity_cliff_feedback,
-                    activity_cliff_feedback_loops=activity_cliff_feedback_loops,
-                    activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
-                    activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
-                    activity_cliff_flag_threshold=activity_cliff_flag_threshold,
-                    applicability_domain_methods=requested_ad_methods,
-                    similarity_top_k_neighbors=requested_similarity_top_k,
-                    similarity_threshold_percentile=requested_similarity_percentile,
-                    extra_args=requested_extra_args,
-                    bundle_dir=bundle_dir,
-                    agent=agent,
-                )
             working_train_csv = train_csv
             resolved_representation = representation_name
             if not normalized_feature_columns:
@@ -1674,7 +1587,7 @@ class QSARTrainingToolkit(Toolkit):
                     resolved_representation
                     or default_tabular_representation_for_protocol(
                         validation_protocol,
-                        training_profile=requested_extra_args.get("training_profile"),
+                        training_profile=requested_resolved_parameters.get("training_profile"),
                     )
                 )
                 prepared = self._prepare_tabular_training_dataset(
@@ -1683,9 +1596,9 @@ class QSARTrainingToolkit(Toolkit):
                     smiles_column=smiles_column,
                     target_columns=list(normalized_target_columns),
                     representation_name=resolved_representation,
-                    feature_cache_dir=requested_extra_args.get("feature_cache_dir"),
-                    feature_n_jobs=requested_extra_args.get("feature_n_jobs")
-                    or requested_extra_args.get("n_jobs"),
+                    feature_cache_dir=requested_resolved_parameters.get("feature_cache_dir"),
+                    feature_n_jobs=requested_resolved_parameters.get("feature_n_jobs")
+                    or requested_resolved_parameters.get("n_jobs"),
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
@@ -1722,7 +1635,7 @@ class QSARTrainingToolkit(Toolkit):
                     applicability_domain_methods=requested_ad_methods,
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
-                    extra_args=requested_extra_args,
+                    resolved_parameters=backend_resolved_parameters,
                     hyperparameter_tuning=requested_hyperparameter_tuning,
                     outlier_analysis=requested_outlier_analysis,
                     agent=agent,
@@ -1747,7 +1660,7 @@ class QSARTrainingToolkit(Toolkit):
                     applicability_domain_methods=requested_ad_methods,
                     similarity_top_k_neighbors=requested_similarity_top_k,
                     similarity_threshold_percentile=requested_similarity_percentile,
-                    extra_args=requested_extra_args,
+                    resolved_parameters=backend_resolved_parameters,
                     hyperparameter_tuning=requested_hyperparameter_tuning,
                     outlier_analysis=requested_outlier_analysis,
                     agent=agent,
@@ -1760,8 +1673,45 @@ class QSARTrainingToolkit(Toolkit):
             result["feature_preparation_durations"] = feature_preparation["durations"]
         else:
             raise ValueError(
-                "Unsupported backend_name. Expected one of ['chemprop', 'lightgbm', 'tabicl']."
+                "Unsupported backend. Expected one of ['chemprop', 'lightgbm', 'tabicl']."
             )
+
+        resolved_plan = ResolvedTrainingPlan(
+            requested_contract=request,
+            backend_name=normalized_backend,
+            representation_name=str(result.get("representation_name") or representation_name),
+            feature_columns=list(result.get("feature_columns") or normalized_feature_columns or []),
+            categorical_feature_columns=list(normalized_categorical_feature_columns or []),
+            validation_protocol=(
+                "standard_qsar" if requested_validation_strategy is None else "custom"
+            ),
+            validation_strategy=requested_validation_strategy or {},
+            split_runs=list(result.get("split_runs") or []),
+            seed_policy=dict(result.get("seed_policy") or {}),
+            compute_profile=compute_profile,
+            tuning=request.tuning,
+            outlier_analysis=request.outlier_analysis,
+            activity_cliffs=request.activity_cliffs,
+            applicability_domain=request.applicability_domain,
+            effective_parameters=request.backend.model_dump(mode="json"),
+            runtime_paths=RuntimePaths(
+                output_dir=str(Path(output_dir).expanduser().resolve()),
+                bundle_path=bundle_path,
+                feature_cache_dir=requested_resolved_parameters.get("feature_cache_dir"),
+            ),
+        )
+        result["training_contract_version"] = "2.0"
+        result["requested_contract"] = request.model_dump(mode="json")
+        result["resolved_plan"] = resolved_plan.model_dump(mode="json")
+        result["effective_parameters"] = request.backend.model_dump(mode="json")
+        result["runtime"] = {
+            "compute_profile": compute_profile,
+            "allow_heavy_compute": request.compute.allow_heavy_compute,
+        }
+        result["workflow"] = {
+            "kind": "single_training",
+            "validation": request.validation.model_dump(mode="json"),
+        }
 
         if not ((result.get("curation") or {}).get("artifacts")):
             curation_artifacts = latest_curation_artifacts(agent) if agent is not None else {}
@@ -1840,49 +1790,18 @@ class QSARTrainingToolkit(Toolkit):
     def train_chemprop_model(
         self,
         train_csv: str,
-        task_type: str,
+        request: ChempropTrainingRequest,
         output_dir: str,
-        smiles_column: str = "smiles",
-        target_columns: Optional[List[str] | str] = None,
-        validation_protocol: str = "standard_qsar",
-        validation_strategy: Optional[Dict[str, Any]] = None,
-        activity_cliff_index: str = "sali",
-        activity_cliff_feedback: bool = False,
-        activity_cliff_feedback_loops: int = 0,
-        activity_cliff_similarity_threshold: float = 0.70,
-        activity_cliff_top_k_neighbors: int = 10,
-        activity_cliff_flag_threshold: float = 0.35,
-        applicability_domain_methods: Optional[List[str] | str] = None,
-        similarity_top_k_neighbors: int | str | None = None,
-        similarity_threshold_percentile: float | str | None = None,
-        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
-        outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
         bundle_dir: Optional[str] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train Chemprop through the unified QSAR facade."""
+        """Train Chemprop through the strict unified QSAR facade."""
+        if isinstance(request, dict):
+            request = ChempropTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            backend_name="chemprop",
-            task_type=task_type,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
-            smiles_column=smiles_column,
-            target_columns=target_columns,
-            validation_protocol=validation_protocol,
-            validation_strategy=validation_strategy,
-            activity_cliff_index=activity_cliff_index,
-            activity_cliff_feedback=activity_cliff_feedback,
-            activity_cliff_feedback_loops=activity_cliff_feedback_loops,
-            activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
-            activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
-            activity_cliff_flag_threshold=activity_cliff_flag_threshold,
-            applicability_domain_methods=applicability_domain_methods,
-            similarity_top_k_neighbors=similarity_top_k_neighbors,
-            similarity_threshold_percentile=similarity_threshold_percentile,
-            hyperparameter_tuning=hyperparameter_tuning,
-            outlier_analysis=outlier_analysis,
-            extra_args=extra_args,
             bundle_dir=bundle_dir,
             agent=agent,
         )
@@ -1890,55 +1809,18 @@ class QSARTrainingToolkit(Toolkit):
     def train_lightgbm_model(
         self,
         train_csv: str,
-        task_type: str,
+        request: LightGBMTrainingRequest,
         output_dir: str,
-        target_columns: List[str] | str,
-        smiles_column: str = "smiles",
-        representation_name: Optional[str] = None,
-        feature_columns: Optional[List[str] | str] = None,
-        categorical_feature_columns: Optional[List[str] | str] = None,
-        validation_protocol: str = "standard_qsar",
-        validation_strategy: Optional[Dict[str, Any]] = None,
-        activity_cliff_index: str = "sali",
-        activity_cliff_feedback: bool = False,
-        activity_cliff_feedback_loops: int = 0,
-        activity_cliff_similarity_threshold: float = 0.70,
-        activity_cliff_top_k_neighbors: int = 10,
-        activity_cliff_flag_threshold: float = 0.35,
-        applicability_domain_methods: Optional[List[str] | str] = None,
-        similarity_top_k_neighbors: int | str | None = None,
-        similarity_threshold_percentile: float | str | None = None,
-        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
-        outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
         bundle_dir: Optional[str] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train LightGBM through the unified QSAR facade."""
+        """Train LightGBM through the strict unified QSAR facade."""
+        if isinstance(request, dict):
+            request = LightGBMTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            backend_name="lightgbm",
-            task_type=task_type,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
-            smiles_column=smiles_column,
-            target_columns=target_columns,
-            validation_protocol=validation_protocol,
-            validation_strategy=validation_strategy,
-            representation_name=representation_name,
-            feature_columns=feature_columns,
-            categorical_feature_columns=categorical_feature_columns,
-            activity_cliff_index=activity_cliff_index,
-            activity_cliff_feedback=activity_cliff_feedback,
-            activity_cliff_feedback_loops=activity_cliff_feedback_loops,
-            activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
-            activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
-            activity_cliff_flag_threshold=activity_cliff_flag_threshold,
-            applicability_domain_methods=applicability_domain_methods,
-            similarity_top_k_neighbors=similarity_top_k_neighbors,
-            similarity_threshold_percentile=similarity_threshold_percentile,
-            hyperparameter_tuning=hyperparameter_tuning,
-            outlier_analysis=outlier_analysis,
-            extra_args=extra_args,
             bundle_dir=bundle_dir,
             agent=agent,
         )
@@ -1946,53 +1828,18 @@ class QSARTrainingToolkit(Toolkit):
     def train_tabicl_model(
         self,
         train_csv: str,
-        task_type: str,
+        request: TabICLTrainingRequest,
         output_dir: str,
-        target_columns: List[str] | str,
-        smiles_column: str = "smiles",
-        representation_name: Optional[str] = None,
-        feature_columns: Optional[List[str] | str] = None,
-        validation_protocol: str = "standard_qsar",
-        validation_strategy: Optional[Dict[str, Any]] = None,
-        activity_cliff_index: str = "sali",
-        activity_cliff_feedback: bool = False,
-        activity_cliff_feedback_loops: int = 0,
-        activity_cliff_similarity_threshold: float = 0.70,
-        activity_cliff_top_k_neighbors: int = 10,
-        activity_cliff_flag_threshold: float = 0.35,
-        applicability_domain_methods: Optional[List[str] | str] = None,
-        similarity_top_k_neighbors: int | str | None = None,
-        similarity_threshold_percentile: float | str | None = None,
-        hyperparameter_tuning: Optional[Dict[str, Any]] = None,
-        outlier_analysis: Optional[Dict[str, Any]] = None,
-        extra_args: Optional[Dict[str, Any]] = None,
-        agent: Optional[Agent] = None,
         bundle_dir: Optional[str] = None,
+        agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Train TabICL through the unified QSAR facade."""
+        """Train TabICL through the strict unified QSAR facade."""
+        if isinstance(request, dict):
+            request = TabICLTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            backend_name="tabicl",
-            task_type=task_type,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
-            smiles_column=smiles_column,
-            target_columns=target_columns,
-            validation_protocol=validation_protocol,
-            validation_strategy=validation_strategy,
-            representation_name=representation_name,
-            feature_columns=feature_columns,
-            activity_cliff_index=activity_cliff_index,
-            activity_cliff_feedback=activity_cliff_feedback,
-            activity_cliff_feedback_loops=activity_cliff_feedback_loops,
-            activity_cliff_similarity_threshold=activity_cliff_similarity_threshold,
-            activity_cliff_top_k_neighbors=activity_cliff_top_k_neighbors,
-            activity_cliff_flag_threshold=activity_cliff_flag_threshold,
-            applicability_domain_methods=applicability_domain_methods,
-            similarity_top_k_neighbors=similarity_top_k_neighbors,
-            similarity_threshold_percentile=similarity_threshold_percentile,
-            hyperparameter_tuning=hyperparameter_tuning,
-            outlier_analysis=outlier_analysis,
-            extra_args=extra_args,
             bundle_dir=bundle_dir,
             agent=agent,
         )

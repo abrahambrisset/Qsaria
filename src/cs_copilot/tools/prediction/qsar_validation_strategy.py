@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -21,8 +20,6 @@ SPLIT_FAMILY_TO_BACKEND_TYPE = {
     "random": "random",
     "scaffold": "scaffold_balanced",
     "cluster": "kmeans",
-    "cluster_kmeans": "kmeans",
-    "kmeans": "kmeans",
 }
 
 
@@ -46,43 +43,22 @@ class SplitRun:
 def _coerce_strategy(raw: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     if raw is None:
         return {}
-    if isinstance(raw, str):
-        stripped = raw.strip()
-        if not stripped:
-            return {}
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise ValueError("validation_strategy string must be valid JSON.") from exc
-        return _coerce_strategy(parsed)
     if not isinstance(raw, Mapping):
         raise ValueError("validation_strategy must be a dictionary/object.")
-    strategy = dict(raw)
-    if "type" not in strategy and strategy.get("method") is not None:
-        strategy["type"] = strategy["method"]
-    if "split_family" not in strategy and strategy.get("split_type") is not None:
-        strategy["split_family"] = strategy["split_type"]
-    return strategy
+    return dict(raw)
 
 
 def _coerce_split_family(raw: Any) -> str:
     family = str(raw or "random").strip().lower()
     if family not in SPLIT_FAMILY_TO_BACKEND_TYPE:
         raise ValueError(
-            "Unsupported split_family. Expected one of " f"{sorted(SPLIT_FAMILY_TO_BACKEND_TYPE)}."
+            f"Unsupported split_family. Expected one of {sorted(SPLIT_FAMILY_TO_BACKEND_TYPE)}."
         )
-    if family in {"cluster_kmeans", "kmeans"}:
-        return "cluster"
     return family
 
 
 def _infer_split_family(strategy: Mapping[str, Any]) -> str:
-    if strategy.get("split_family") is not None:
-        return _coerce_split_family(strategy.get("split_family"))
-    for family in ("random", "scaffold", "cluster", "kmeans", "cluster_kmeans"):
-        if any(key in strategy for key in (f"{family}_split", f"{family}_holdout")):
-            return _coerce_split_family(family)
-    return "random"
+    return _coerce_split_family(strategy.get("split_family") or "random")
 
 
 def _coerce_split_sizes(raw: Any) -> List[float]:
@@ -113,47 +89,9 @@ def _coerce_split_sizes(raw: Any) -> List[float]:
     return values
 
 
-def _split_sizes_from_ratios(config: Mapping[str, Any]) -> Optional[List[float]]:
-    val_ratio = config.get("validation_ratio", config.get("val_ratio", config.get("val_fraction")))
-    test_ratio = config.get("test_ratio", config.get("test_fraction"))
-    train_ratio = config.get("train_ratio", config.get("train_fraction"))
-    if val_ratio is None and test_ratio is None and train_ratio is None:
-        return None
-    if val_ratio is None:
-        if test_ratio is None:
-            raise ValueError(
-                "validation_strategy requires test_ratio when validation_ratio is omitted."
-            )
-        if train_ratio is None and test_ratio is not None:
-            train_ratio = round(1.0 - float(test_ratio), 12)
-        return _coerce_split_sizes([train_ratio, test_ratio])
-    if test_ratio is None:
-        raise ValueError(
-            "validation_strategy requires test_ratio when validation_ratio is provided."
-        )
-    if train_ratio is None and test_ratio is not None:
-        train_ratio = round(1.0 - float(val_ratio) - float(test_ratio), 12)
-    return _coerce_split_sizes([train_ratio, val_ratio, test_ratio])
-
-
 def _coerce_strategy_split_sizes(strategy: Mapping[str, Any], family: str) -> List[float]:
-    aliases = [f"{family}_split", f"{family}_holdout"]
-    if family == "cluster":
-        aliases.extend(
-            ["kmeans_split", "kmeans_holdout", "cluster_kmeans_split", "cluster_kmeans_holdout"]
-        )
-    for alias in aliases:
-        split_config = strategy.get(alias)
-        if isinstance(split_config, Mapping):
-            split_sizes = _split_sizes_from_ratios(split_config)
-            if split_sizes is not None:
-                return split_sizes
-    split_sizes = _split_sizes_from_ratios(strategy)
-    if split_sizes is not None:
-        return split_sizes
-    if strategy.get("split_sizes") is not None:
-        return _coerce_split_sizes(strategy.get("split_sizes"))
-    return _coerce_split_sizes(None)
+    del family
+    return _coerce_split_sizes(strategy.get("split_sizes"))
 
 
 def _coerce_positive_int(raw: Any, *, default: int, name: str, minimum: int = 1) -> int:
@@ -255,20 +193,50 @@ def resolve_validation_strategy(
             base_seed=base_seed,
         )
 
-    strategy_type = (
-        str(strategy.get("type") or strategy.get("strategy") or "holdout").strip().lower()
-    )
+    strategy_type = str(strategy.get("type") or "").strip().lower()
+    allowed_fields = {
+        "holdout": {"type", "split_family", "split_sizes", "seed", "selection_metric"},
+        "repeated_holdout": {
+            "type",
+            "split_family",
+            "split_sizes",
+            "seed",
+            "selection_metric",
+            "n_repeats",
+        },
+        "cross_validation": {
+            "type",
+            "split_family",
+            "n_folds",
+            "n_repeats",
+            "outer_test_size",
+            "seed",
+            "selection_metric",
+            "final_refit",
+        },
+        "full_train": {"type", "seed"},
+    }
+    if strategy_type not in allowed_fields:
+        raise ValueError(
+            "Unsupported validation_strategy.type. Expected one of "
+            "holdout, repeated_holdout, cross_validation, full_train."
+        )
+    unexpected = sorted(set(strategy) - allowed_fields[strategy_type])
+    if unexpected:
+        raise ValueError(
+            f"Unsupported validation_strategy fields for {strategy_type}: {', '.join(unexpected)}."
+        )
     selection_metric = (
         str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
     )
 
-    if strategy_type in {"full_train", "train_full", "final_refit"}:
+    if strategy_type == "full_train":
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name="full_train",
             run_count=1,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+            base_seed=strategy.get("seed") or base_seed,
         )
         seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])]
         seed = seeds[0] if seeds else int(seed_payload.get("model_seed") or 42)
@@ -300,7 +268,7 @@ def resolve_validation_strategy(
             run_count=1,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+            base_seed=strategy.get("seed") or base_seed,
         )
         seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])]
         seed = seeds[0] if seeds else int(seed_payload.get("model_seed") or 42)
@@ -333,7 +301,7 @@ def resolve_validation_strategy(
             run_count=n_repeats,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+            base_seed=strategy.get("seed") or base_seed,
         )
         seeds = [int(item) for item in seed_payload.get("generated_split_seeds", [])][:n_repeats]
         if len(seeds) < n_repeats:
@@ -364,25 +332,15 @@ def resolve_validation_strategy(
             },
         )
 
-    if strategy_type in {"cross_validation", "cv", "repeated_kfold", "repeated_cross_validation"}:
+    if strategy_type == "cross_validation":
         family = _infer_split_family(strategy)
         if family != "random":
             raise ValueError("cross_validation currently supports split_family='random' only.")
         # A CV fold is always an inner validation set.  A separate external
         # test is intentionally named `outer_test_size`; accepting familiar
         # holdout aliases would silently produce a CV with no external test.
-        invalid_outer_test_aliases = {
-            key: strategy[key]
-            for key in ("test_size", "test_fold", "test_fraction")
-            if key in strategy
-        }
-        if invalid_outer_test_aliases:
-            raise ValueError(
-                "cross_validation uses `outer_test_size` for a fixed external test; "
-                "do not use " + ", ".join(sorted(invalid_outer_test_aliases)) + "."
-            )
         n_folds = _coerce_positive_int(
-            strategy.get("n_folds", strategy.get("folds", strategy.get("n_splits"))),
+            strategy.get("n_folds"),
             default=5,
             name="n_folds",
             minimum=2,
@@ -412,7 +370,7 @@ def resolve_validation_strategy(
             run_count=1,
             seed_policy_mode=seed_policy_mode,
             seed_policy=seed_policy,
-            base_seed=strategy.get("seed") or strategy.get("split_seed") or base_seed,
+            base_seed=strategy.get("seed") or base_seed,
         )
         seed = int(
             (seed_payload.get("generated_split_seeds") or [seed_payload.get("model_seed") or 0])[0]
@@ -454,7 +412,4 @@ def resolve_validation_strategy(
             final_refit=bool(strategy.get("final_refit", True)),
         )
 
-    raise ValueError(
-        "Unsupported validation_strategy.type. Expected one of "
-        "holdout, repeated_holdout, cross_validation, full_train."
-    )
+    raise AssertionError("Validated strategy type was not resolved.")

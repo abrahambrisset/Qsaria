@@ -25,6 +25,7 @@ from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from cs_copilot.mcp.context import MCPAgentContext
+from cs_copilot.tools.prediction.qsar_contracts import TRAINING_CONTRACT_VERSION
 
 from .contracts import (
     COMPLETION_STATUSES,
@@ -221,12 +222,14 @@ class ExperimentManager:
             "experiments_listed": False,
             "experiment_schema_version": EXPERIMENT_SCHEMA_VERSION,
             "handoff_schema_version": HANDOFF_SCHEMA_VERSION,
+            "training_contract_version": TRAINING_CONTRACT_VERSION,
             "contracts": {
                 "experiment": EXPERIMENT_SCHEMA_VERSION,
                 "runtime_state": RUNTIME_SCHEMA_VERSION,
                 "handoff": HANDOFF_SCHEMA_VERSION,
                 "report_context": REPORT_CONTEXT_SCHEMA_VERSION,
                 "report_facts": "2.0",
+                "training": TRAINING_CONTRACT_VERSION,
             },
             "capabilities": {
                 "lifecycle": [
@@ -263,6 +266,8 @@ class ExperimentManager:
                 "coordinator_contract": EXTERNAL_COORDINATOR_CONTRACT,
                 "supported_clients": ["codex_v1", "claude_code_v1"],
                 "scientific_toolkits": "existing_qsaria_toolkits",
+                "typed_training_requests": True,
+                "free_training_arguments": False,
                 "agno_chainlit_runtime_changed": False,
                 "direct_s3_toolkit_outputs": False,
                 "experiment_state_backend": "configured_local_or_s3",
@@ -1243,13 +1248,14 @@ class ExperimentManager:
         try:
             package_version = importlib_metadata.version("cs_copilot")
         except importlib_metadata.PackageNotFoundError:
-            package_version = "0.2.1"
+            package_version = "0.3.0"
         return {
             "cs_copilot": package_version,
             "qsaria": package_version,
             "qsaria_contract": EXPERIMENT_SCHEMA_VERSION,
             "runtime_state": RUNTIME_SCHEMA_VERSION,
             "handoff": HANDOFF_SCHEMA_VERSION,
+            "training": TRAINING_CONTRACT_VERSION,
             "plugin": PLUGIN_CONTRACT_VERSION,
         }
 

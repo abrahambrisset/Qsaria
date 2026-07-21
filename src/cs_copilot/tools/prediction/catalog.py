@@ -131,7 +131,7 @@ def _read_catalog_payload(path: Path) -> dict[str, Any]:
         raise ValueError("Model catalog root must be a JSON object.")
     if payload.get("schema_version") != 2:
         raise ValueError(
-            "Unsupported model catalog schema_version. Qsaria 0.2.1 requires schema_version=2."
+            "Unsupported model catalog schema_version. Qsaria 0.3.0 requires schema_version=2."
         )
     models = payload.get("models")
     if not isinstance(models, list):

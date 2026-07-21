@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.backend import PredictionExecutionError
+from cs_copilot.tools.prediction.qsar_contracts import TabICLRunRequest, TabICLWorkerJob
 from cs_copilot.tools.prediction.tabicl_toolkit import (
     TabICLToolkit,
     _clean_split_source_target_for_task,
@@ -34,12 +35,28 @@ def test_write_worker_job_creates_clean_payload(tmp_path):
     job_dir = tmp_path / "worker_job"
     job_dir.mkdir()
     (job_dir / "result.json").write_text("{}")
-    payload = {"train_csv": "dataset.csv", "target_columns": ["Y"]}
+    payload = TabICLWorkerJob(
+        run_request=TabICLRunRequest(
+            train_csv="dataset.csv",
+            output_dir="output",
+            task_type="regression",
+            target_columns=["Y"],
+            applicability_domain_methods=["bounding_box", "similarity_matrix"],
+            similarity_top_k_neighbors=5,
+            similarity_threshold_percentile=5.0,
+        ),
+        seed_policy={"model_seed": 0},
+    )
 
     job_path = toolkit._write_worker_job(job_dir=job_dir, payload=payload)
 
     assert job_path.exists()
-    assert json.loads(job_path.read_text()) == payload
+    assert json.loads(job_path.read_text()) == payload.model_dump(mode="json")
+    revalidated = TabICLWorkerJob.model_validate_json(job_path.read_text())
+    assert revalidated.run_request.applicability_domain_methods == [
+        "bounding_box",
+        "similarity_matrix",
+    ]
     assert not (job_dir / "result.json").exists()
 
 
@@ -177,12 +194,12 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
     monkeypatch.setattr(
         toolkit,
         "_apply_training_profile",
-        lambda extra_args: {
+        lambda resolved_parameters: {
             "compute_environment": {"execution_env": "apptainer_local"},
             "training_profile": "heavy_validation",
             "profile_reason": "test",
             "validation_protocol": "standard_qsar",
-            "extra_args": dict(extra_args or {}),
+            "resolved_parameters": dict(resolved_parameters or {}),
         },
     )
     monkeypatch.setattr(
@@ -259,6 +276,6 @@ def test_train_tabicl_model_syncs_training_runs_from_worker_result(tmp_path, mon
     training_runs = agent.session_state["prediction_models"]["training_runs"]
     assert len(training_runs) == 1
     assert training_runs[0]["validation_protocol"] == "standard_qsar"
-    assert captured_job_payload["extra_args"]["validation_protocol"] == "standard_qsar"
+    assert captured_job_payload["run_request"]["validation_protocol"] == "standard_qsar"
     assert training_runs[0]["split_runs"][0]["label"] == "random"
     assert training_runs[0]["seed_policy"]["model_seed"] == 42

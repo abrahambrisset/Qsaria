@@ -14,7 +14,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
-HYPERPARAMETER_CONTRACT_VERSION = "1.2"
+from pydantic_core import PydanticUndefined
+
+from .qsar_contracts import ChempropConfig, LightGBMConfig, TabICLConfig
+
+HYPERPARAMETER_CONTRACT_VERSION = "2.0"
 
 
 class HyperparameterTuningError(ValueError):
@@ -459,11 +463,56 @@ TABICL_SPECS = (
     HyperparameterSpec("softmax_temperature", "Classification softmax temperature.", "float"),
     HyperparameterSpec("average_logits", "Average TabICL classifier logits.", "bool"),
     HyperparameterSpec("support_many_classes", "Enable wide multiclass support.", "bool"),
-    HyperparameterSpec("device", "Execution device selection.", "str"),
-    HyperparameterSpec("use_amp", "Use automatic mixed precision.", "bool"),
-    HyperparameterSpec("use_fa3", "Use FlashAttention 3 when available.", "bool"),
-    HyperparameterSpec("offload_mode", "TabICL offload strategy.", "str"),
 )
+
+
+_PUBLIC_BACKEND_MODELS = {
+    "lightgbm": LightGBMConfig,
+    "chemprop": ChempropConfig,
+    "tabicl": TabICLConfig,
+}
+
+
+def _typed_parameter_catalog(
+    backend_name: str,
+    metadata: tuple[HyperparameterSpec, ...],
+) -> list[Dict[str, Any]]:
+    """Derive accepted parameter names and defaults from strict Pydantic models."""
+    model = _PUBLIC_BACKEND_MODELS[backend_name]
+    metadata_by_name = {item.name: item for item in metadata}
+    parameters: list[Dict[str, Any]] = []
+    for name, field_info in model.model_fields.items():
+        if name == "name":
+            continue
+        spec = metadata_by_name.get(name)
+        default = field_info.default
+        if default is PydanticUndefined:
+            default = None
+        annotation = str(field_info.annotation)
+        value_type = (
+            "bool"
+            if "bool" in annotation
+            else "int"
+            if "int" in annotation
+            else "float"
+            if "float" in annotation
+            else "list"
+            if "List" in annotation or "list" in annotation
+            else "str"
+        )
+        payload = HyperparameterSpec(
+            name=name,
+            description=(spec.description if spec else f"Typed {backend_name} parameter `{name}`."),
+            value_type=value_type,
+            default=default,
+            direct_settable=True,
+            tuning_supported=bool(spec and spec.tuning_supported),
+            default_tuning=bool(spec and spec.default_tuning),
+            search_space=(spec.search_space if spec else None),
+            engines=(spec.engines if spec else ()),
+        ).as_dict()
+        parameters.append(payload)
+    return parameters
 
 
 BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
@@ -487,7 +536,7 @@ BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
                 "subset": "in_domain",
             },
         },
-        "parameters": [item.as_dict() for item in LIGHTGBM_SPECS],
+        "parameters": _typed_parameter_catalog("lightgbm", LIGHTGBM_SPECS),
     },
     "chemprop": {
         "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
@@ -505,7 +554,7 @@ BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
                 "subset": "all",
             },
         },
-        "parameters": [item.as_dict() for item in CHEMPROP_SPECS],
+        "parameters": _typed_parameter_catalog("chemprop", CHEMPROP_SPECS),
     },
     "tabicl": {
         "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
@@ -515,7 +564,7 @@ BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
         "supported_engines": [],
         "default_trials": None,
         "default_objectives": {},
-        "parameters": [item.as_dict() for item in TABICL_SPECS],
+        "parameters": _typed_parameter_catalog("tabicl", TABICL_SPECS),
     },
 }
 
@@ -595,7 +644,7 @@ def normalize_tuning_config(
     eligible: bool,
     fixed_parameters: Iterable[str] = (),
 ) -> Optional[TuningConfig]:
-    """Normalize a public request and enforce the shared V1 contract."""
+    """Normalize a validated request into the shared runtime tuning contract."""
     catalog = describe_backend_hyperparameters(backend_name)
     raw_config = dict(raw or {})
     explicitly_requested = raw is not None
@@ -605,7 +654,7 @@ def normalize_tuning_config(
     if not catalog["supports_hyperparameter_tuning"]:
         if explicitly_requested:
             raise HyperparameterTuningError(
-                f"{backend_name} does not support automatic hyperparameter tuning in V1."
+                f"{backend_name} does not support automatic hyperparameter tuning."
             )
         return None
     if not eligible:
@@ -706,11 +755,11 @@ def normalize_tuning_config(
             )
     if backend_name == "chemprop" and objective.metric != "val_loss":
         raise HyperparameterTuningError(
-            "Chemprop native HPO V1 always selects the global native val_loss."
+            "Chemprop native HPO always selects the global native val_loss."
         )
     if backend_name == "chemprop" and objective.subset != "all":
         raise HyperparameterTuningError(
-            "Chemprop native HPO V1 always uses the global validation loss; objective.subset must be all."
+            "Chemprop native HPO always uses the global validation loss; objective.subset must be all."
         )
     return TuningConfig(
         enabled=True,
@@ -840,9 +889,9 @@ class LightGBMOptunaAdapter:
         if {
             "max_depth",
             "num_leaves",
-        }.issubset(fixed_parameters) and int(
-            fixed_parameters["num_leaves"]
-        ) > 2 ** int(fixed_parameters["max_depth"]):
+        }.issubset(fixed_parameters) and int(fixed_parameters["num_leaves"]) > 2 ** int(
+            fixed_parameters["max_depth"]
+        ):
             raise HyperparameterTuningError(
                 "LightGBM requires num_leaves <= 2**max_depth for a fixed direct configuration."
             )

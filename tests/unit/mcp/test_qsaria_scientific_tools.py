@@ -23,6 +23,11 @@ from cs_copilot.mcp.tool_specs.qsaria import SPECS
 from cs_copilot.tools.curation.dataset_curation_toolkit import DatasetCurationToolkit
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
+from cs_copilot.tools.prediction.qsar_contracts import (
+    GeneratedRepresentation,
+    LightGBMConfig,
+    LightGBMTrainingRequest,
+)
 
 
 def _handoff(experiment_id, *, agent, status, summary, **overrides):
@@ -65,12 +70,13 @@ def test_qsaria_scientific_surface_matches_audited_tool_counts():
 
 
 def test_removed_public_inputs_are_absent_from_runtime_facades():
-    assert "curation_backend" not in inspect.signature(
-        DatasetCurationToolkit.curate_qsar_dataset
-    ).parameters
-    assert "benchmark_mode" not in inspect.signature(
-        BenchmarkToolkit.benchmark_qsar_models
-    ).parameters
+    assert (
+        "curation_backend"
+        not in inspect.signature(DatasetCurationToolkit.curate_qsar_dataset).parameters
+    )
+    assert (
+        "benchmark_mode" not in inspect.signature(BenchmarkToolkit.benchmark_qsar_models).parameters
+    )
 
 
 def test_catalog_mutation_specs_are_explicit_and_locked():
@@ -115,19 +121,8 @@ def test_output_parameters_are_forced_beneath_experiment():
     }
     training_specs = [spec for spec in SPECS if spec.mcp_name.startswith("qsaria_training_train_")]
     assert len(training_specs) == 4
-    tabicl_spec = next(spec for spec in training_specs if spec.method == "train_tabicl_model")
-    assert tabicl_spec.nested_output_paths == {
-        "extra_args.disk_offload_dir": "disk_offload",
-    }
-    assert all(spec.nested_output_paths == {} for spec in training_specs if spec is not tabicl_spec)
-    blocked_nested_inputs = {
-        "extra_args.allow_auto_download",
-        "extra_args.checkpoint_dir",
-        "extra_args.disk_offload_dir",
-        "extra_args.feature_cache_dir",
-        "extra_args.hpopt_save_dir",
-    }
-    assert all(set(spec.nested_blocked_inputs) == blocked_nested_inputs for spec in training_specs)
+    assert all(spec.nested_output_paths == {} for spec in training_specs)
+    assert all(spec.nested_blocked_inputs == () for spec in training_specs)
     report_spec = next(
         spec for spec in SPECS if spec.mcp_name == "qsaria_curation_write_curation_report"
     )
@@ -167,18 +162,18 @@ class _DummyToolkit:
     def write_feature_cache(
         self,
         output_dir: str,
-        extra_args: dict[str, Any] | None = None,
+        resolved_parameters: dict[str, Any] | None = None,
         agent: Any | None = None,
     ) -> dict[str, Any]:
         assert agent is not None
         assert output_dir
-        cache = Path((extra_args or {})["feature_cache_dir"])
+        cache = Path((resolved_parameters or {})["feature_cache_dir"])
         cache.mkdir(parents=True, exist_ok=True)
         marker = cache / "cache.marker"
         marker.write_text("managed")
         return {
             "status": "completed",
-            "extra_args": dict(extra_args or {}),
+            "resolved_parameters": dict(resolved_parameters or {}),
             "feature_cache_dir": str(cache),
             "marker": str(marker),
         }
@@ -198,21 +193,21 @@ class _DummyToolkit:
     def train_lightgbm_model(
         self,
         train_csv: str,
-        task_type: str,
+        request: LightGBMTrainingRequest,
         output_dir: str,
-        target_columns: list[str],
-        extra_args: dict[str, Any] | None = None,
         bundle_dir: str | None = None,
         agent: Any | None = None,
     ) -> dict[str, Any]:
         assert agent is not None
+        if isinstance(request, dict):
+            request = LightGBMTrainingRequest.model_validate(request)
         return {
             "train_csv": train_csv,
-            "task_type": task_type,
-            "target_columns": target_columns,
+            "task_type": request.task_type,
+            "target_columns": request.target_columns,
             "output_dir": output_dir,
             "bundle_dir": bundle_dir,
-            "extra_args": dict(extra_args or {}),
+            "request": request.model_dump(mode="json"),
         }
 
     def boom(self, agent: Any | None = None) -> None:
@@ -312,12 +307,11 @@ class _DummyToolkit:
         raise ValueError(f"Unknown model_id: {model_id}")
 
 
-def test_lightgbm_mcp_spec_blocks_client_cache_without_injecting_backend_arg(tmp_path):
+def test_lightgbm_mcp_spec_accepts_only_the_typed_public_request(tmp_path):
     manager = ExperimentManager(local_root=tmp_path / "storage")
     experiment_id = manager.create_experiment("lightgbm cache contract")["experiment_id"]
     train_csv = tmp_path / "storage" / "curated.csv"
     train_csv.write_text("smiles,pEC50\nCCO,4.2\n", encoding="utf-8")
-    external_cache = tmp_path / "external-cache"
     spec = next(item for item in SPECS if item.method == "train_lightgbm_model")
     tool = build_qsaria_tool(spec, _DummyToolkit(), manager)
 
@@ -325,20 +319,20 @@ def test_lightgbm_mcp_spec_blocks_client_cache_without_injecting_backend_arg(tmp
         tool(
             experiment_id=experiment_id,
             train_csv=str(train_csv),
-            task_type="regression",
-            target_columns=["pEC50"],
-            extra_args={
-                "feature_cache_dir": str(external_cache),
-                "num_leaves": 31,
-            },
+            request=LightGBMTrainingRequest(
+                task_type="regression",
+                target_columns=["pEC50"],
+                representation=GeneratedRepresentation(name="rdkit_all"),
+                backend=LightGBMConfig(num_leaves=31),
+            ),
         )
     )
 
-    assert result["extra_args"] == {"num_leaves": 31}
+    assert result["request"]["backend"]["num_leaves"] == 31
+    assert "feature_cache_dir" not in json.dumps(result["request"])
     assert Path(result["output_dir"]).is_relative_to(
         tmp_path / "storage" / "sessions" / experiment_id
     )
-    assert not external_cache.exists()
 
 
 class _DummyRun:
@@ -861,14 +855,14 @@ def test_nested_feature_cache_is_forced_inside_the_experiment(tmp_path):
         summary="force nested output",
         agent_name="qsaria_training",
         output_paths={"output_dir": "training_output"},
-        nested_output_paths={"extra_args.feature_cache_dir": "feature_cache"},
+        nested_output_paths={"resolved_parameters.feature_cache_dir": "feature_cache"},
     )
     tool = build_qsaria_tool(spec, _DummyToolkit(), manager)
 
     result = asyncio.run(
         tool(
             experiment_id=experiment_id,
-            extra_args={"feature_cache_dir": str(external_cache)},
+            resolved_parameters={"feature_cache_dir": str(external_cache)},
         )
     )
 
@@ -891,14 +885,14 @@ def test_nested_training_write_locations_and_auto_download_are_not_client_contro
         agent_name="qsaria_training",
         output_paths={"output_dir": "training_output"},
         nested_output_paths={
-            "extra_args.disk_offload_dir": "disk_offload",
-            "extra_args.feature_cache_dir": "feature_cache",
+            "resolved_parameters.disk_offload_dir": "disk_offload",
+            "resolved_parameters.feature_cache_dir": "feature_cache",
         },
         nested_blocked_inputs=(
-            "extra_args.allow_auto_download",
-            "extra_args.checkpoint_dir",
-            "extra_args.disk_offload_dir",
-            "extra_args.hpopt_save_dir",
+            "resolved_parameters.allow_auto_download",
+            "resolved_parameters.checkpoint_dir",
+            "resolved_parameters.disk_offload_dir",
+            "resolved_parameters.hpopt_save_dir",
         ),
     )
     tool = build_qsaria_tool(spec, _DummyToolkit(), manager)
@@ -906,7 +900,7 @@ def test_nested_training_write_locations_and_auto_download_are_not_client_contro
     result = asyncio.run(
         tool(
             experiment_id=experiment_id,
-            extra_args={
+            resolved_parameters={
                 "allow_auto_download": True,
                 "checkpoint_dir": str(external / "checkpoint"),
                 "disk_offload_dir": str(external / "offload"),
@@ -918,11 +912,11 @@ def test_nested_training_write_locations_and_auto_download_are_not_client_contro
 
     managed_cache = Path(result["feature_cache_dir"])
     assert managed_cache.is_relative_to(tmp_path / "storage" / "sessions" / experiment_id)
-    managed_offload = Path(result["extra_args"]["disk_offload_dir"])
+    managed_offload = Path(result["resolved_parameters"]["disk_offload_dir"])
     assert managed_offload.is_relative_to(tmp_path / "storage" / "sessions" / experiment_id)
-    assert "allow_auto_download" not in result["extra_args"]
-    assert "checkpoint_dir" not in result["extra_args"]
-    assert "hpopt_save_dir" not in result["extra_args"]
+    assert "allow_auto_download" not in result["resolved_parameters"]
+    assert "checkpoint_dir" not in result["resolved_parameters"]
+    assert "hpopt_save_dir" not in result["resolved_parameters"]
     assert not any(external.iterdir())
 
 
