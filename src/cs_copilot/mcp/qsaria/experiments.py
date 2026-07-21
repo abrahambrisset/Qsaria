@@ -259,6 +259,8 @@ class ExperimentManager:
             },
             "compatibility": {
                 "target": "codex_v1",
+                "coordinator_contract": "external_mcp_coordinator_v1",
+                "supported_clients": ["codex_v1", "claude_code_v1"],
                 "scientific_toolkits": "existing_qsaria_toolkits",
                 "agno_chainlit_runtime_changed": False,
                 "direct_s3_toolkit_outputs": False,

@@ -1,0 +1,35 @@
+{
+  "name": "personal",
+  "owner": {
+    "name": "Qsaria contributors"
+  },
+  "description": "Personal, local Claude Code plugins for the Qsaria project.",
+  "plugins": [
+    {
+      "name": "qsaria-claude-code",
+      "displayName": "Qsaria for Claude Code",
+      "source": "./plugins/qsaria-claude-code",
+      "description": "Coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows from Claude Code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Qsaria contributors"
+      },
+      "repository": "https://github.com/abrahambrisset/Qsaria",
+      "license": "MIT",
+      "keywords": [
+        "qsar",
+        "chemoinformatics",
+        "mcp",
+        "claude-code"
+      ],
+      "category": "developer-tools",
+      "tags": [
+        "science",
+        "machine-learning",
+        "molecular-modeling"
+      ],
+      "strict": true,
+      "defaultEnabled": true
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "qsaria": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${CLAUDE_PROJECT_DIR}",
+        "run",
+        "--no-sync",
+        "cscopilot-mcp",
+        "--profile",
+        "qsaria",
+        "--llm-policy",
+        "disabled",
+        "--log-level",
+        "info",
+        "--no-chatgpt-compat",
+        "--no-prompts",
+        "--no-resources"
+      ],
+      "timeout": 3600000
+    }
+  }
+}

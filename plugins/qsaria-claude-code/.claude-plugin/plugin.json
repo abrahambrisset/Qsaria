@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "qsaria-claude-code",
+  "displayName": "Qsaria for Claude Code",
+  "version": "0.1.0",
+  "description": "Use Claude Code to coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows.",
+  "author": {
+    "name": "Qsaria contributors",
+    "url": "https://github.com/abrahambrisset/Qsaria"
+  },
+  "homepage": "https://github.com/abrahambrisset/Qsaria",
+  "repository": "https://github.com/abrahambrisset/Qsaria",
+  "license": "MIT",
+  "keywords": [
+    "qsar",
+    "chemoinformatics",
+    "mcp",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

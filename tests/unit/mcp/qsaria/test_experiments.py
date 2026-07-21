@@ -90,6 +90,12 @@ def test_bootstrap_does_not_list_resume_or_create_experiments(manager):
     assert result["active_experiment_id"] is None
     assert result["experiments_listed"] is False
     assert result["contracts"]["report_facts"] == "2.0"
+    assert result["compatibility"]["target"] == "codex_v1"
+    assert result["compatibility"]["coordinator_contract"] == ("external_mcp_coordinator_v1")
+    assert result["compatibility"]["supported_clients"] == [
+        "codex_v1",
+        "claude_code_v1",
+    ]
     assert result["compatibility"]["agno_chainlit_runtime_changed"] is False
     assert result["compatibility"]["storage_concurrency"]["distributed_lock"] is True
     assert result["error_policy"]["retryable_error_max_automatic_retries"] == 1

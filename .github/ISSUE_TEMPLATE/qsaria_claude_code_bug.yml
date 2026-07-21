@@ -1,0 +1,102 @@
+name: Qsaria Claude Code integration bug
+description: Report a reproducible orchestration or MCP integration defect from the personal Claude Code plugin.
+title: "[Qsaria Claude Code] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form only after the Qsaria coordinator and its one bounded
+        manual recovery mission could not complete the installed workflow.
+        Remove private scientific data and machine-specific absolute paths.
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      description: Copy the Qsaria Claude Code plugin version shown by the plugin manager.
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: experiment_id
+    attributes:
+      label: Experiment id
+      description: Use the exact Qsaria experiment id when one was created.
+      placeholder: exp_...
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Failing role
+      options:
+        - coordinator
+        - qsaria_curation
+        - qsaria_training
+        - qsaria_registry
+        - qsaria_inference
+        - qsaria_report
+        - MCP bootstrap or lifecycle
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: MCP tool or agent operation
+      placeholder: qsaria_training_train_lightgbm_model
+    validations:
+      required: true
+
+  - type: textarea
+    id: intent
+    attributes:
+      label: Original scientific intent
+      description: State the requested task without attaching the dataset or private results.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and exact error
+      description: Include only a minimal sanitized excerpt.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: recovery
+    attributes:
+      label: Manual recovery attempted
+      options:
+        - "Yes, and it failed"
+        - "Yes, and it produced a malformed result"
+        - "No, the failure was scientifically terminal"
+        - "No, recovery tools were unavailable"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: List artifact ids, model ids, repository-relative paths, statuses, and contract versions only.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed datasets, model binaries, credentials, secrets, absolute home paths, and private scientific results.
+          required: true
+        - label: I did not change the scientific method, data, split, seed, backend, or constraints during recovery.
+          required: true

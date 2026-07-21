@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "phase": "phase_b_integrated_bundle",
+  "plugin_version": "0.1.0",
+  "client_contract": "claude_code_v1",
+  "coordinator_contract": "external_mcp_coordinator_v1",
+  "supported_clients": [
+    "codex_v1",
+    "claude_code_v1"
+  ],
+  "source": {
+    "repository": "https://github.com/abrahambrisset/Qsaria",
+    "commit": "12ca4300e7b6c2f0881b1815aabc3d409d320f2e",
+    "tree": "4f5621a64915f761d9f59b8cfa359b5e04e42a35",
+    "signed_tree": "sha256:4ea0f7c4482c643b1f6c039329fcf8656ee0271d840bf606f4bfe11896ee537a",
+    "describe": "v0.9.0-qsaria-applicability-domain-13-g12ca430",
+    "dirty": true
+  },
+  "contracts": {
+    "experiment": "1.0",
+    "handoff": "1.0",
+    "report_facts": "2.0"
+  },
+  "signatures": {
+    "source_contracts": {
+      "agent_tools": "sha256:5fbd651e3dd4363191c9eebca8fb6f8bb2b2006ea15d7144b9cad72db8a1d3d8",
+      "handoff_schema": "sha256:fcb1db75c95bf630607e6236125989545003b0ac7628f18dd74780be31ed74b3",
+      "scientific_invariants": "sha256:39bae519f11cbe2735edbed583e33a739af317b5565033b72e6bedf6c5a33a61"
+    },
+    "runtime": "sha256:f06cfc77c3b2eff6f552410c522949f91c0b923302b9589433db1569815b14db",
+    "bundle": "sha256:c5bb4013ef6a38e2a6bb116572b0694fc978f1a34be057bc79d79fe9ff8ea2df"
+  },
+  "runtime_bootstrap_validation": "automated_validate_shared_runtime",
+  "scientific_pilot": {
+    "status": "pending",
+    "workflow": "standard_lightgbm_pxr",
+    "experiment_id": null
+  }
+}

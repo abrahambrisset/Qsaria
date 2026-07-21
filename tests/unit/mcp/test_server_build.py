@@ -126,6 +126,7 @@ def test_qsaria_profile_forces_prompts_resources_and_agno_off(qsaria_server):
 
     assert qsaria_server.name == "qsaria"
     assert qsaria_server.instructions == QSARIA_SERVER_INSTRUCTIONS
+    assert "Codex or Claude Code" in qsaria_server.instructions
     assert qsaria_server._prompt_manager.list_prompts() == []
     assert asyncio.run(qsaria_server.list_resources()) == []
 
@@ -155,6 +156,12 @@ def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
     assert result["auto_resume"] is False
     assert result["active_experiment_id"] is None
     assert result["experiments_listed"] is False
+    assert result["compatibility"]["target"] == "codex_v1"
+    assert result["compatibility"]["coordinator_contract"] == ("external_mcp_coordinator_v1")
+    assert result["compatibility"]["supported_clients"] == [
+        "codex_v1",
+        "claude_code_v1",
+    ]
 
 
 def test_qsaria_protocol_calls_preserve_structured_content(qsaria_server):
