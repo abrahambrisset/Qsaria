@@ -156,7 +156,7 @@ def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
     assert result["auto_resume"] is False
     assert result["active_experiment_id"] is None
     assert result["experiments_listed"] is False
-    assert result["compatibility"]["target"] == "codex_v1"
+    assert result["compatibility"]["target"] == "external_mcp_coordinator_v1"
     assert result["compatibility"]["coordinator_contract"] == ("external_mcp_coordinator_v1")
     assert result["compatibility"]["supported_clients"] == [
         "codex_v1",

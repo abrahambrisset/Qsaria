@@ -516,7 +516,6 @@ class TabICLToolkit(Toolkit):
                 "notes": [
                     "Supports the shared QSAR protocol names and split families.",
                     "Modern comparative campaigns use RDKit all, Morgan binary, Morgan count, and the complete combined pack.",
-                    "RDKit basic representations are legacy-only and require explicit user override.",
                     "If the user explicitly requests a representation, that override should win.",
                     "TabICL classification supports binary and multiclass single-target tasks.",
                     "TabICL uses separate classifier and regressor checkpoints.",

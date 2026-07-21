@@ -48,8 +48,8 @@ def validate() -> list[str]:
         errors.append("bootstrap must not activate an experiment")
 
     compatibility = bootstrap.get("compatibility") or {}
-    if compatibility.get("target") != "codex_v1":
-        errors.append("legacy bootstrap target must remain codex_v1")
+    if compatibility.get("target") != EXPECTED_COORDINATOR_CONTRACT:
+        errors.append("bootstrap target must use the neutral external coordinator contract")
     if compatibility.get("coordinator_contract") != EXPECTED_COORDINATOR_CONTRACT:
         errors.append("bootstrap coordinator contract is incompatible")
     if compatibility.get("supported_clients") != EXPECTED_CLIENTS:

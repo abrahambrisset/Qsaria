@@ -8,4 +8,4 @@ to prompt variations, ensuring consistent outputs across semantically equivalent
 but syntactically different user inputs.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

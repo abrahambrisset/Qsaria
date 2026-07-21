@@ -11,6 +11,7 @@ from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.qsar_training_toolkit import (
     QSARTrainingToolkit,
+    _compact_feature_preparation,
     _compact_registry_payload,
     _compact_training_tool_result,
     _resolve_existing_training_csv,
@@ -65,6 +66,20 @@ def test_qsar_training_toolkit_exposes_shared_tuning_engine_registry():
     assert engine["name"] == "optuna_tpe_multivariate"
     assert engine["backend_availability"]["lightgbm"]["status"] == "supported"
     assert "optuna_tpe_multivariate" in environment["tuning_engines"]
+
+
+def test_feature_preparation_compaction_drops_removed_legacy_marker():
+    compact = _compact_feature_preparation(
+        {
+            "representation_name": "rdkit_all",
+            "representation_legacy": False,
+            "feature_count": 12,
+        }
+    )
+
+    assert compact["representation_name"] == "rdkit_all"
+    assert compact["feature_count"] == 12
+    assert "representation_legacy" not in compact
 
 
 def test_registry_payload_response_preserves_tuning_provenance(tmp_path):

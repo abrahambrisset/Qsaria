@@ -244,7 +244,6 @@ def _compact_feature_preparation(feature_preparation: Dict[str, Any]) -> Dict[st
             "mode",
             "representation_name",
             "representation_display_name",
-            "representation_legacy",
             "prepared_train_csv",
             "feature_cache_key",
             "feature_cache_status",

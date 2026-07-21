@@ -1,6 +1,6 @@
 {
   "name": "qsaria-codex",
-  "version": "0.2.0+codex.20260721144913",
+  "version": "0.2.1+codex.20260721151829",
   "description": "Use Codex to coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows.",
   "author": {
     "name": "Qsaria contributors",

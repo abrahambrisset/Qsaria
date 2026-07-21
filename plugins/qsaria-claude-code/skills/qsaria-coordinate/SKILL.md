@@ -13,9 +13,9 @@ plugin specialists. Never act as a sixth specialist.
 ## Start safely
 
 1. Call `qsaria_bootstrap` once for the request.
-2. Require `llm_policy=disabled`, compatible contract versions, and a safe
-   storage-concurrency mode. When `supported_clients` is present, require
-   `claude_code_v1`; during the legacy transition, accept `target=codex_v1`.
+2. Require `llm_policy=disabled`, `target=external_mcp_coordinator_v1`,
+   `claude_code_v1` among `supported_clients`, compatible contract versions,
+   and a safe storage-concurrency mode.
 3. Never list or reopen prior experiments automatically.
 4. Open an experiment only from an explicit `experiment_id`.
 5. Create an experiment only at the first required scientific write. New

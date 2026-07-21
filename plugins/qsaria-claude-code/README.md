@@ -1,6 +1,6 @@
 # Qsaria for Claude Code
 
-Current bundle: `0.2.0`. The only named scientific protocol is
+Current bundle: `0.2.1`. The only named scientific protocol is
 `standard_qsar`; advanced validation is expressed with an explicit strategy.
 
 This personal plugin makes Claude Code the sole coordinator of deterministic

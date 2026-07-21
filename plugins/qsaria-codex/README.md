@@ -1,6 +1,6 @@
 # Qsaria for Codex
 
-Current bundle: `0.2.0`. The only named scientific protocol is
+Current bundle: `0.2.1`. The only named scientific protocol is
 `standard_qsar`; advanced holdout, repeated holdout, cross-validation,
 scaffold, cluster, and full-train workflows use explicit validation strategies.
 
@@ -14,7 +14,7 @@ Codex-specific skills and project-agent templates only.
 Codex plugins do not currently install project agents as a native plugin
 component. The distributable templates therefore live under `assets/agents/`
 and are copied explicitly into the repository's `.codex/agents/` directory.
-Version 0.2.0 adds no hook and no separate asynchronous runner.
+The 0.2.x line adds no hook and no separate asynchronous runner.
 
 ## Runtime boundaries
 

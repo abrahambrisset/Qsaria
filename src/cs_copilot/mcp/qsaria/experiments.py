@@ -29,6 +29,7 @@ from cs_copilot.mcp.context import MCPAgentContext
 from .contracts import (
     COMPLETION_STATUSES,
     EXPERIMENT_SCHEMA_VERSION,
+    EXTERNAL_COORDINATOR_CONTRACT,
     HANDOFF_SCHEMA_VERSION,
     PLUGIN_CONTRACT_VERSION,
     QSARIA_AGENT_NAMES,
@@ -258,8 +259,8 @@ class ExperimentManager:
                 ),
             },
             "compatibility": {
-                "target": "codex_v1",
-                "coordinator_contract": "external_mcp_coordinator_v1",
+                "target": EXTERNAL_COORDINATOR_CONTRACT,
+                "coordinator_contract": EXTERNAL_COORDINATOR_CONTRACT,
                 "supported_clients": ["codex_v1", "claude_code_v1"],
                 "scientific_toolkits": "existing_qsaria_toolkits",
                 "agno_chainlit_runtime_changed": False,
@@ -1242,7 +1243,7 @@ class ExperimentManager:
         try:
             package_version = importlib_metadata.version("cs_copilot")
         except importlib_metadata.PackageNotFoundError:
-            package_version = "0.2.0"
+            package_version = "0.2.1"
         return {
             "cs_copilot": package_version,
             "qsaria": package_version,

@@ -16,6 +16,7 @@ from cs_copilot.tools.prediction.qsar_training_policy import (
     seed_policy_reproducibility_metadata,
 )
 from cs_copilot.tools.prediction.qsar_validation_strategy import resolve_validation_strategy
+from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
 
 
 def _sample_tabular_df() -> pd.DataFrame:
@@ -213,8 +214,6 @@ def test_backend_n_jobs_follow_visible_compute_without_exceeding_it():
 
 
 def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
-    from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
-
     toolkit = TabICLToolkit()
 
     light = toolkit._apply_training_profile({"training_profile": "local_light"})
@@ -222,6 +221,16 @@ def test_tabicl_light_profiles_keep_n_jobs_compatible_with_predict():
 
     assert int(light["extra_args"]["n_jobs"]) >= 1
     assert int(standard["extra_args"]["n_jobs"]) >= 1
+
+
+def test_tabicl_description_does_not_advertise_removed_basic_representations():
+    description = TabICLToolkit().describe_tabicl_backend()
+    rendered_notes = " ".join(description["notes"]).lower()
+
+    assert "rdkit basic" not in rendered_notes
+    assert description["default_tabular_feature_policy"]["default_single_representation"] == (
+        "morgan_rdkit_all"
+    )
 
 
 def test_random_split_payload_is_deterministic():

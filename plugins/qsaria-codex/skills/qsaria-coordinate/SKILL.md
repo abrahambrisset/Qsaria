@@ -11,7 +11,7 @@ Read [routing.md](references/routing.md), [verification-and-reporting.md](refere
 
 ## Start safely
 
-1. Call `qsaria_bootstrap` once for the task and verify that the profile reports `llm_policy=disabled`, compatible contract versions, and its storage-concurrency mode. For S3, require the announced `s3_single_writer` mode and `single_writer_acknowledged=true`; otherwise stop instead of assuming distributed locking.
+1. Call `qsaria_bootstrap` once for the task and verify that the profile reports `llm_policy=disabled`, `target=external_mcp_coordinator_v1`, `codex_v1` among `supported_clients`, compatible contract versions, and its storage-concurrency mode. For S3, require the announced `s3_single_writer` mode and `single_writer_acknowledged=true`; otherwise stop instead of assuming distributed locking.
 2. Classify the request using the routing reference.
 3. Never reopen the most recent experiment implicitly.
 4. Never call `qsaria_list_experiments` during bootstrap. List history only when the user explicitly asks for it.
