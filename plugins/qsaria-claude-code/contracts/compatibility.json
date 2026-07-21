@@ -10,11 +10,11 @@
   ],
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "5797e1b4bd50a5f2679299b6d9b56b027a01f384",
-    "tree": "95b4f9d71980b80d14a584354ded04c431b6a5d7",
+    "commit": "bf6a542d956482b8e78309c01033fd246d6e845a",
+    "tree": "1861a2912dd0fa1f51ab67f751c9f0776933e872",
     "signed_tree": "sha256:f10d94be0b0025f159355044b37a17cf40d36b84a9714f24999b56babcf6da14",
-    "describe": "v0.9.0-qsaria-applicability-domain-17-g5797e1b",
-    "dirty": true
+    "describe": "v0.9.0-qsaria-applicability-domain-18-gbf6a542",
+    "dirty": false
   },
   "contracts": {
     "experiment": "1.0",
