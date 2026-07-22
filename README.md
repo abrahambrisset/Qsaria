@@ -26,66 +26,15 @@
 
 ## Overview
 
-Quantitative structure–activity/property relationship (QSAR/QSPR) modeling is
-one of the central tasks in computer-aided molecular design, with applications
-ranging from materials to drug discovery [1,2]. QSAR models plays a key role in
-virtual screening, where they act as computational filters for prioritizing the
-most promising candidates from large chemical libraries for experimental
-evaluation. They are also used as scoring functions in de novo molecular
-design, guiding generative models toward compounds with desired property
-profiles [3]. The development of such models has therefore been a long-standing
-area of research in chemoinformatics [1], supported by established best
-practices [4,5] and extensive benchmarking of various machine learning (ML)
-algorithms and modeling frameworks.
+Qsaria is an agentic research platform for building, evaluating, and using
+Quantitative Structure-Activity Relationship (QSAR) models from end to end.
+Starting from a molecular dataset, it can prepare the data, train suitable
+models, compare their performance, assess their reliability, persist the best
+results, and produce a structured scientific report.
 
-QSAR model development requires multiple steps, including data pre-processing,
-feature generation and selection, model fitting, validation, interpretation,
-and deployment [5]. With the rapid accumulation of chemical structure and
-molecular property data, the development of automated approaches for QSAR
-modeling has become an increasingly important task [6,7], because the modeling
-must often be repeated for many endpoints and updated as new data become
-available. Numerous approaches, varying in molecular representations, available
-ML model families, and the possibility of automated pipeline optimization, have
-demonstrated that best-practice QSAR modeling can be organized into reproducible
-computational pipelines that perform comparably to expert-driven QSAR
-development while being more scalable [8–12].
-
-Although automated QSAR workflows allow one to improve the reproducibility and
-efficiency of molecular property modeling, they remain limited when
-task-specific modeling decisions are required [13]. These decisions are
-difficult to encode exhaustively in fixed automated pipelines. Recent progress
-in large language models has opened a complementary direction in which large
-language model (LLM)-based agents serve as orchestration and decision-support
-layers for scientific ML workflows. General-purpose research and
-machine-learning agents, such as AIDE [15] and the AI Scientist [14], illustrate
-the potential of this paradigm for iterative code generation, experiment
-execution, and machine-learning workflow optimization. However, general agents
-do not, by default, incorporate the chemistry-specific practices required for
-reliable QSAR modeling, including chemical structure standardization,
-applicability domain (AD) assessment, chemistry-specific validation (e.g.
-scaffold-based), and interpretation of outliers.
-
-This limitation has motivated the development of chemistry-specific agentic
-systems [16]. For example, DrugAgent extends a general purpose MLAgentBench [17]
-agentic ML framework toward drug discovery tasks by introducing domain knowledge
-identification, tool preparation, and iterative exploration of modeling
-approaches. ChemLINT focuses on molecular data curation, providing deterministic
-tools for data exploration, molecular standardization, and baseline molecular
-ML modeling [18]. MolAgent [13] represents one of the most comprehensive agentic
-frameworks for molecular property prediction, combining the automated QSAR
-workflows with LLM-accessible orchestration and supporting end-to-end workflows
-for featurization, model construction, validation, and deployment.
-
-Qsaria is a new end-to-end agentic AI framework for QSAR modeling. It is built
-following the methodology implemented in the ChemSpace Copilot agentic AI
-framework [19] and is organized as a hierarchical multi-agent system (MAS), in
-which ML algorithms from multiple model families are coordinated. Qsaria is
-composed of five specialized agents and a team manager, enabling natural
-language requests to be converted into complete QSAR workflows that include
-chemical data curation, molecular representation, model training, validation,
-inference, and reporting.
-
-Qsaria is an independent module of ChemSpace Copilot. It can be used through its native web application or through dedicated MCP-based integrations for Codex, Claude Code, and Claude Science.
+Qsaria is an independent module of ChemSpace Copilot. It can be used through
+its native web application or through dedicated MCP-based integrations for
+Codex, Claude Code, and Claude Science.
 
 ## What Qsaria can do
 
@@ -413,28 +362,6 @@ For bugs and feature requests, use the
 reporting a failed workflow, include its sanitized experiment identifier,
 backend, structured error, and relevant artifact identifiers without sharing
 private data or credentials.
-
-## References
-
-1. Cherkasov, A. et al. QSAR Modeling: Where Have You Been? Where Are You Going To? J. Med. Chem. 57, 4977–5010 (2014).
-2. Muratov, E. N. et al. QSAR without borders. Chem. Soc. Rev. 49, 3525–3564 (2020).
-3. Loeffler, H. H. et al. Reinvent 4: Modern AI–driven generative molecule design. J Cheminform 16, 20 (2024).
-4. OECD. Guidance Document on the Validation of (Quantitative) Structure-Activity Relationship [(Q)SAR] Models. OECD Series on Testing and Assessment https://doi.org/10.1787/9789264085442-en (2014) doi:10.1787/9789264085442-en.
-5. Tropsha, A. Best Practices for QSAR Model Development, Validation, and Exploitation. Mol. Inf. 29, 476–488 (2010).
-6. Gedeck, P. et al. Automated QSAR — how good is it in practice? https://doi.org/10.26434/chemrxiv-2026-l1d11 (2026) doi:10.26434/chemrxiv-2026-l1d11.
-7. de Oliveira, M. T. & Katekawa, E. On the Virtues of Automated Quantitative Structure–Activity Relationship: The New Kid on the Block. Future Medicinal Chemistry 10, 335–342 (2018).
-8. Sá, A. G. C. de & Ascher, D. B. Auto-ADMET: An Effective and Interpretable AutoML Method for Chemical ADMET Property Prediction. Preprint at https://doi.org/10.48550/arXiv.2502.16378 (2025).
-9. Dixon, S. L. et al. Autoqsar: An Automated Machine Learning Tool for Best-Practice Quantitative Structure–Activity Relationship Modeling. Future Medicinal Chemistry 8, 1825–1839 (2016).
-10. Mervin, L., Voronov, A., Kabeshov, M. & Engkvist, O. QSARtuna: An Automated QSAR Modeling Platform for Molecular Property Prediction in Drug Design. J. Chem. Inf. Model. 64, 5365–5374 (2024).
-11. Kausar, S. & Falcao, A. O. An automated framework for QSAR model building. J Cheminform 10, 1 (2018).
-12. Gao, Z. et al. Uni-QSAR: an Auto-ML Tool for Molecular Property Prediction. Preprint at https://doi.org/10.48550/arXiv.2304.12239 (2023).
-13. Gómez-Tamayo, J. C. et al. MolAgent: Biomolecular Property Estimation in the Agentic Era. J. Chem. Inf. Model. 65, 10808–10818 (2025).
-14. Lu, C. et al. Towards end-to-end automation of AI research. Nature 651, 914–919 (2026).
-15. Jiang, Z. et al. AIDE: AI-Driven Exploration in the Space of Code. arXiv.org https://arxiv.org/abs/2502.13138v1 (2025).
-16. Liu, S. et al. DrugAgent: Automating AI-aided Drug Discovery Programming through LLM Multi-Agent Collaboration. Preprint at https://doi.org/10.48550/arXiv.2411.15692 (2025).
-17. Huang, Q., Vora, J., Liang, P. & Leskovec, J. MLAgentBench: evaluating language agents on machine learning experimentation. in Proceedings of the 41st International Conference on Machine Learning vol. 235 20271–20309 (JMLR.org, Vienna, Austria, 2024).
-18. van Tilborg, D. & Grisoni, F. ChemLint: Conversational Cheminformaticswith Large Language Models. https://doi.org/10.26434/chemrxiv.15000386/v1 (2026) doi:10.26434/chemrxiv.15000386/v1.
-19. Orlov, A. A., Volkov, M., Milova, E. S., Horvath, D. & Varnek, A. ChemSpace Copilot: Agentic AI for Interactive Visualization and Exploration of Chemical Space. ChemRxiv 2026, (2026).
 
 ## License
 
