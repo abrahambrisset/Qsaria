@@ -1,286 +1,368 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo_dark_readme.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/logo_light_readme.png">
-    <img src="docs/logo_light_readme.png" alt="ChemSpace Copilot" width="720"/>
-  </picture>
-</p>
-
-<h1 align="center">ChemSpace Copilot</h1>
+<h1 align="center">
+  <img src="docs/qsaria_logo.jpg" alt="Qsaria" width="620">
+</h1>
 
 <p align="center">
-  <strong>Multi-agent system for chemical space analysis</strong><br>
-  <a href="https://laboratoire-de-chemoinformatique.github.io/chemspacecopilot/">Documentation</a> ·
-  <a href="https://chemrxiv.org/doi/full/10.26434/chemrxiv.15000527/v1">Preprint (ChemRxiv)</a>
+  <strong>An agentic AI for end-to-end QSAR Modeling</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot/actions/workflows/ci.yml"><img src="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot/commits/main"><img src="https://img.shields.io/github/last-commit/Laboratoire-de-Chemoinformatique/chemspacecopilot" alt="Last commit"></a>
-  <a href="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot/stargazers"><img src="https://img.shields.io/github/stars/Laboratoire-de-Chemoinformatique/chemspacecopilot" alt="Stars"></a>
-  <a href="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot/issues"><img src="https://img.shields.io/github/issues/Laboratoire-de-Chemoinformatique/chemspacecopilot" alt="Issues"></a>
+  An independent module within
+  <a href="https://github.com/Laboratoire-de-Chemoinformatique/chemspacecopilot">ChemSpace Copilot</a>,
+  developed by the
+  <a href="https://github.com/Laboratoire-de-Chemoinformatique">Laboratoire de Chémoinformatique de Strasbourg</a>.
 </p>
 
 <p align="center">
-  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11-blue" alt="Python 3.11"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Laboratoire-de-Chemoinformatique/chemspacecopilot" alt="License"></a>
-  <a href="https://github.com/psf/black"><img src="https://img.shields.io/badge/code%20style-black-000000.svg" alt="Code style: black"></a>
-  <a href="https://pre-commit.com/"><img src="https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit" alt="Pre-commit"></a>
-  <a href="https://docs.agno.com/"><img src="https://img.shields.io/badge/framework-Agno-purple" alt="Framework: Agno"></a>
-  <a href="https://laboratoire-de-chemoinformatique.github.io/chemspacecopilot/"><img src="https://img.shields.io/badge/docs-mkdocs-blue" alt="Docs"></a>
+  <a href="https://github.com/abrahambrisset/Qsaria/actions/workflows/ci.yml"><img src="https://github.com/abrahambrisset/Qsaria/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/abrahambrisset/Qsaria/commits/main"><img src="https://img.shields.io/github/last-commit/abrahambrisset/Qsaria" alt="Last commit"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB" alt="Python 3.11 or 3.12"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/abrahambrisset/Qsaria" alt="MIT License"></a>
+  <a href="https://github.com/abrahambrisset/Qsaria/issues"><img src="https://img.shields.io/github/issues/abrahambrisset/Qsaria" alt="Issues"></a>
 </p>
 
-> **Warning**
-> This repository is under active development. APIs, agent behavior, and project structure may change without notice.
-
----
+> [!WARNING]
+> Qsaria is approaching its first public pre-release and remains under active development.
 
 ## Overview
 
-ChemSpace Copilot is a multi-agent system powered by the [Agno](https://docs.agno.com/) framework. The default runtime team coordinates seven specialized AI agents for ChEMBL bioactivity download, unified GTM workflows, downstream chemoinformatics, report generation, small-molecule design, peptide generation, and retrosynthetic planning. A separate robustness evaluation agent is available for analyzing prompt-robustness test outputs. The GTM engine is provided by [ChemographyKit](https://github.com/Laboratoire-de-Chemoinformatique/ChemographyKit).
+Qsaria is an agentic research platform for building, evaluating, and using
+Quantitative Structure-Activity Relationship (QSAR) models from end to end.
+Starting from a molecular dataset, it can prepare the data, train suitable
+models, compare their performance, assess their reliability, persist the best
+results, and produce a structured scientific report.
 
-```
-┌─────────────────────────────────────────┐
-│  UI Layer (Chainlit)                    │  Real-time chat interface
-├─────────────────────────────────────────┤
-│  Agent Orchestration (teams.py)         │  Multi-agent coordination
-├─────────────────────────────────────────┤
-│  Specialized Agents (factories.py)      │  7 runtime agents + 1 evaluation agent
-├─────────────────────────────────────────┤
-│  Tools + Storage (toolkits + S3)        │  Domain logic & persistence
-└─────────────────────────────────────────┘
-```
+Qsaria is an independent module of ChemSpace Copilot. It can be used through
+its native web application or through dedicated MCP-based integrations for
+Codex, Claude Code, and Claude Science.
 
-## Features
+## What Qsaria can do
 
-- **7 Runtime Agents + 1 Evaluation Agent** — ChEMBL data download, unified GTM operations, chemoinformatics analysis, report generation, small-molecule design, peptide design workflows, retrosynthetic planning, and robustness evaluation
-- **Generative Topographic Mapping** — Dimensionality reduction and visualization of chemical space via [ChemographyKit](https://github.com/Laboratoire-de-Chemoinformatique/ChemographyKit).
-- **Molecular and Peptide Generation** — Molecular Designer small-molecule generation with autoencoder and LLM engines plus Peptide Designer generation with WAE and LLM engines, interpolation, and GTM-guided targeting
-- **S3/MinIO Integration** — Session-scoped cloud storage with local filesystem fallback
-- **Chainlit Interface** — WebSocket-based real-time chat with password authentication, file upload, and inline molecule rendering
-- **Agentic Memory** — SQLite-backed agentic state and recent session history shared across agent workflows
-- **Robustness Testing** — Framework for validating prompt variation handling with semantic similarity scoring
+- **Curate molecular datasets** by standardizing structures, validating targets, handling invalid compounds, and resolving duplicate measurements.
+- **Train QSAR models** with LightGBM, Chemprop, and TabICL.
+- **Support regression and classification workflows** through backend-appropriate scientific contracts.
+- **Compare models and representations** with reproducible benchmark workflows.
+- **Evaluate robustness** through multiple validation strategies, external evaluation, outlier analysis, Activity Cliffs, and applicability-domain analysis.
+- **Persist and reuse models** through a local registry and model catalog.
+- **Run inference and ensembles** on new molecular datasets.
+- **Produce evidence-first reports** containing the results, figures, tables, warnings, and scientific context needed to interpret an experiment.
 
-## Quick Start
+## Specialized workflow
 
-### Option 1: Docker (Recommended)
+Qsaria organizes scientific work between five specialists:
+
+| Specialist | Role |
+| --- | --- |
+| **Curation** | Prepares a reliable modelling dataset. |
+| **Training** | Trains, validates, tunes, and benchmarks models. |
+| **Registry** | Persists models, manages the catalog, and builds ensembles. |
+| **Inference** | Runs predictions and external evaluations. |
+| **Report** | Produces the final scientific report from the experiment evidence. |
+
+The same scientific toolkits and artifacts are used across the native
+application and the external integrations.
+
+## Scientific capabilities
+
+### Backends
+
+| Backend | Main approach |
+| --- | --- |
+| **LightGBM** | Tabular modelling with molecular descriptors, fingerprints, or precomputed features. |
+| **Chemprop** | Message-passing neural networks operating on molecular graphs. |
+| **TabICL** | Tabular in-context learning for supported molecular datasets. |
+
+### Validation
+
+Qsaria provides a standard QSAR workflow through `standard_qsar` and supports
+explicit strategies for:
+
+- holdout validation;
+- repeated holdout;
+- cross-validation;
+- full-data training;
+- random, scaffold, and cluster-based splitting where supported.
+
+Training requests use strict typed contracts so unsupported or inconsistent
+configurations are rejected before an experiment is executed.
+
+### Scientific analysis
+
+Depending on the model, task, and available data, Qsaria can produce:
+
+- performance metrics and diagnostic plots;
+- hyperparameter optimization studies;
+- outlier analyses;
+- Activity Cliff analyses;
+- applicability-domain estimates;
+- external evaluation results;
+- model and representation benchmarks;
+- ensemble predictions;
+- reusable model bundles and structured reports.
+
+## Ways to use Qsaria
+
+| Interface | Experience |
+| --- | --- |
+| **Agno + Chainlit** | The native Qsaria web application for development, validation, and interactive research. |
+| **Codex** | A Qsaria plugin with specialized agents and MCP tools available directly in Codex. |
+| **Claude Code** | A project plugin for running Qsaria workflows from Claude Code. |
+| **Claude Science** | A scientific integration with dedicated skills and support for long-running operations. |
+
+Users interact with Qsaria in natural language. The coordinator selects the
+appropriate specialists and scientific tools for the requested mission.
+
+## Quick start
+
+### Requirements
+
+- Python 3.11 or 3.12;
+- [uv](https://docs.astral.sh/uv/);
+- Git;
+- an LLM provider for the native Agno/Chainlit application;
+- sufficient compute for the selected modelling backend.
+
+Clone the repository and install Qsaria:
 
 ```bash
-# Build containers
-docker compose build chainlit-app
-
-# Run (prompts for DEEPSEEK_API_KEY only when using the DeepSeek provider)
-./docker-start.sh
+git clone https://github.com/abrahambrisset/Qsaria.git
+cd Qsaria
+uv sync --extra prediction --extra mcp
 ```
 
-Access the application at **http://localhost:8000**
-
-To remove the docker-compose installation and rebuild it from scratch use:
-```bash
-docker compose down --volumes --remove-orphans --rmi all
-```
-WARNING! This would wipe all the previously generated assets on S3 and the previously run sessions of the chatbot.
-
-See the [Docker guide](docs/getting-started/docker.md) for the full Docker deployment guide.
-
-### Option 2: Local Installation
-
-<details>
-<summary><strong>Environment setup</strong></summary>
-
-For file-based configuration, copy `.env.example` to `.env` in the project root:
-
-Before the first local Chainlit run, generate a Chainlit auth secret and copy
-the generated key into `.env` as `CHAINLIT_AUTH_SECRET`:
+Prepare the environment:
 
 ```bash
+cp .env.example .env
 uv run chainlit create-secret
 ```
 
-```bash
-CHAINLIT_AUTH_SECRET=your-generated-key-here
-
-# Required only for the default DeepSeek provider
-DEEPSEEK_API_KEY=your-api-key-here
-
-# Optional model overrides (otherwise .modelconf is used)
-# MODEL_PROVIDER=deepseek
-# MODEL_ID=deepseek-chat
-# OLLAMA_HOST=http://localhost:11434
-
-# Optional — S3/MinIO storage (set USE_S3=true only when you want remote storage)
-USE_S3=false
-# When enabled:
-S3_ENDPOINT_URL=http://localhost:9000
-MINIO_ACCESS_KEY=cs_copilot
-MINIO_SECRET_KEY=chempwd123
-ASSETS_BUCKET=chatbot-assets
-
-# Optional — ChEMBL local MySQL (faster queries, offline use)
-# Download dump: https://chembl.gitbook.io/chembl-interface-documentation/downloads
-# CHEMBL_MYSQL_HOST=localhost
-# CHEMBL_MYSQL_PORT=3306
-# CHEMBL_MYSQL_USER=chembl
-# CHEMBL_MYSQL_PASSWORD=
-# CHEMBL_MYSQL_DATABASE=chembl_36
-```
-
-The repository also includes a tracked `.modelconf` file. Edit it if you want to switch from the default DeepSeek backend to a local Ollama model.
-
-</details>
-
-<details>
-<summary><strong>Install dependencies</strong></summary>
+Configure the generated Chainlit secret and your model provider in `.env`,
+then start the native Qsaria team:
 
 ```bash
-uv sync
-
-# Optional retrosynthesis agent (platform support depends on SynPlanner/CGRtools wheels)
-uv sync --extra synplanner
-```
-
-</details>
-
-<details>
-<summary><strong>S3/MinIO setup (optional)</strong></summary>
-
-```bash
-# Run the interactive setup script
-python scripts/setup_s3.py
-
-# Or start MinIO manually
-docker run -d --name minio \
-  -p 9000:9000 -p 9001:9001 \
-  -v /mnt/data:/data \
-  -e MINIO_ROOT_USER=cs_copilot \
-  -e MINIO_ROOT_PASSWORD=chempwd123 \
-  minio/minio server /data --console-address ":9001"
-```
-
-If the container already exists: `docker start minio`
-
-</details>
-
-<details>
-<summary><strong>Optional Chainlit Persistence</strong></summary>
-
-Chainlit persistence is disabled by default in `chainlit.toml`. Only set up PostgreSQL if you plan to enable Chainlit persistence manually.
-
-```bash
-docker run --name chainlit-pg -p 5432:5432 -d \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_DB=chainlit \
-  postgres:16
-
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/chainlit"
-```
-
-If the container already exists: `docker start chainlit-pg`
-
-</details>
-
-## Usage
-
-### Chainlit App
-
-```bash
+export CS_COPILOT_AGENT_TEAM=qsar
 uv run chainlit run chainlit_app.py -w
 ```
 
-Notes:
-- The bundled `chainlit.toml` currently has `[persistence] enabled = false`.
-- The default local login credentials are username `admin` and password `admin123`
-  (defined in `chainlit_app.py`). Change these before exposing the app beyond
-  local development.
-- The app sets a per-thread title from your first message; you can rename it in the UI.
+Open [http://localhost:8000](http://localhost:8000).
 
-### Jupyter Notebook
+Some Python modules and commands still use the historical `cs_copilot` and
+`cscopilot-*` names for compatibility with ChemSpace Copilot.
 
-An example workflow is available in `notebooks/cs_copilot.ipynb`.
+## Containers
 
-### MCP server (optional)
+### Docker Compose
 
-An optional Model Context Protocol server lets external MCP clients
-(Codex, Claude Code) drive cs_copilot toolkits, prompts, and session
-artifacts directly — the external client is the reasoning engine; the Agno
-multi-agent team is not invoked. The default Chainlit and CLI runtimes are
-unaffected.
+The interactive launcher configures and starts the application:
 
 ```bash
-uv sync --extra mcp
-
-# Preflight the remote HTTP path ChatGPT/tunnels will call
-cscopilot-mcp-check
-
-# Local stdio MCP clients (Codex, Claude Code)
-cscopilot-mcp --session-id demo --workflow-slug chemical_space
-
-# Remote MCP clients (ChatGPT apps, browser-hosted clients)
-cscopilot-mcp-serve --session-id demo --workflow-slug chemical_space --host 127.0.0.1 --port 8000
-# Add --allowed-host <your-host> when a reverse proxy preserves the public Host header.
-
-# Optional bearer-token protection for HTTP clients/proxies that send Authorization
-CS_COPILOT_MCP_AUTH_TOKEN=change-me cscopilot-mcp-serve --session-id demo --workflow-slug chemical_space --host 127.0.0.1 --port 8000 --allowed-host <your-host>
+docker compose build chainlit-app
+./docker-start.sh
 ```
 
-For ChatGPT, expose the streamable HTTP endpoint (`/mcp`) through a reachable
-HTTPS URL or an approved secure tunnel. If a proxy forwards public Host or
-Origin headers, pass them with `--allowed-host` / `--allowed-origin`. The
-server includes read-only
-`search` / `fetch` tools for ChatGPT data-only/deep-research compatibility,
-plus the full cs_copilot tool catalog for full MCP developer-mode clients. Tool
-descriptors include MCP `readOnlyHint` annotations so ChatGPT can distinguish
-pure lookup tools from state-changing cs_copilot workflows.
-By default, LLM-dependent MCP tool paths create `llm_*` tasks for the external
-client to complete. Trusted private deployments can pass
-`--llm-policy agno-model` to load only the configured Agno model for toolkit
-LLM calls, without enabling the Agno team.
+The first command builds the application image. The launcher then detects the
+available hardware, selects the application port, and guides the user through
+the main runtime options.
 
-Example client configs ship under `examples/mcp/`
-(`claude_code.json`, `codex.toml`, `codex_http.toml`, `chatgpt_remote.md`,
-`codex_subscription_smoke.md`, `secure_mcp_tunnel.md`). See `docs/mcp.md`
-for the full tool / prompt / resource catalog and the ChEMBL LLM-as-judge
-gating contract.
+### Apple container
 
-## Architecture
+On Apple silicon with Apple's
+[`container`](https://github.com/apple/container) CLI installed:
 
-The system uses a **Factory Pattern + Registry** for agent creation. The default team orchestrator coordinates seven runtime agents, and an eighth agent is available separately for robustness analysis:
+```bash
+scripts/apple-container.sh
+```
 
-### Runtime Team
+The script builds the image and launches the application. After the first
+successful build, start it again without rebuilding with:
 
-| Agent | Role |
-|-------|------|
-| **ChEMBL Downloader** | Downloads and filters bioactivity data from ChEMBL (REST API by default; optional [local MySQL backend](https://chembl.gitbook.io/chembl-interface-documentation/downloads)) |
-| **GTM Agent** | Unified GTM operations: build, load, density analysis, activity landscapes, projection, and GTM sampling support |
-| **Chemoinformatician** | Downstream chemoinformatics analysis including scaffold, similarity, clustering, and SAR workflows |
-| **Report Generator** | Formats analysis results into reports and visual outputs |
-| **Molecular Designer** | Small-molecule design via autoencoder and LLM engines, including standalone and GTM-guided modes |
-| **Peptide Designer** | Peptide design via WAE and LLM engines, latent-space GTM workflows, and DBAASP-backed peptide activity landscapes |
-| **SynPlanner** | Retrosynthetic planning and route visualization for target molecules (install with `uv sync --extra synplanner`) |
+```bash
+APPLE_CONTAINER_SKIP_BUILD=1 scripts/apple-container.sh
+```
 
-### Separate Evaluation Agent
+To force a clean rebuild before launching:
 
-| Agent | Role |
-|-------|------|
-| **Robustness Evaluation** | Analyzes robustness test runs, score distributions, failures, and trends |
+```bash
+APPLE_CONTAINER_NO_CACHE=1 scripts/apple-container.sh
+```
 
+### Apptainer
 
-Agents share state via `session_state` and persist memory in SQLite. All file I/O goes through a unified S3/local storage abstraction.
+```bash
+apptainer build chemspacecopilot.sif scripts/chemspacecopilot.def
+AGENT_TEAM=qsar scripts/run_apptainer.sh
+```
 
-For full architectural details, see the [documentation](https://laboratoire-de-chemoinformatique.github.io/chemspacecopilot/).
+## Codex integration
+
+Install the scientific environment and the local Qsaria plugin:
+
+```bash
+uv sync --extra mcp --extra prediction
+python plugins/qsaria-codex/scripts/preflight.py
+codex plugin marketplace add .
+codex plugin add qsaria-codex@personal
+```
+
+Install the Qsaria project agents:
+
+```bash
+python plugins/qsaria-codex/scripts/install_project_agents.py
+python plugins/qsaria-codex/scripts/install_project_agents.py --apply
+python plugins/qsaria-codex/scripts/install_project_agents.py --check
+```
+
+The first command previews the planned changes without writing them. Then
+merge the agent registrations from
+`plugins/qsaria-codex/assets/project-config.toml` into `.codex/config.toml` and
+open a new Codex task from the repository root.
+
+See [Qsaria for Codex](plugins/qsaria-codex/README.md) for the full guide.
+
+## Claude Code integration
+
+```bash
+uv sync --extra mcp --extra prediction
+uv run --no-sync python plugins/qsaria-claude-code/scripts/preflight.py
+claude plugin marketplace add .
+claude plugin install qsaria-claude-code@personal --scope project
+```
+
+Run Claude Code from the repository root. After installation, run
+`/reload-plugins`, open `/mcp`, and wait until the `qsaria` server is reported
+as connected before starting a scientific request.
+
+See [Qsaria for Claude Code](plugins/qsaria-claude-code/README.md) for the full guide.
+
+## Claude Science integration
+
+Claude Science 0.1.21 or later is required. Prepare the project, then run the
+repository preflight and bundle validation:
+
+```bash
+uv sync --extra mcp --extra prediction
+.venv/bin/python plugins/qsaria-claude-science/scripts/preflight.py
+.venv/bin/python plugins/qsaria-claude-science/scripts/validate_science_bundle.py
+```
+
+The preflight provides the connector command, folder permissions, and local
+paths required by the current installation. In Claude Science:
+
+1. grant the exact repository, `.files`, `data`, artifact, and Python runtime permissions printed by preflight;
+2. restart Claude Science, then add and connect a local connector named `qsaria` with the following command;
+3. import the seven Qsaria Science skills from `plugins/qsaria-claude-science/skills/`;
+4. invoke `qsaria-science-setup` once to create the coordinator and specialists.
+
+```text
+Command: /bin/zsh
+Argument: <repo>/plugins/qsaria-claude-science/scripts/launch-mcp.sh
+Environment:
+  QSARIA_SCIENCE_ARTIFACT_ROOT=<artifact root printed by preflight>
+```
+
+Before the first long workflow, run the durability test documented by the
+bundle:
+
+```bash
+.venv/bin/python plugins/qsaria-claude-science/scripts/durability_probe.py start \
+  --root .files --seconds 65
+```
+
+Disconnect or restart the connector, wait at least 67 seconds, reconnect, and
+check the state path returned by the previous command:
+
+```bash
+.venv/bin/python plugins/qsaria-claude-science/scripts/durability_probe.py check \
+  --state <returned-state-path>
+```
+
+Continue with long-running experiments only when the probe reports
+`completed`.
+
+See [Qsaria for Claude Science](plugins/qsaria-claude-science/README.md) for the
+complete setup, skills, and durability checks.
+
+## Example requests
+
+### Train a model
+
+```text
+Train a standard LightGBM regression model from solubility.csv.
+The molecular column is canonical_smiles and the target is logS.
+Persist the model and give me a critical analysis of the results.
+```
+
+### Compare approaches
+
+```text
+Compare the Qsaria approaches suited to this classification dataset and
+explain the strengths and limitations of the best models.
+```
+
+### Predict new compounds
+
+```text
+Use model qsaria-model-… to predict new_compounds.csv and flag unreliable
+predictions.
+```
+
+### Inspect available models
+
+```text
+Which persisted Qsaria models are available for a solubility regression task?
+```
+
+## Experiments and model persistence
+
+Each scientific workflow receives an `experiment_id`. Qsaria keeps the
+experiment evidence and reusable models in separate locations:
+
+```text
+.files/sessions/<experiment_id>/   experiment artifacts and reports
+data/model_assets/internal/        reusable persisted models
+data/model_assets/catalog/         local model catalog
+```
+
+A new conversation does not automatically resume an earlier experiment, but
+persisted models remain available. An experiment can be reopened explicitly
+with its identifier.
+
+The model catalog belongs to the local user environment and is not distributed
+as part of the repository.
+
+## Development
+
+Install the complete environment:
+
+```bash
+uv sync --extra mcp --extra prediction
+```
+
+Run the main repository checks:
+
+```bash
+uv run black --check src/ tests/
+uv run ruff check src/ tests/
+uv run pytest tests/unit/ -v --tb=short
+```
+
+Each integration contains its own preflight, validation, synchronization, and
+installation documentation under `plugins/`.
+
+## Project status
+
+Qsaria is under active development. Before the first stable release, APIs,
+scientific contracts, and installation procedures may still evolve. Chemprop
+and TabICL workflows can also require significant compute depending on the
+dataset and requested analysis.
+
+For bugs and feature requests, use the
+[GitHub Issues](https://github.com/abrahambrisset/Qsaria/issues) tab. When
+reporting a failed workflow, include its sanitized experiment identifier,
+backend, structured error, and relevant artifact identifiers without sharing
+private data or credentials.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Ensure code passes `pre-commit run --all-files`
-4. Submit a pull request
-
-See the [Contributing Guide](https://laboratoire-de-chemoinformatique.github.io/chemspacecopilot/contributing/) for code style conventions and detailed guidelines.
+Qsaria is distributed under the [MIT License](LICENSE).
