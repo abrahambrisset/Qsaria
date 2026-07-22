@@ -363,6 +363,14 @@ reporting a failed workflow, include its sanitized experiment identifier,
 backend, structured error, and relevant artifact identifiers without sharing
 private data or credentials.
 
+## Citation
+
+If you use Qsaria, please cite the
+[Qsaria abstract and poster](https://infochim.u-strasbg.fr/IMG/pdf/p2_abraham_brisset_abstract_poster_cs3-2026.pdf).
+
+Related work:
+[ChemSpace Copilot](https://chemrxiv.org/doi/full/10.26434/chemrxiv.15000527/v2).
+
 ## License
 
 Qsaria is distributed under the [MIT License](LICENSE).
