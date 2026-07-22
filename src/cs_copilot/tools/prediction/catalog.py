@@ -226,9 +226,7 @@ def _portable_catalog_path(path: Optional[str]) -> Optional[str]:
 def _record_with_runtime_paths(record: PredictionModelRecord) -> PredictionModelRecord:
     model_path = str(resolve_catalog_artifact_path(record.model_path))
     metadata_path = (
-        str(resolve_catalog_artifact_path(record.metadata_path))
-        if record.metadata_path
-        else None
+        str(resolve_catalog_artifact_path(record.metadata_path)) if record.metadata_path else None
     )
     if model_path == record.model_path and metadata_path == record.metadata_path:
         return record

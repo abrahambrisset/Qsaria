@@ -4,9 +4,11 @@
 
 import base64
 import re
+from pathlib import Path
 
 import pytest
 
+import cs_copilot.storage.client as storage_client
 from cs_copilot.storage import S3
 from cs_copilot.tools.io.figure_metadata import build_figure_metadata, register_figure_metadata
 from cs_copilot.tools.io.report_export import (
@@ -37,8 +39,10 @@ def clean_storage_env(monkeypatch):
         "ASSETS_BUCKET",
         "S3_BUCKET_NAME",
         "AWS_REGION",
+        "CS_COPILOT_STORAGE_ROOT",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(storage_client, "LOCAL_STORAGE_ROOT", Path(".files"))
 
 
 @pytest.fixture
@@ -54,9 +58,9 @@ def fixed_session_prefix():
 
 @pytest.fixture
 def local_session_root(clean_storage_env, fixed_session_prefix, monkeypatch, tmp_path):
-    """Redirect local writes into tmp_path/data/sessions/test-report/."""
+    """Redirect local writes into tmp_path/.files/sessions/test-report/."""
     monkeypatch.chdir(tmp_path)
-    return tmp_path / "data" / "sessions" / "test-report"
+    return tmp_path / ".files" / "sessions" / "test-report"
 
 
 @pytest.fixture

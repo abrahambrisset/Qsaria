@@ -12,6 +12,5 @@ def test_training_agent_exposes_only_the_qsar_training_facade_for_backend_traini
     assert sum(isinstance(tool, QSARTrainingToolkit) for tool in tools) == 1
     assert not any(isinstance(tool, MolecularFeatureToolkit) for tool in tools)
     assert not any(
-        isinstance(tool, (ChempropToolkit, LightGBMToolkit, TabICLToolkit))
-        for tool in tools
+        isinstance(tool, (ChempropToolkit, LightGBMToolkit, TabICLToolkit)) for tool in tools
     )

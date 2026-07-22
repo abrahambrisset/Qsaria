@@ -186,9 +186,7 @@ def test_start_validates_typed_training_request_before_launch(manager) -> None:
                     "task_type": "regression",
                     "smiles_column": "smiles",
                     "target_columns": ["pEC50"],
-                    "tuning": {
-                        "objective": {"metric": "auc", "direction": "maximize"}
-                    },
+                    "tuning": {"objective": {"metric": "auc", "direction": "maximize"}},
                 },
             },
         )

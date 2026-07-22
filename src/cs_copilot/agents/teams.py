@@ -61,7 +61,8 @@ def get_cs_copilot_agent_team(
     db = None
     if enable_memory:
         db = SqliteDb(
-            db_file=db_file or CS_COPILOT_MEMORY_DB
+            db_file=db_file
+            or CS_COPILOT_MEMORY_DB
             # NOTE: CS_COPILOT_MEMORY_TABLE is not required by SqliteDb.
             # Agno manages its own tables for sessions/memories. Kept import for compat.
         )
@@ -167,8 +168,7 @@ def get_cs_copilot_agent_team(
             "• SynPlanner: Retrosynthetic planning for target molecules\n\n"
             # Routing prose is generated from the workflow/skill catalog keywords
             # so it can never drift from the deterministic MCP bootstrap routing.
-            + render_routing_rules()
-            + "\n\n"
+            + render_routing_rules() + "\n\n"
             "When coordinating: (1) Assess if a predefined workflow covers the request, (2) Select and chain "
             "specialized agents for multi-step tasks (GTM → Chemoinformatician → Report Generator is common), "
             "(3) For analysis requests, automatically add Report Generator unless user explicitly requests raw data only, "

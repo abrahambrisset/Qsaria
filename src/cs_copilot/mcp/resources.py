@@ -14,7 +14,6 @@ import logging
 import mimetypes
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ def _guess_mime(rel_path: str) -> str:
 def list_entries() -> List[ResourceEntry]:
     """List session artifacts as MCP resource entries.
 
-    Local mode: walks the local session directory under ``data/``.
+    Local mode: walks the configured local session directory.
     S3 mode: walks the active bucket prefix via ``s3fs``.
     Returns an empty list when the prefix has no artifacts yet.
     """
@@ -59,7 +58,7 @@ def list_entries() -> List[ResourceEntry]:
     )
 
     if not is_s3_enabled():
-        local_root = Path("data") / S3.current_prefix().strip("/")
+        local_root = S3.local_session_root()
         if local_root.exists():
             for path in sorted(local_root.rglob("*")):
                 if path.is_file():

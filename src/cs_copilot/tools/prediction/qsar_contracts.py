@@ -376,9 +376,7 @@ class ActivityCliffConfig(StrictContract):
 
 
 class ApplicabilityDomainConfig(StrictContract):
-    methods: List[
-        Literal["bounding_box", "isolation_forest", "similarity_matrix"]
-    ] = Field(
+    methods: List[Literal["bounding_box", "isolation_forest", "similarity_matrix"]] = Field(
         default_factory=lambda: ["bounding_box", "isolation_forest", "similarity_matrix"]
     )
     similarity_top_k_neighbors: Literal[1, 3, 5] = 5
@@ -539,9 +537,7 @@ class QsariaTrainingRequest(TrainingRequestBase):
         }[backend_name]
         unknown = sorted(set(self.tuning.parameters or []) - allowed_tuning_parameters)
         if unknown:
-            raise ValueError(
-                f"Unsupported {backend_name} tuning parameters: " + ", ".join(unknown)
-            )
+            raise ValueError(f"Unsupported {backend_name} tuning parameters: " + ", ".join(unknown))
         if backend_name == "tabicl" and self.tuning.enabled:
             raise ValueError("TabICL does not support hyperparameter tuning.")
         if (
@@ -574,7 +570,9 @@ class QsariaTrainingRequest(TrainingRequestBase):
             "tabicl": {None},
         }[backend_name]
         if self.tuning.engine not in compatible_engines:
-            raise ValueError(f"Tuning engine {self.tuning.engine!r} is not supported by {backend_name}.")
+            raise ValueError(
+                f"Tuning engine {self.tuning.engine!r} is not supported by {backend_name}."
+            )
         if self.tuning.objective is not None:
             validate_tuning_objective_compatibility(
                 backend_name=backend_name,
@@ -610,7 +608,9 @@ class QsariaTrainingRequest(TrainingRequestBase):
                 "average_logits": self.backend.average_logits,
                 "support_many_classes": self.backend.support_many_classes,
             }
-            supplied = sorted(name for name, value in classification_fields.items() if value is not None)
+            supplied = sorted(
+                name for name, value in classification_fields.items() if value is not None
+            )
             if supplied:
                 raise ValueError(
                     "TabICL classification options are invalid for regression: "
@@ -852,9 +852,7 @@ class TabICLRunRequest(BackendRunBase):
         List[Literal["bounding_box", "isolation_forest", "similarity_matrix"]]
     ] = None
     similarity_top_k_neighbors: Optional[Literal[1, 3, 5]] = None
-    similarity_threshold_percentile: Optional[float] = Field(
-        default=None, ge=0.0, le=100.0
-    )
+    similarity_threshold_percentile: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     heartbeat_seconds: float = Field(default=120.0, gt=0.0)
     heartbeat_path: Optional[str] = None
     heartbeat_label: Optional[str] = None

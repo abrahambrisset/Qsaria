@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+import cs_copilot.storage.client as storage_client
 from cs_copilot.storage import (
     OUTPUT_CONTEXT_KEY,
     S3,
@@ -37,8 +38,10 @@ def clean_storage_env(monkeypatch):
         "ASSETS_BUCKET",
         "S3_BUCKET_NAME",
         "AWS_REGION",
+        "CS_COPILOT_STORAGE_ROOT",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(storage_client, "LOCAL_STORAGE_ROOT", Path(".files"))
 
 
 @pytest.fixture
@@ -71,7 +74,7 @@ def test_aws_credentials_do_not_enable_s3_without_flag(
 
     assert is_s3_enabled() is False
     assert S3.path("dataset.csv") == os.fspath(
-        Path("data") / "sessions" / "test-session" / "dataset.csv"
+        Path(".files") / "sessions" / "test-session" / "dataset.csv"
     )
 
 
@@ -118,17 +121,17 @@ def test_incomplete_explicit_aws_config_raises(
 def test_relative_local_paths_are_session_scoped(
     clean_storage_env, fixed_session_prefix, monkeypatch, tmp_path
 ):
-    """Relative local paths should resolve under data/sessions/{SESSION_ID}."""
+    """Relative local paths should resolve under .files/sessions/{SESSION_ID}."""
     monkeypatch.chdir(tmp_path)
 
     with S3.open("nested/output.csv", "w") as handle:
         handle.write("value\n1\n")
 
-    saved_path = tmp_path / "data" / "sessions" / "test-session" / "nested" / "output.csv"
+    saved_path = tmp_path / ".files" / "sessions" / "test-session" / "nested" / "output.csv"
     assert saved_path.exists()
     assert saved_path.read_text() == "value\n1\n"
     assert S3.path("nested/output.csv") == os.fspath(
-        Path("data") / "sessions" / "test-session" / "nested" / "output.csv"
+        Path(".files") / "sessions" / "test-session" / "nested" / "output.csv"
     )
 
     with S3.open("nested/output.csv", "r") as handle:
@@ -162,8 +165,8 @@ def test_relative_paths_use_context_local_session_prefix(clean_storage_env, monk
     path_a = context_a.run(path_for, "sessions/session-a")
     path_b = context_b.run(path_for, "sessions/session-b")
 
-    assert path_a == os.fspath(Path("data") / "sessions" / "session-a" / "artifact.txt")
-    assert path_b == os.fspath(Path("data") / "sessions" / "session-b" / "artifact.txt")
+    assert path_a == os.fspath(Path(".files") / "sessions" / "session-a" / "artifact.txt")
+    assert path_b == os.fspath(Path(".files") / "sessions" / "session-b" / "artifact.txt")
     assert context_a.run(S3.path, "artifact.txt") == path_a
     assert context_b.run(S3.path, "artifact.txt") == path_b
 

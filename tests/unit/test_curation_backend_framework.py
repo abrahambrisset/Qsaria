@@ -76,9 +76,10 @@ def _failing_chembl_backend(raw_smiles: pd.Series, failed_smiles: set[str]):
 def test_curation_public_contract_has_no_backend_selector() -> None:
     _curation_module, DatasetCurationToolkit = _load_curation_toolkit()
 
-    assert "curation_backend" not in inspect.signature(
-        DatasetCurationToolkit.curate_qsar_dataset
-    ).parameters
+    assert (
+        "curation_backend"
+        not in inspect.signature(DatasetCurationToolkit.curate_qsar_dataset).parameters
+    )
 
 
 def test_curation_initialization_requires_chembl_dependency(monkeypatch) -> None:
@@ -105,9 +106,9 @@ def test_one_chembl_row_failure_preserves_partial_dataset(tmp_path, monkeypatch)
     )
     source = tmp_path / "partial.csv"
     output = tmp_path / "partial_curated.csv"
-    pd.DataFrame(
-        {"smiles": ["CCO", "CCF", "CCC"], "pEC50": [4.0, 5.0, 6.0]}
-    ).to_csv(source, index=False)
+    pd.DataFrame({"smiles": ["CCO", "CCF", "CCC"], "pEC50": [4.0, 5.0, 6.0]}).to_csv(
+        source, index=False
+    )
 
     result = DatasetCurationToolkit().curate_qsar_dataset(
         dataset_path=str(source),
@@ -133,9 +134,7 @@ def test_all_chembl_row_failures_block_dataset(tmp_path, monkeypatch) -> None:
     )
     source = tmp_path / "unusable.csv"
     output = tmp_path / "unusable_curated.csv"
-    pd.DataFrame({"smiles": ["CCO", "CCC"], "pEC50": [4.0, 6.0]}).to_csv(
-        source, index=False
-    )
+    pd.DataFrame({"smiles": ["CCO", "CCC"], "pEC50": [4.0, 6.0]}).to_csv(source, index=False)
 
     result = DatasetCurationToolkit().curate_qsar_dataset(
         dataset_path=str(source),

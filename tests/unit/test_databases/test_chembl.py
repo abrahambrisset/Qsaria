@@ -459,7 +459,7 @@ class TestChemblToolkit:
         finally:
             S3.prefix = original_prefix
 
-        session_root = tmp_path / "data" / "sessions" / "test-session"
+        session_root = tmp_path / ".files" / "sessions" / "test-session"
         expected_paths = {
             "clean": "workflows/*/01_chemical_space/datasets/clean/chembl_kinase_clean.csv",
             "raw": "workflows/*/01_chemical_space/datasets/raw/chembl_kinase_raw.csv",

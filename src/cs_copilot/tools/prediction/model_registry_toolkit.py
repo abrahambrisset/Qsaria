@@ -290,10 +290,7 @@ def _hydrate_curation_metadata(
     manifest = _load_json_if_available(model_root / manifest_rel) if manifest_rel else {}
 
     if report:
-        metadata["backend"] = (
-            metadata.get("backend")
-            or report.get("curation_backend")
-        )
+        metadata["backend"] = metadata.get("backend") or report.get("curation_backend")
         metadata["curated_dataset_path"] = metadata.get("curated_dataset_path") or report.get(
             "curated_dataset_path"
         )

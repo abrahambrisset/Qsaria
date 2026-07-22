@@ -274,12 +274,8 @@ def test_catalog_persists_internal_paths_relative_to_portable_root(monkeypatch, 
     catalog.upsert_model(record)
 
     persisted = json.loads(catalog_path.read_text())["models"][0]
-    assert persisted["model_path"] == (
-        "data/model_assets/internal/portable_model/model/best.pkl"
-    )
-    assert persisted["metadata_path"] == (
-        "data/model_assets/internal/portable_model/metadata.json"
-    )
+    assert persisted["model_path"] == ("data/model_assets/internal/portable_model/model/best.pkl")
+    assert persisted["metadata_path"] == ("data/model_assets/internal/portable_model/metadata.json")
 
 
 def test_stale_catalog_instances_merge_concurrent_upserts(monkeypatch, tmp_path):

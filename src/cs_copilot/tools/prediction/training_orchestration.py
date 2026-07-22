@@ -317,8 +317,8 @@ def materialize_primary_protocol_artifacts(
     root_model_dir.mkdir(parents=True, exist_ok=True)
 
     file_map = {
-        primary_run.get("model_path") or primary_run.get("best_model_path"): root_model_dir
-        / model_filename,
+        primary_run.get("model_path")
+        or primary_run.get("best_model_path"): root_model_dir / model_filename,
         primary_run.get("validation_predictions_path"): root_model_dir
         / "validation_predictions.csv",
         primary_run.get("test_predictions_path"): root_model_dir / "test_predictions.csv",
@@ -655,9 +655,9 @@ def build_applicability_domain_for_training(
                 if ad_metrics:
                     split_score_summaries[label].update(ad_metrics)
                 elif label in {"validation", "test"}:
-                    split_score_summaries[label]["metrics_unavailable_reason"] = (
-                        f"No {label}_predictions_path artifact was available."
-                    )
+                    split_score_summaries[label][
+                        "metrics_unavailable_reason"
+                    ] = f"No {label}_predictions_path artifact was available."
                 canonical_path = (prediction_artifact_paths or {}).get(label)
                 if canonical_path and str(canonical_path) != str(predictions_path or ""):
                     try:

@@ -204,7 +204,12 @@ class S3(metaclass=_S3Meta):
         explicit = cls._already_scoped_local_path(rel)
         if explicit is not None:
             return explicit
-        return LOCAL_STORAGE_ROOT / Path(cls.current_prefix().strip("/")) / Path(rel)
+        return cls.local_session_root() / Path(rel)
+
+    @classmethod
+    def local_session_root(cls) -> Path:
+        """Return the configured local root for the active session."""
+        return LOCAL_STORAGE_ROOT / Path(cls.current_prefix().strip("/"))
 
     @classmethod
     def _already_scoped_local_path(cls, rel: str) -> Path | None:

@@ -144,10 +144,7 @@ def _representation(record: PredictionModelRecord) -> str:
 
 def _protocol(record: PredictionModelRecord) -> str:
     for source in (record.training_data_summary, record.selection_hints, record.tags):
-        value = (
-            (source or {}).get("validation_protocol")
-            or (source or {}).get("protocol")
-        )
+        value = (source or {}).get("validation_protocol") or (source or {}).get("protocol")
         if value:
             return str(value)
     return "unknown"

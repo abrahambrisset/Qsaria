@@ -129,7 +129,7 @@ def test_adapter_coerces_dataframe_return():
 def _manifest_payloads(tmp_path, session_name: str):
     manifest_root = (
         tmp_path
-        / "data"
+        / ".files"
         / "sessions"
         / session_name
         / "workflows"

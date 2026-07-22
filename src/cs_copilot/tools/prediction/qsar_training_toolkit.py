@@ -809,9 +809,7 @@ class QSARTrainingToolkit(Toolkit):
             "tabicl": TabICLTrainingRequest,
         }
         if backend_name not in request_types:
-            raise ValueError(
-                "backend_name must be one of: chemprop, lightgbm, tabicl."
-            )
+            raise ValueError("backend_name must be one of: chemprop, lightgbm, tabicl.")
         supported_task_types = {
             "regression",
             "classification",

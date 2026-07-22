@@ -497,13 +497,15 @@ def _typed_parameter_catalog(
         value_type = (
             "bool"
             if "bool" in annotation
-            else "int"
-            if "int" in annotation
-            else "float"
-            if "float" in annotation
-            else "list"
-            if "List" in annotation or "list" in annotation
-            else "str"
+            else (
+                "int"
+                if "int" in annotation
+                else (
+                    "float"
+                    if "float" in annotation
+                    else "list" if "List" in annotation or "list" in annotation else "str"
+                )
+            )
         )
         payload = HyperparameterSpec(
             name=name,
@@ -869,9 +871,9 @@ class LightGBMOptunaAdapter:
         if {
             "max_depth",
             "num_leaves",
-        }.issubset(fixed_parameters) and int(fixed_parameters["num_leaves"]) > 2 ** int(
-            fixed_parameters["max_depth"]
-        ):
+        }.issubset(fixed_parameters) and int(
+            fixed_parameters["num_leaves"]
+        ) > 2 ** int(fixed_parameters["max_depth"]):
             raise HyperparameterTuningError(
                 "LightGBM requires num_leaves <= 2**max_depth for a fixed direct configuration."
             )

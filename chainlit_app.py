@@ -61,6 +61,7 @@ def escape_latex(value: object) -> str:
     }
     return "".join(replacements.get(char, char) for char in text)
 
+
 # ---------- User Management System ----------------------------------------- #
 # Simple in-memory user storage (in production, use a proper database)
 USERS = {
@@ -486,7 +487,7 @@ def _extract_qsar_final_report(full_content: str) -> str:
         candidate = full_content[polished_start:].strip()
         handoff_tail = _QSAR_HANDOFF_LABEL_RE.search(candidate)
         if handoff_tail:
-            candidate = candidate[:handoff_tail.start()].strip()
+            candidate = candidate[: handoff_tail.start()].strip()
         if candidate:
             return candidate
 
@@ -752,7 +753,9 @@ async def _image_bubble_streaming(caption: str, src: str) -> cl.Message:
             img_el = cl.Image(url=data_url, name=name, display="inline")
             logger.debug(f"Created cl.Image element from S3 (streaming): {name}")
         except Exception as e:
-            logger.warning(f"Error loading from S3 (streaming), falling back to URL: {type(e).__name__}: {e}")
+            logger.warning(
+                f"Error loading from S3 (streaming), falling back to URL: {type(e).__name__}: {e}"
+            )
             # Fallback: let client try to fetch as URL (e.g. if it's a presigned S3 HTTP URL)
             img_el = cl.Image(url=src, name=name, display="inline")
             logger.debug(f"Created cl.Image element with fallback URL (streaming): {name}")
@@ -768,7 +771,7 @@ def _is_web_url(path: str) -> bool:
 
 
 def _guess_file_name(path: str) -> str:
-    cleaned = path.strip().strip("`").strip("\"").strip("'")
+    cleaned = path.strip().strip("`").strip('"').strip("'")
     without_query = cleaned.split("?", 1)[0]
     name = Path(without_query).name
     if not name:
@@ -782,7 +785,7 @@ def _safe_file_name(name: str) -> str:
 
 
 def _read_file_bytes_from_storage(file_ref: str) -> bytes:
-    cleaned = file_ref.strip().strip("`").strip("\"").strip("'")
+    cleaned = file_ref.strip().strip("`").strip('"').strip("'")
     local_candidate = Path(cleaned).expanduser()
     if local_candidate.exists():
         return local_candidate.read_bytes()
@@ -984,7 +987,9 @@ def _markdown_report_to_latex(report_text: str, title: str = "Rapport QSAR") -> 
         body.append(r"\toprule")
         body.append(r"\rowcolor{prismblue!15}")
         padded_header = header + [""] * (col_count - len(header))
-        body.append(" & ".join(_convert_inline(cell) for cell in padded_header[:col_count]) + r" \\")
+        body.append(
+            " & ".join(_convert_inline(cell) for cell in padded_header[:col_count]) + r" \\"
+        )
         body.append(r"\midrule")
         for row in data_rows:
             padded = row + [""] * (col_count - len(row))
@@ -1317,13 +1322,13 @@ async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
             # Read file content
             file_content = None
 
-            if hasattr(file, 'content') and file.content:
+            if hasattr(file, "content") and file.content:
                 file_content = file.content
                 logger.debug(f"Got content from file.content ({len(file_content)} bytes)")
-            elif hasattr(file, 'path') and file.path:
+            elif hasattr(file, "path") and file.path:
                 # Read from file path
                 logger.debug(f"Reading from file.path: {file.path}")
-                with open(file.path, 'rb') as f:
+                with open(file.path, "rb") as f:
                     file_content = f.read()
                 logger.debug(f"Read {len(file_content)} bytes from file")
 
@@ -1339,7 +1344,7 @@ async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
 
             # Write file using the unified storage abstraction.
             logger.debug("Opening session storage file for writing...")
-            with S3.open(relative_path, 'wb') as s3_file:
+            with S3.open(relative_path, "wb") as s3_file:
                 s3_file.write(file_content)
 
             # Get the full storage path for display and later reuse by agents.
@@ -1348,7 +1353,10 @@ async def _handle_file_uploads(files: list, session_id: str) -> list[str]:
             logger.info(f"Uploaded file {file.name} to {full_storage_path}")
 
         except Exception as e:
-            logger.error(f"Error uploading file {getattr(file, 'name', 'unknown')}: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(
+                f"Error uploading file {getattr(file, 'name', 'unknown')}: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
             # Continue with other files even if one fails
             continue
 
@@ -1447,7 +1455,9 @@ async def relay(stream):
                 ("validation", snapshot.get("val_rows")),
                 ("test", snapshot.get("test_rows")),
             ]
-            observed_counts = [f"{count} {label}" for label, count in row_counts if count is not None]
+            observed_counts = [
+                f"{count} {label}" for label, count in row_counts if count is not None
+            ]
             if observed_counts:
                 tabicl_detail = " · ".join(observed_counts)
                 detail = f"{detail} · {tabicl_detail}" if detail else tabicl_detail
@@ -1586,7 +1596,8 @@ async def relay(stream):
                 tool_name = _extract_tool_name(tool)
                 await _set_qsar_progress(
                     status=STATUS_FAILED,
-                    phase=phase_for_tool(tool_name) or str(qsar_progress_state.get("phase") or "QSAR workflow"),
+                    phase=phase_for_tool(tool_name)
+                    or str(qsar_progress_state.get("phase") or "QSAR workflow"),
                 )
                 continue
 
@@ -1618,7 +1629,9 @@ async def relay(stream):
         if not qsar_mode or not full_content.strip():
             raise
         stream_error = exc
-        logger.warning("QSAR stream interrupted after partial output; returning fallback report: %s", exc)
+        logger.warning(
+            "QSAR stream interrupted after partial output; returning fallback report: %s", exc
+        )
     finally:
         if qsar_heartbeat_task is not None:
             qsar_heartbeat_task.cancel()
@@ -1709,10 +1722,10 @@ async def main(user_msg: cl.Message):
         files = None
 
         # Try different ways files might be attached
-        if hasattr(user_msg, 'files') and user_msg.files:
+        if hasattr(user_msg, "files") and user_msg.files:
             files = user_msg.files
             logger.debug(f"Found files in user_msg.files: {[f.name for f in files]}")
-        elif hasattr(user_msg, 'elements') and user_msg.elements:
+        elif hasattr(user_msg, "elements") and user_msg.elements:
             # Filter for File elements
             files = [el for el in user_msg.elements if isinstance(el, cl.File)]
             if files:
@@ -1733,7 +1746,7 @@ async def main(user_msg: cl.Message):
                     # can access the same user uploads without cross-agent calls.
                     shared_uploaded_files = cl.user_session.get("uploaded_files_shared") or {}
                     for s3_path in uploaded_paths:
-                        filename = s3_path.split('/')[-1]
+                        filename = s3_path.split("/")[-1]
                         shared_uploaded_files[filename] = s3_path
                         logger.info(f"Added to shared upload state: {filename} → {s3_path}")
 
@@ -1780,10 +1793,9 @@ async def main(user_msg: cl.Message):
                 break  # Success – exit retry loop
             except Exception as e:
                 if _is_retriable(e) and attempt < max_retries:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     logger.warning(
-                        "Retriable error in main() on attempt %d/%d: %s "
-                        "– retrying in %.1fs …",
+                        "Retriable error in main() on attempt %d/%d: %s " "– retrying in %.1fs …",
                         attempt + 1,
                         max_retries + 1,
                         e,

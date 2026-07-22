@@ -246,9 +246,7 @@ def test_specialized_contracts_narrow_the_backend():
 
 
 def test_chemprop_warmup_must_finish_before_training_ends():
-    payload = ChempropTrainingRequest(
-        target_columns=["y"], task_type="regression"
-    ).model_dump()
+    payload = ChempropTrainingRequest(target_columns=["y"], task_type="regression").model_dump()
     payload["backend"]["epochs"] = 1
     payload["backend"]["warmup_epochs"] = 2
 

@@ -238,7 +238,7 @@ def test_synplanner_identify_input_handles_smiles_and_fallback_names():
 def _manifest_payloads(tmp_path, session_name: str):
     manifest_root = (
         tmp_path
-        / "data"
+        / ".files"
         / "sessions"
         / session_name
         / "workflows"
