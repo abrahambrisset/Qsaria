@@ -61,8 +61,7 @@ def get_cs_copilot_agent_team(
     db = None
     if enable_memory:
         db = SqliteDb(
-            db_file=db_file
-            or CS_COPILOT_MEMORY_DB
+            db_file=db_file or CS_COPILOT_MEMORY_DB
             # NOTE: CS_COPILOT_MEMORY_TABLE is not required by SqliteDb.
             # Agno manages its own tables for sessions/memories. Kept import for compat.
         )
@@ -168,7 +167,8 @@ def get_cs_copilot_agent_team(
             "• SynPlanner: Retrosynthetic planning for target molecules\n\n"
             # Routing prose is generated from the workflow/skill catalog keywords
             # so it can never drift from the deterministic MCP bootstrap routing.
-            + render_routing_rules() + "\n\n"
+            + render_routing_rules()
+            + "\n\n"
             "When coordinating: (1) Assess if a predefined workflow covers the request, (2) Select and chain "
             "specialized agents for multi-step tasks (GTM → Chemoinformatician → Report Generator is common), "
             "(3) For analysis requests, automatically add Report Generator unless user explicitly requests raw data only, "
@@ -273,6 +273,9 @@ def get_qsar_agent_team(
             "Never route work to non-QSAR agents.",
             "For curation-only requests, orchestrate: dataset_curation -> qsar_report.",
             "For training requests, orchestrate: dataset_curation -> qsar_training, then route directly to qsar_report when qsar_training already completed register_model + persist_registered_model. Use model_registry after training only when persistence is still missing, blocked, or explicitly requested by the user.",
+            "The qsar_training member returns one deterministic JSON `QsarTrainingAgentHandoff`. Treat that JSON and `prediction_models.latest_training_handoff` as the complete Training handoff; never ask Training to restate it as prose.",
+            "For a successful training workflow, delegate Report only when `status=completed` and persistence is `completed` or `not_required`. If a partial handoff is blocked only by `persistence=pending` or `failed`, route the exact verified evidence to model_registry first. Preserve the existing terminal-failure rule: route the exact error evidence to Report without retrying or attempting persistence.",
+            "When delegating qsar_report, explicitly instruct it to use `prediction_models.latest_training_handoff` as authoritative and to ignore any earlier Training narrative when the structured handoff is present.",
             "For prediction requests on existing models, orchestrate: model_inference -> qsar_report.",
             "For QSAR backend/capability inventory, catalog listing, model recommendation, model summary, model comparison, or existing ensemble summary requests, orchestrate: model_registry -> qsar_report.",
             "For explicit post-prediction LaTeX export requests, including the standalone shortcut token `latex` with optional `@`, orchestrate `model_inference` only.",

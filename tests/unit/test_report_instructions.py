@@ -124,7 +124,9 @@ def test_qsar_report_instructions_require_fact_first_v2_handoffs():
         "Concise tables for curation, working environment, protocol, durations, tuning, and persisted models"
         in instructions
     )
-    assert "it is mandatory in `Resultats de test externe`" in instructions
+    assert "it is mandatory in the results section selected by" in instructions
+    assert "prediction_models.latest_training_handoff" in instructions
+    assert "persistence.models" in instructions
     assert "automatic development-only Activity Cliff annotation" in instructions
     assert "Immediately after every copied table" in instructions
     assert "beginning with `Commentaire :`" in instructions

@@ -1028,13 +1028,13 @@ def _compact_fold_and_campaign_facts(result: Mapping[str, Any]) -> Dict[str, Any
 def _evaluation_scope(result: Mapping[str, Any], *, metrics_status: str) -> Dict[str, Any]:
     strategy_type = str(result.get("validation_strategy_type") or "").lower()
     strategy = _mapping(result.get("validation_strategy"))
-    ad_summaries = _mapping(
-        _mapping(result.get("applicability_domain")).get("split_score_summaries")
-    )
+    # A normal holdout test split remains internal evidence.  Only the
+    # explicitly requested outer test of a CV contract is external within a
+    # training workflow; separately labelled datasets use the dedicated
+    # external-evaluation handoff builder.
     has_external_test = bool(
-        result.get("test_count")
-        or _mapping(ad_summaries.get("test"))
-        or strategy.get("outer_test_size")
+        strategy_type in {"cross_validation", "repeated_cross_validation"}
+        and strategy.get("outer_test_size")
     )
     if (
         metrics_status == "not_evaluated"
@@ -1045,7 +1045,13 @@ def _evaluation_scope(result: Mapping[str, Any], *, metrics_status: str) -> Dict
             "heading_key": "no_internal_evaluation",
             "statement": "The model was trained in full-train mode; no internal evaluation is available.",
         }
-    if strategy_type in {"cross_validation", "repeated_cross_validation"} and not has_external_test:
+    if has_external_test:
+        return {
+            "scope": "external",
+            "heading_key": "external_test_results",
+            "statement": "Final results use an isolated external test split that was not used for selection.",
+        }
+    if strategy_type in {"cross_validation", "repeated_cross_validation"}:
         return {
             "scope": "internal",
             "heading_key": "internal_test_results",
@@ -1055,10 +1061,53 @@ def _evaluation_scope(result: Mapping[str, Any], *, metrics_status: str) -> Dict
             ),
         }
     return {
-        "scope": "external",
-        "heading_key": "external_test_results",
-        "statement": "Final results use an isolated external test split that was not used for selection.",
+        "scope": "internal",
+        "heading_key": "internal_test_results",
+        "statement": (
+            "Results use internal held-out evidence. No separate labelled external dataset "
+            "was evaluated."
+        ),
     }
+
+
+def _training_protocol_counts(result: Mapping[str, Any]) -> Dict[str, Any]:
+    """Separate model-selection counts from final-refit counts when available."""
+
+    effective_train_count = result.get("effective_train_count")
+    validation_count = result.get("validation_count")
+    test_count = result.get("test_count")
+    selection = _mapping(result.get("selection_validation"))
+    diagnostics = _mapping(selection.get("diagnostics"))
+    selection_validation_count = diagnostics.get("validation_count")
+    selection_train_count = None
+    if (
+        bool(result.get("final_refit"))
+        and effective_train_count is not None
+        and selection_validation_count is not None
+    ):
+        try:
+            selection_train_count = int(effective_train_count) - int(selection_validation_count)
+        except (TypeError, ValueError):
+            selection_train_count = None
+
+    payload: Dict[str, Any] = {
+        "reported_train_count": effective_train_count,
+        "reported_validation_count": validation_count,
+        "reported_test_count": test_count,
+    }
+    if selection_validation_count is not None:
+        payload["selection_split"] = {
+            "train_count": selection_train_count,
+            "validation_count": selection_validation_count,
+            "test_count": test_count,
+        }
+    if bool(result.get("final_refit")):
+        payload["final_refit_split"] = {
+            "train_count": effective_train_count,
+            "validation_count": validation_count,
+            "test_count": test_count,
+        }
+    return payload
 
 
 def _training_report_facts(result: Mapping[str, Any], *, metrics_status: str) -> Dict[str, Any]:
@@ -1097,6 +1146,7 @@ def _training_report_facts(result: Mapping[str, Any], *, metrics_status: str) ->
                 "train_count": result.get("effective_train_count"),
                 "validation_count": result.get("validation_count"),
                 "test_count": result.get("test_count"),
+                "counts": _training_protocol_counts(result),
                 "seed_policy": result.get("seed_policy"),
                 "final_refit": result.get("final_refit"),
                 "metrics_status": metrics_status,

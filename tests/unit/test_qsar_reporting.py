@@ -369,6 +369,42 @@ def test_training_v2_handoff_marks_cv_without_outer_test_as_internal():
     assert "final_test_comparison" not in handoff["report_tables"]
 
 
+def test_training_v2_handoff_marks_standard_holdout_as_internal_and_separates_refit_counts():
+    handoff = build_training_reporting_handoff(
+        {
+            "backend_name": "lightgbm",
+            "task_type": "regression",
+            "validation_protocol": "standard_qsar",
+            "validation_strategy_type": "holdout",
+            "validation_strategy": {
+                "kind": "holdout",
+                "split_family": "random",
+                "split_sizes": [0.8, 0.1, 0.1],
+            },
+            "metrics_status": "evaluated",
+            "effective_train_count": 3718,
+            "validation_count": 0,
+            "test_count": 413,
+            "final_refit": True,
+            "selection_validation": {"diagnostics": {"validation_count": 413}},
+        }
+    )
+
+    facts = handoff["report_facts"]
+    assert facts["evaluation"]["scope"] == "internal"
+    assert "No separate labelled external dataset" in facts["evaluation"]["statement"]
+    assert facts["training_protocol"]["counts"]["selection_split"] == {
+        "train_count": 3305,
+        "validation_count": 413,
+        "test_count": 413,
+    }
+    assert facts["training_protocol"]["counts"]["final_refit_split"] == {
+        "train_count": 3718,
+        "validation_count": 0,
+        "test_count": 413,
+    }
+
+
 def test_training_v2_handoff_keeps_chemprop_native_val_loss_and_skipped_outliers():
     handoff = build_training_reporting_handoff(
         {

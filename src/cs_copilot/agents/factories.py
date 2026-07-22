@@ -55,6 +55,10 @@ from .prompts import (
     ROBUSTNESS_EVALUATION_INSTRUCTIONS,
     SYNPLANNER_INSTRUCTIONS,
 )
+from .qsar_agent_handoffs import (
+    compact_qsar_report_session_context,
+    finalize_qsar_training_agent_output,
+)
 
 
 @dataclass
@@ -66,6 +70,8 @@ class AgentConfig:
     tools: List[Any] = field(default_factory=list)
     instructions: List[str] = field(default_factory=list)
     session_state: Dict[str, Any] = field(default_factory=dict)
+    pre_hooks: List[Any] = field(default_factory=list)
+    post_hooks: List[Any] = field(default_factory=list)
 
     def validate(self) -> None:
         """Validate the agent configuration."""
@@ -77,6 +83,10 @@ class AgentConfig:
             raise TypeError("Tools must be a list")
         if not isinstance(self.instructions, list):
             raise TypeError("Instructions must be a list")
+        if not isinstance(self.pre_hooks, list):
+            raise TypeError("Pre-hooks must be a list")
+        if not isinstance(self.post_hooks, list):
+            raise TypeError("Post-hooks must be a list")
 
 
 class AgentCreationError(Exception):
@@ -164,6 +174,10 @@ class BaseAgentFactory(ABC):
             # Add optional parameters if they exist
             if config.instructions:
                 agent_kwargs["instructions"] = config.instructions
+            if config.pre_hooks:
+                agent_kwargs["pre_hooks"] = config.pre_hooks
+            if config.post_hooks:
+                agent_kwargs["post_hooks"] = config.post_hooks
             if provided_session_state is not None:
                 if config.session_state:
                     _merge_session_state_defaults(provided_session_state, config.session_state)
@@ -750,11 +764,13 @@ class QSARTrainingFactory(BaseAgentFactory):
                     "prediction_history": [],
                     "catalog_recommendations": {},
                     "training_runs": [],
+                    "latest_training_handoff": None,
                 },
                 "prediction_outputs": {
                     "latest_summary": None,
                 },
             },
+            post_hooks=[finalize_qsar_training_agent_output],
         )
 
 
@@ -843,6 +859,7 @@ class QSARReportFactory(BaseAgentFactory):
                     "latest_summary": None,
                 },
             },
+            pre_hooks=[compact_qsar_report_session_context],
         )
 
 
