@@ -1,6 +1,6 @@
 # Qsaria for Claude Code
 
-Current bundle: `0.3.1`. The only named scientific protocol is
+Current bundle: `0.3.2`. The only named scientific protocol is
 `standard_qsar`; advanced validation is expressed with an explicit strategy.
 
 This personal plugin makes Claude Code the sole coordinator of deterministic
@@ -78,11 +78,12 @@ uv run --no-sync python plugins/qsaria-claude-code/scripts/sync_qsaria_claude.py
 uv run --no-sync python plugins/qsaria-claude-code/scripts/smoke_claude_plugin.py
 ```
 
-The shared-runtime check verifies the additive multi-client bootstrap and the
-exact 46-tool deterministic surface without creating an experiment. The smoke
-script runs the official Claude validator when a `claude` CLI is in `PATH`;
-otherwise it reports a non-failing skip. Installation and the end-to-end
-scientific pilot remain explicit operations.
+The shared-runtime check verifies the additive multi-client bootstrap, the
+unchanged 46-tool synchronous contract used by Claude Code, and the seven
+durable-operation tools reserved for short-timeout clients. It creates no
+experiment. The smoke script runs the official Claude validator when a
+`claude` CLI is in `PATH`; otherwise it reports a non-failing skip.
+Installation and the end-to-end scientific pilot remain explicit operations.
 
 After a successful standard LightGBM PXR pilot, maintainers can record its
 non-sensitive experiment identifier together with refreshed signatures:

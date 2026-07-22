@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Literal, Mapping
 
 from .experiments import ExperimentManager, get_experiment_manager
+from .operations import OperationManager
 
 
 class ExperimentFacade:
@@ -17,6 +18,7 @@ class ExperimentFacade:
 
     def __init__(self, manager: ExperimentManager | None = None) -> None:
         self.manager = manager or get_experiment_manager()
+        self.operations = OperationManager(self.manager)
 
     def bootstrap(self) -> dict[str, Any]:
         """Return Qsaria capabilities without listing or resuming experiments."""
@@ -118,6 +120,93 @@ class ExperimentFacade:
             report_content=report_content,
             report_format=report_format,
         )
+
+    def curation_start_operation(
+        self,
+        experiment_id: str,
+        operation: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start one detached Curation operation."""
+
+        return self.operations.start(
+            role="curation",
+            experiment_id=experiment_id,
+            operation=operation,
+            arguments=arguments,
+        )
+
+    def training_start_operation(
+        self,
+        experiment_id: str,
+        operation: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start one detached Training operation."""
+
+        return self.operations.start(
+            role="training",
+            experiment_id=experiment_id,
+            operation=operation,
+            arguments=arguments,
+        )
+
+    def registry_start_operation(
+        self,
+        experiment_id: str,
+        operation: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start one detached Registry or Ensemble operation."""
+
+        return self.operations.start(
+            role="registry",
+            experiment_id=experiment_id,
+            operation=operation,
+            arguments=arguments,
+        )
+
+    def inference_start_operation(
+        self,
+        experiment_id: str,
+        operation: str,
+        arguments: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start one detached Inference operation."""
+
+        return self.operations.start(
+            role="inference",
+            experiment_id=experiment_id,
+            operation=operation,
+            arguments=arguments,
+        )
+
+    def list_operations(
+        self,
+        experiment_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List detached operations for one experiment."""
+
+        return self.operations.list(experiment_id, limit=limit)
+
+    def get_operation_state(
+        self,
+        experiment_id: str,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Read the current state of one detached operation."""
+
+        return self.operations.get_state(experiment_id, operation_id)
+
+    def get_operation_result(
+        self,
+        experiment_id: str,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Read one detached operation result when it is ready."""
+
+        return self.operations.get_result(experiment_id, operation_id)
 
 
 def experiment_facade(manager: ExperimentManager | None = None) -> ExperimentFacade:

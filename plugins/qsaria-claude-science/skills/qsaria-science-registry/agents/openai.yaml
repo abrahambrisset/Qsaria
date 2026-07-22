@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Registry"
+  short_description: "Govern persisted Qsaria model assets"
+  default_prompt: "Inspect or govern Qsaria model persistence and ensembles."

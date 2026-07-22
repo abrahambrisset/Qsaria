@@ -56,7 +56,7 @@ CONTRACT_CONSTANTS = {
         "TRAINING_CONTRACT_VERSION",
     ),
 }
-SUPPORTED_CLIENTS = ["codex_v1", "claude_code_v1"]
+SUPPORTED_CLIENTS = ["codex_v1", "claude_code_v1", "claude_science_v1"]
 COORDINATOR_CONTRACT = "external_mcp_coordinator_v1"
 
 

@@ -495,98 +495,17 @@ def build_qsaria_tool(
         raise TypeError("build_qsaria_tool requires a QsariaToolSpec")
 
     bound_method = getattr(instance, spec.method)
-    underlying, _resolved, public_signature = _public_signature(bound_method, spec)
-
-    def _call_bound(call_kwargs: dict[str, Any]) -> Any:
-        if inspect.iscoroutinefunction(bound_method):
-            return asyncio.run(bound_method(**call_kwargs))
-        return bound_method(**call_kwargs)
-
-    def _invoke_sync(kwargs: dict[str, Any]) -> Any:
-        call_kwargs: Dict[str, Any] = dict(kwargs)
-        if not spec.requires_experiment:
-            if (
-                spec.output_paths
-                or spec.nested_output_paths
-                or spec.nested_blocked_inputs
-                or spec.registered_artifact_inputs
-                or spec.json_payload_inputs
-                or spec.session_forces
-                or spec.catalog_write
-            ):
-                raise RuntimeError(
-                    "Experiment-free Qsaria tools must be read-only and cannot allocate outputs"
-                )
-            call_kwargs = _normalize_input_paths(call_kwargs, manager)
-            ephemeral = MCPAgentContext(
-                name=spec.agent_name,
-                model=None,
-                llm_policy="disabled",
-            )
-            if "agent" in underlying.parameters:
-                call_kwargs["agent"] = ephemeral
-            if "session_state" in underlying.parameters:
-                call_kwargs["session_state"] = ephemeral.session_state
-            call_kwargs.update(spec.forces)
-            with catalog_scope(access=spec.catalog_access, write=False):
-                return _coerce_return_value(_call_bound(call_kwargs))
-
-        try:
-            experiment_id = str(call_kwargs.pop("experiment_id"))
-        except KeyError as exc:
-            raise MCPToolError(f"{spec.mcp_name} requires experiment_id") from exc
-
-        # Keep the synchronous manager/catalog context managers and toolkit
-        # execution on one worker thread.  Besides keeping the MCP event loop
-        # responsive, this is essential for RLock ownership: holding a
-        # threading.RLock on the event-loop thread across ``await`` would let a
-        # second task on that same thread re-enter the supposedly exclusive
-        # experiment/catalog section.
-        with manager.run(
-            experiment_id,
-            agent_name=spec.agent_name,
-            tool_name=spec.mcp_name,
-            catalog_write=spec.catalog_write,
-        ) as run:
-            try:
-                call_kwargs = _without_nested_output_paths(call_kwargs, spec)
-                call_kwargs = _without_session_forces(call_kwargs, spec)
-                call_kwargs = _without_forced_parameters(call_kwargs, spec)
-                call_kwargs = _normalize_input_paths(
-                    call_kwargs,
-                    manager,
-                    experiment_id=run.experiment_id,
-                    runtime_state=run.runtime_state,
-                )
-                _validate_registered_artifact_inputs(call_kwargs, spec, manager, run)
-                _validate_json_payload_inputs(call_kwargs, spec, manager, run)
-                if "agent" in underlying.parameters:
-                    call_kwargs["agent"] = run.context
-                if "session_state" in underlying.parameters:
-                    call_kwargs["session_state"] = run.context.session_state
-                call_kwargs.update(_session_forced_values(spec, run))
-                call_kwargs.update(spec.forces)
-                call_kwargs.update(_forced_output_paths(spec, run))
-                _inject_nested_output_paths(call_kwargs, spec, run)
-                run.capture_inputs(call_kwargs)
-                with catalog_scope(access=spec.catalog_access, write=spec.catalog_write):
-                    result = _call_bound(call_kwargs)
-            except Exception as exc:
-                run.capture_error(exc, status=_classify_error(spec, exc))
-                raise
-            coerced = _coerce_return_value(result)
-            outcome = _classify_result(coerced)
-            run.capture_result(coerced, status=outcome)
-            if outcome != "success":
-                run.capture_error(
-                    _result_failure_message(coerced, outcome),
-                    status=outcome,
-                )
-            return coerced
+    _underlying, _resolved, public_signature = _public_signature(bound_method, spec)
 
     async def _invoke(**kwargs: Any) -> Any:
         try:
-            return await asyncio.to_thread(_invoke_sync, dict(kwargs))
+            return await asyncio.to_thread(
+                invoke_qsaria_spec,
+                spec,
+                instance,
+                manager,
+                dict(kwargs),
+            )
         except MCPToolError:
             raise
         except Exception as exc:  # noqa: BLE001 - expose a stable protocol error
@@ -607,4 +526,134 @@ def build_qsaria_tool(
     return _invoke
 
 
-__all__ = ["QsariaToolSpec", "build_qsaria_tool", "is_qsaria_spec"]
+def invoke_qsaria_spec(
+    spec: QsariaToolSpec,
+    instance: Any,
+    manager: "ExperimentManager",
+    kwargs: Mapping[str, Any],
+) -> Any:
+    """Execute one Qsaria spec synchronously through the canonical adapter path.
+
+    Both ordinary MCP calls and detached Claude Science workers use this
+    function.  Keeping the complete manager/catalog context on one thread is
+    essential because the underlying scientific toolkits use reentrant thread
+    locks for experiment and catalog isolation.
+    """
+
+    if not isinstance(spec, QsariaToolSpec):
+        raise TypeError("invoke_qsaria_spec requires a QsariaToolSpec")
+
+    bound_method = getattr(instance, spec.method)
+    underlying = inspect.signature(bound_method)
+
+    def _call_bound(call_kwargs: dict[str, Any]) -> Any:
+        if inspect.iscoroutinefunction(bound_method):
+            return asyncio.run(bound_method(**call_kwargs))
+        return bound_method(**call_kwargs)
+
+    call_kwargs: Dict[str, Any] = dict(kwargs)
+    if not spec.requires_experiment:
+        if (
+            spec.output_paths
+            or spec.nested_output_paths
+            or spec.nested_blocked_inputs
+            or spec.registered_artifact_inputs
+            or spec.json_payload_inputs
+            or spec.session_forces
+            or spec.catalog_write
+        ):
+            raise RuntimeError(
+                "Experiment-free Qsaria tools must be read-only and cannot allocate outputs"
+            )
+        call_kwargs = _normalize_input_paths(call_kwargs, manager)
+        ephemeral = MCPAgentContext(
+            name=spec.agent_name,
+            model=None,
+            llm_policy="disabled",
+        )
+        if "agent" in underlying.parameters:
+            call_kwargs["agent"] = ephemeral
+        if "session_state" in underlying.parameters:
+            call_kwargs["session_state"] = ephemeral.session_state
+        call_kwargs.update(spec.forces)
+        with catalog_scope(access=spec.catalog_access, write=False):
+            return _coerce_return_value(_call_bound(call_kwargs))
+
+    try:
+        experiment_id = str(call_kwargs.pop("experiment_id"))
+    except KeyError as exc:
+        raise MCPToolError(f"{spec.mcp_name} requires experiment_id") from exc
+
+    with manager.run(
+        experiment_id,
+        agent_name=spec.agent_name,
+        tool_name=spec.mcp_name,
+        catalog_write=spec.catalog_write,
+    ) as run:
+        try:
+            call_kwargs = _without_nested_output_paths(call_kwargs, spec)
+            call_kwargs = _without_session_forces(call_kwargs, spec)
+            call_kwargs = _without_forced_parameters(call_kwargs, spec)
+            call_kwargs = _normalize_input_paths(
+                call_kwargs,
+                manager,
+                experiment_id=run.experiment_id,
+                runtime_state=run.runtime_state,
+            )
+            _validate_registered_artifact_inputs(call_kwargs, spec, manager, run)
+            _validate_json_payload_inputs(call_kwargs, spec, manager, run)
+            if "agent" in underlying.parameters:
+                call_kwargs["agent"] = run.context
+            if "session_state" in underlying.parameters:
+                call_kwargs["session_state"] = run.context.session_state
+            call_kwargs.update(_session_forced_values(spec, run))
+            call_kwargs.update(spec.forces)
+            call_kwargs.update(_forced_output_paths(spec, run))
+            _inject_nested_output_paths(call_kwargs, spec, run)
+            run.capture_inputs(call_kwargs)
+            with catalog_scope(access=spec.catalog_access, write=spec.catalog_write):
+                result = _call_bound(call_kwargs)
+        except Exception as exc:
+            run.capture_error(exc, status=_classify_error(spec, exc))
+            raise
+        coerced = _coerce_return_value(result)
+        outcome = _classify_result(coerced)
+        run.capture_result(coerced, status=outcome)
+        if outcome != "success":
+            run.capture_error(
+                _result_failure_message(coerced, outcome),
+                status=outcome,
+            )
+        return coerced
+
+
+def classify_qsaria_error(spec: QsariaToolSpec, error: BaseException) -> str:
+    """Expose the canonical error classifier to detached operation workers."""
+
+    return _classify_error(spec, error)
+
+
+def classify_qsaria_result(result: Any) -> str:
+    """Expose the canonical scientific result classifier to operation workers."""
+
+    outcome = _classify_result(result)
+    return "completed" if outcome == "success" else outcome
+
+
+def qsaria_public_signature(spec: QsariaToolSpec, instance: Any) -> inspect.Signature:
+    """Return the strict public call signature shared by MCP and async starts."""
+
+    bound_method = getattr(instance, spec.method)
+    _underlying, _resolved, public = _public_signature(bound_method, spec)
+    return public
+
+
+__all__ = [
+    "QsariaToolSpec",
+    "build_qsaria_tool",
+    "classify_qsaria_error",
+    "classify_qsaria_result",
+    "invoke_qsaria_spec",
+    "is_qsaria_spec",
+    "qsaria_public_signature",
+]

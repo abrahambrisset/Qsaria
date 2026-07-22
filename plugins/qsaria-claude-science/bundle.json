@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "name": "qsaria-claude-science",
+  "display_name": "Qsaria for Claude Science",
+  "version": "0.1.0",
+  "client_contract": "claude_science_v1",
+  "connector_name": "qsaria",
+  "minimum_claude_science_version": "0.1.21",
+  "repository": "https://github.com/abrahambrisset/Qsaria",
+  "public_plugin": false
+}

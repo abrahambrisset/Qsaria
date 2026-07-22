@@ -110,7 +110,7 @@ def test_qsaria_profile_exposes_only_its_deterministic_surface(qsaria_server):
     names = {tool.name for tool in qsaria_server._tool_manager.list_tools()}
     expected = {spec.mcp_name for spec in all_specs(profile="qsaria")}
 
-    assert len(expected) == 46
+    assert len(expected) == 53
     assert names == expected
     assert "qsaria_bootstrap" in names
     assert "qsaria_report_save" in names
@@ -118,6 +118,15 @@ def test_qsaria_profile_exposes_only_its_deterministic_surface(qsaria_server):
     assert "fetch" not in names
     assert "agno_team_run" not in names
     assert "mcp_bootstrap" not in names
+    assert {
+        "qsaria_curation_start_operation",
+        "qsaria_training_start_operation",
+        "qsaria_registry_start_operation",
+        "qsaria_inference_start_operation",
+        "qsaria_list_operations",
+        "qsaria_get_operation_state",
+        "qsaria_get_operation_result",
+    } <= names
     assert not any(spec.run_in_worker_process for spec in all_specs(profile="qsaria"))
 
 
@@ -161,6 +170,7 @@ def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
     assert result["compatibility"]["supported_clients"] == [
         "codex_v1",
         "claude_code_v1",
+        "claude_science_v1",
     ]
     assert result["training_contract_version"] == "2.0"
     assert result["contracts"]["training"] == "2.0"

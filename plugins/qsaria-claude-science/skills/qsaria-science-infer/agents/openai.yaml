@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Infer"
+  short_description: "Run governed Qsaria model inference"
+  default_prompt: "Run Qsaria predictions or external model evaluation."

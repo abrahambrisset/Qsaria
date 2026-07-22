@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Curate"
+  short_description: "Curate molecular data with Qsaria"
+  default_prompt: "Curate the supplied molecular dataset in one Qsaria experiment."

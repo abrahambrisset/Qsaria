@@ -19,7 +19,10 @@
         "--no-prompts",
         "--no-resources"
       ],
-      "timeout": 3600000
+      "timeout": 3600000,
+      "env": {
+        "QSARIA_MODEL_CATALOG_PATH": "data/model_assets/catalog/qsaria_model_catalog.json"
+      }
     }
   }
 }

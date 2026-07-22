@@ -100,6 +100,55 @@ SPECS: list[QsariaLifecycleSpec] = [
         read_only=False,
         group="qsaria_report",
     ),
+    _spec(
+        name="qsaria_curation_start_operation",
+        method="curation_start_operation",
+        summary="Start one durable detached Curation operation for a short-timeout client.",
+        read_only=False,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_training_start_operation",
+        method="training_start_operation",
+        summary="Start one durable detached Training operation for a short-timeout client.",
+        read_only=False,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_registry_start_operation",
+        method="registry_start_operation",
+        summary="Start one durable detached Registry or Ensemble operation.",
+        read_only=False,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_inference_start_operation",
+        method="inference_start_operation",
+        summary="Start one durable detached Inference operation for a short-timeout client.",
+        read_only=False,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_list_operations",
+        method="list_operations",
+        summary="List durable operations belonging to one Qsaria experiment.",
+        read_only=True,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_get_operation_state",
+        method="get_operation_state",
+        summary="Read the non-blocking state of one durable Qsaria operation.",
+        read_only=True,
+        group="qsaria_operations",
+    ),
+    _spec(
+        name="qsaria_get_operation_result",
+        method="get_operation_result",
+        summary="Read the final payload of one durable Qsaria operation when ready.",
+        read_only=True,
+        group="qsaria_operations",
+    ),
 ]
 
 

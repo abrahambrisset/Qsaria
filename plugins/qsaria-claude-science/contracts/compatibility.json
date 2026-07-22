@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "bundle_version": "0.1.0",
+  "client_contract": "claude_science_v1",
+  "coordinator_contract": "external_mcp_coordinator_v1",
+  "supported_clients": [
+    "codex_v1",
+    "claude_code_v1",
+    "claude_science_v1"
+  ],
+  "minimum_claude_science_version": "0.1.21",
+  "source": {
+    "repository": "https://github.com/abrahambrisset/Qsaria",
+    "commit": "2b0df5a853ea20119e57a3642be3784924904f4a",
+    "tree": "b2dbe3ac26c04b558e144cf6de40075a28764212",
+    "describe": "v0.9.0-qsaria-applicability-domain-20-g2b0df5a",
+    "signed_tree": "sha256:26ef63996ac93eb691216b5fb0a115eaf6f8031f6708f68803d252806bd0894b",
+    "dirty": true
+  },
+  "contracts": {
+    "experiment": "1.0",
+    "handoff": "1.0",
+    "report_facts": "2.0",
+    "training": "2.0"
+  },
+  "signatures": {
+    "canonical_handoff": "sha256:fcb1db75c95bf630607e6236125989545003b0ac7628f18dd74780be31ed74b3",
+    "canonical_agent_tools": "sha256:5fbd651e3dd4363191c9eebca8fb6f8bb2b2006ea15d7144b9cad72db8a1d3d8",
+    "science_agent_tools": "sha256:c5c77fa18dbd5aff8d61545bb43f183f007d1cae24f902ae434d5862887869d6",
+    "runtime": "sha256:5ef676e50c74dfdce57cccbadb07fc195758c37b05138bab718ce9b9fb236db7",
+    "bundle": "sha256:0b853608bdbcde3007a4694ac2aaff4aba78a04dcf83e02ea429cbba2ce86d63"
+  },
+  "operation_contract": {
+    "schema_version": "1.0",
+    "synchronous_tools": 46,
+    "durable_operation_tools": 7,
+    "poll_interval_seconds": 20,
+    "cancellation": false
+  }
+}

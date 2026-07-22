@@ -46,7 +46,9 @@ def test_mcp_launcher_is_isolated_and_bounded() -> None:
     assert args[args.index("--llm-policy") + 1] == "disabled"
     assert {"--no-chatgpt-compat", "--no-prompts", "--no-resources"} <= set(args)
     assert server["tool_timeout_sec"] == 3600
-    assert "env" not in server
+    assert server["env"] == {
+        "QSARIA_MODEL_CATALOG_PATH": "data/model_assets/catalog/qsaria_model_catalog.json"
+    }
     serialized = json.dumps(server)
     assert "jobs.py" not in serialized
     assert "worker.py" not in serialized

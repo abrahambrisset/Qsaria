@@ -11,6 +11,7 @@ non-mutating; only explicit persistence operations write to disk.
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
@@ -26,6 +27,18 @@ ToolkitName = Literal[
     "benchmark",
     "activity_cliffs",
 ]
+
+QSARIA_MODEL_CATALOG_PATH_ENV = "QSARIA_MODEL_CATALOG_PATH"
+
+
+def configured_catalog_path() -> Path | None:
+    """Return the optional catalog dedicated to the Qsaria MCP profile."""
+
+    configured = os.getenv(QSARIA_MODEL_CATALOG_PATH_ENV, "").strip()
+    if not configured:
+        return None
+    return Path(configured).expanduser().resolve(strict=False)
+
 
 class ToolkitHub:
     """Own the lazily-created toolkit graph used by Qsaria MCP tools."""
@@ -61,7 +74,10 @@ class ToolkitHub:
         if self._catalog is None:
             from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 
-            self._catalog = PredictionModelCatalog.load()
+            catalog_path = configured_catalog_path()
+            self._catalog = PredictionModelCatalog.load(
+                path=str(catalog_path) if catalog_path is not None else None
+            )
         return self._catalog
 
     def _shared_backends(self) -> dict[str, Any]:
@@ -249,6 +265,7 @@ def catalog_scope(*, access: bool, write: bool) -> Iterator[None]:
 
 __all__ = [
     "ToolkitHub",
+    "configured_catalog_path",
     "activity_cliffs_toolkit",
     "benchmark_toolkit",
     "catalog_scope",

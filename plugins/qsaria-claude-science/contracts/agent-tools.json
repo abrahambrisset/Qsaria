@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.0",
+  "server": "qsaria",
+  "coordinator_profile": "QSARIA_COORDINATOR",
+  "coordinator_include_pattern": "^qsaria_.*$",
+  "operation_lifecycle_tools": [
+    "qsaria_list_operations",
+    "qsaria_get_operation_state",
+    "qsaria_get_operation_result"
+  ],
+  "roles": {
+    "QSARIA_CURATION": {
+      "agent": "qsaria_curation",
+      "skill": "qsaria-science-curate",
+      "start_tool": "qsaria_curation_start_operation",
+      "tools": [
+        "qsaria_bootstrap",
+        "qsaria_open_experiment",
+        "qsaria_get_experiment_state",
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_curation_inspect_dataset_schema",
+        "qsaria_curation_identify_qsar_columns",
+        "qsaria_curation_curate_qsar_dataset",
+        "qsaria_curation_summarize_curated_dataset",
+        "qsaria_curation_write_curation_report",
+        "qsaria_curation_start_operation",
+        "qsaria_list_operations",
+        "qsaria_get_operation_state",
+        "qsaria_get_operation_result",
+        "qsaria_record_handoff"
+      ],
+      "detached_operations": [
+        "qsaria_curation_curate_qsar_dataset",
+        "qsaria_curation_write_curation_report"
+      ]
+    },
+    "QSARIA_TRAINING": {
+      "agent": "qsaria_training",
+      "skill": "qsaria-science-train",
+      "start_tool": "qsaria_training_start_operation",
+      "tools": [
+        "qsaria_bootstrap",
+        "qsaria_open_experiment",
+        "qsaria_get_experiment_state",
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_training_describe_qsar_training_environment",
+        "qsaria_training_describe_backend_hyperparameters",
+        "qsaria_training_describe_tuning_engines",
+        "qsaria_training_describe_outlier_analysis",
+        "qsaria_training_train_qsar_model",
+        "qsaria_training_train_chemprop_model",
+        "qsaria_training_train_lightgbm_model",
+        "qsaria_training_train_tabicl_model",
+        "qsaria_benchmark_benchmark_qsar_models",
+        "qsaria_activity_cliffs_list_activity_cliff_indexes",
+        "qsaria_activity_cliffs_prepare_activity_cliff_context",
+        "qsaria_training_start_operation",
+        "qsaria_list_operations",
+        "qsaria_get_operation_state",
+        "qsaria_get_operation_result",
+        "qsaria_record_handoff"
+      ],
+      "detached_operations": [
+        "qsaria_training_train_qsar_model",
+        "qsaria_training_train_chemprop_model",
+        "qsaria_training_train_lightgbm_model",
+        "qsaria_training_train_tabicl_model",
+        "qsaria_benchmark_benchmark_qsar_models",
+        "qsaria_activity_cliffs_prepare_activity_cliff_context"
+      ]
+    },
+    "QSARIA_REGISTRY": {
+      "agent": "qsaria_registry",
+      "skill": "qsaria-science-registry",
+      "start_tool": "qsaria_registry_start_operation",
+      "tools": [
+        "qsaria_bootstrap",
+        "qsaria_open_experiment",
+        "qsaria_get_experiment_state",
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_registry_describe_backends",
+        "qsaria_registry_describe_catalog",
+        "qsaria_registry_list_catalog_models",
+        "qsaria_registry_summarize_catalog_model",
+        "qsaria_registry_recommend_catalog_model",
+        "qsaria_registry_register_catalog_model",
+        "qsaria_registry_register_model",
+        "qsaria_registry_persist_registered_model",
+        "qsaria_registry_register_and_persist_candidates",
+        "qsaria_registry_list_registered_models",
+        "qsaria_registry_summarize_model",
+        "qsaria_ensemble_inspect_ensemble_candidates",
+        "qsaria_ensemble_create_ensemble_from_catalog",
+        "qsaria_ensemble_evaluate_ensemble_on_dataset",
+        "qsaria_ensemble_summarize_ensemble",
+        "qsaria_registry_start_operation",
+        "qsaria_list_operations",
+        "qsaria_get_operation_state",
+        "qsaria_get_operation_result",
+        "qsaria_record_handoff"
+      ],
+      "detached_operations": [
+        "qsaria_registry_register_catalog_model",
+        "qsaria_registry_register_model",
+        "qsaria_registry_persist_registered_model",
+        "qsaria_registry_register_and_persist_candidates",
+        "qsaria_registry_list_registered_models",
+        "qsaria_registry_summarize_model",
+        "qsaria_ensemble_create_ensemble_from_catalog",
+        "qsaria_ensemble_evaluate_ensemble_on_dataset"
+      ]
+    },
+    "QSARIA_INFERENCE": {
+      "agent": "qsaria_inference",
+      "skill": "qsaria-science-infer",
+      "start_tool": "qsaria_inference_start_operation",
+      "tools": [
+        "qsaria_bootstrap",
+        "qsaria_open_experiment",
+        "qsaria_get_experiment_state",
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_inference_predict_from_csv",
+        "qsaria_inference_predict_from_smiles",
+        "qsaria_inference_evaluate_model_on_dataset",
+        "qsaria_inference_export_prediction_summary",
+        "qsaria_inference_start_operation",
+        "qsaria_list_operations",
+        "qsaria_get_operation_state",
+        "qsaria_get_operation_result",
+        "qsaria_record_handoff"
+      ],
+      "detached_operations": [
+        "qsaria_inference_predict_from_csv",
+        "qsaria_inference_predict_from_smiles",
+        "qsaria_inference_evaluate_model_on_dataset",
+        "qsaria_inference_export_prediction_summary"
+      ]
+    },
+    "QSARIA_REPORT": {
+      "agent": "qsaria_report",
+      "skill": "qsaria-science-report",
+      "start_tool": null,
+      "tools": [
+        "qsaria_bootstrap",
+        "qsaria_open_experiment",
+        "qsaria_get_experiment_state",
+        "qsaria_list_artifacts",
+        "qsaria_get_artifact",
+        "qsaria_report_build_context",
+        "qsaria_report_save",
+        "qsaria_record_handoff"
+      ],
+      "detached_operations": []
+    }
+  }
+}

@@ -52,6 +52,15 @@ COORDINATOR_ONLY_TOOLS = {
     "qsaria_complete_experiment",
 }
 REPORT_TOOLS = {"qsaria_report_build_context", "qsaria_report_save"}
+OPERATION_TOOLS = {
+    "qsaria_curation_start_operation",
+    "qsaria_training_start_operation",
+    "qsaria_registry_start_operation",
+    "qsaria_inference_start_operation",
+    "qsaria_list_operations",
+    "qsaria_get_operation_state",
+    "qsaria_get_operation_result",
+}
 STATUS_VALUES = {
     "completed",
     "partial",
@@ -175,6 +184,11 @@ def validate_manifest(validation: Validation) -> None:
         "Qsaria MCP must disable generic compatibility, prompts, and resources",
     )
     validation.require(server.get("tool_timeout_sec") == 3600, "MCP timeout must be 3600 seconds")
+    validation.require(
+        (server.get("env") or {}).get("QSARIA_MODEL_CATALOG_PATH")
+        == "data/model_assets/catalog/qsaria_model_catalog.json",
+        "Qsaria MCP must use the shared data catalog",
+    )
     forbidden = {"worker.py", "jobs.py", "agno", "team", "SESSION_ID", "USE_S3"}
     serialized = json.dumps(server)
     for token in forbidden:
@@ -312,14 +326,19 @@ def validate_agents(validation: Validation, repo_root: Path) -> None:
         scientific_names = set()
         lifecycle_names = set()
     validation.require(len(scientific_names) == 35, "expected 35 Qsaria scientific SPECS")
-    expected_lifecycle = LIFECYCLE_AGENT_TOOLS | COORDINATOR_ONLY_TOOLS | REPORT_TOOLS
+    synchronous_lifecycle = LIFECYCLE_AGENT_TOOLS | COORDINATOR_ONLY_TOOLS | REPORT_TOOLS
+    expected_lifecycle = synchronous_lifecycle | OPERATION_TOOLS
     validation.require(
         lifecycle_names == expected_lifecycle,
-        "Qsaria lifecycle/report SPECS differ from the 11-tool contract",
+        "Qsaria lifecycle/report/operation SPECS differ from the additive contract",
     )
     validation.require(
-        len(scientific_names | lifecycle_names) == 46,
-        "expected an isolated 46-tool Qsaria profile",
+        len(scientific_names | synchronous_lifecycle) == 46,
+        "expected the unchanged 46-tool synchronous Qsaria surface",
+    )
+    validation.require(
+        len(scientific_names | lifecycle_names) == 53,
+        "expected 46 synchronous and 7 durable-operation tools",
     )
     expected_domain_by_role = {
         "qsaria_curation": {

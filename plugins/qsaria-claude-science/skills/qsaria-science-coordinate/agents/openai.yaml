@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Coordinate"
+  short_description: "Coordinate Qsaria Science workflows"
+  default_prompt: "Coordinate a governed Qsaria scientific workflow in Claude Science."

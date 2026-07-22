@@ -12,8 +12,17 @@ from typing import Any
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-EXPECTED_CLIENTS = ["codex_v1", "claude_code_v1"]
+EXPECTED_CLIENTS = ["codex_v1", "claude_code_v1", "claude_science_v1"]
 EXPECTED_COORDINATOR_CONTRACT = "external_mcp_coordinator_v1"
+OPERATION_TOOLS = {
+    "qsaria_curation_start_operation",
+    "qsaria_training_start_operation",
+    "qsaria_registry_start_operation",
+    "qsaria_inference_start_operation",
+    "qsaria_list_operations",
+    "qsaria_get_operation_state",
+    "qsaria_get_operation_result",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -68,9 +77,10 @@ def validate() -> list[str]:
     )
     specs = list(all_specs(profile="qsaria"))
     actual_tools = {spec.mcp_name for spec in specs}
-    if len(actual_tools) != 46 or actual_tools != expected_tools:
-        missing = sorted(expected_tools - actual_tools)
-        extra = sorted(actual_tools - expected_tools)
+    expected_runtime_tools = expected_tools | OPERATION_TOOLS
+    if len(actual_tools) != 53 or actual_tools != expected_runtime_tools:
+        missing = sorted(expected_runtime_tools - actual_tools)
+        extra = sorted(actual_tools - expected_runtime_tools)
         errors.append(
             f"Qsaria tool inventory differs; count={len(actual_tools)}, "
             f"missing={missing}, extra={extra}"
@@ -96,8 +106,8 @@ def main() -> int:
 
     print("Qsaria shared runtime validation: PASS")
     print("- coordinator contract: external_mcp_coordinator_v1")
-    print("- supported clients: codex_v1, claude_code_v1")
-    print("- deterministic tool inventory: 46")
+    print("- supported clients: codex_v1, claude_code_v1, claude_science_v1")
+    print("- deterministic tool inventory: 46 synchronous + 7 durable-operation")
     print("- bootstrap persistence writes: none")
     return 0
 

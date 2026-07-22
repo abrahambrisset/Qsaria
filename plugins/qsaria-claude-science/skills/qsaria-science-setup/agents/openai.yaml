@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Setup"
+  short_description: "Configure Qsaria Science profiles"
+  default_prompt: "Configure or update the Qsaria connector profiles in Claude Science."

@@ -137,6 +137,13 @@ def run_checks(repo_root: Path, *, require_training: bool = True) -> list[dict[s
                 "qsaria_create_experiment",
                 "qsaria_list_experiments",
                 "qsaria_complete_experiment",
+                "qsaria_curation_start_operation",
+                "qsaria_training_start_operation",
+                "qsaria_registry_start_operation",
+                "qsaria_inference_start_operation",
+                "qsaria_list_operations",
+                "qsaria_get_operation_state",
+                "qsaria_get_operation_result",
             }
         )
     except (OSError, json.JSONDecodeError, AttributeError) as exc:

@@ -23,12 +23,14 @@ five peer project agents: `qsaria_curation`, `qsaria_training`,
 `qsaria_registry`, `qsaria_inference`, and `qsaria_report`. Agents never call
 one another and each records one structured handoff before returning.
 
-The MCP profile contains exactly 46 deterministic tools: 35 scientific
-facades and 11 lifecycle/reporting operations. Training and Inference have no
-Registry tools in their agent allowlists; a publishable Training result creates
-a deterministic Registry barrier until its exact persistence plan has been
-materialized. An explicit user request may opt out with the experiment policy
-`session_only`.
+The MCP profile contains the unchanged 46-tool synchronous surface (35
+scientific facades and 11 lifecycle/reporting operations) plus seven additive
+durable-operation tools for short-timeout clients such as Claude Science.
+Codex agents keep their existing 46-tool role contract and do not use the
+start/poll facade. Training and Inference have no Registry tools in their agent
+allowlists; a publishable Training result creates a deterministic Registry
+barrier until its exact persistence plan has been materialized. An explicit
+user request may opt out with the experiment policy `session_only`.
 Simple catalog and experiment reads are performed directly and do not create
 an empty experiment. Report runs at most once, after scientific execution.
 

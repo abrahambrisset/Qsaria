@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Report"
+  short_description: "Write the evidence-first Qsaria report"
+  default_prompt: "Write the final structured Qsaria report from experiment evidence."

@@ -1,0 +1,79 @@
+name: Qsaria Claude Science
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/qsaria-claude-science/**"
+      - "plugins/qsaria-codex/.mcp.json"
+      - "plugins/qsaria-claude-code/.mcp.json"
+      - "src/cs_copilot/mcp/qsaria/**"
+      - "src/cs_copilot/mcp/tool_specs/qsaria*.py"
+      - "src/cs_copilot/mcp/server.py"
+      - "tests/unit/test_qsaria_science_bundle.py"
+      - "tests/unit/mcp/qsaria/test_operations.py"
+      - ".github/workflows/claude-science.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "plugins/qsaria-claude-science/**"
+      - "plugins/qsaria-codex/.mcp.json"
+      - "plugins/qsaria-claude-code/.mcp.json"
+      - "src/cs_copilot/mcp/qsaria/**"
+      - "src/cs_copilot/mcp/tool_specs/qsaria*.py"
+      - "src/cs_copilot/mcp/server.py"
+      - "tests/unit/test_qsaria_science_bundle.py"
+      - "tests/unit/mcp/qsaria/test_operations.py"
+      - ".github/workflows/claude-science.yml"
+
+jobs:
+  static-and-durable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.0.0
+
+      - name: Install project dependencies
+        run: uv sync --extra mcp --extra prediction
+
+      - name: Check Science integration formatting
+        run: >-
+          uv run black --check
+          plugins/qsaria-claude-science/scripts/
+          src/cs_copilot/mcp/qsaria/operations.py
+          src/cs_copilot/mcp/qsaria/operation_worker.py
+          tests/unit/test_qsaria_science_bundle.py
+          tests/unit/mcp/qsaria/test_operations.py
+
+      - name: Lint Science integration
+        run: >-
+          uv run ruff check
+          plugins/qsaria-claude-science/scripts/
+          src/cs_copilot/mcp/qsaria/operations.py
+          src/cs_copilot/mcp/qsaria/operation_worker.py
+          tests/unit/test_qsaria_science_bundle.py
+          tests/unit/mcp/qsaria/test_operations.py
+
+      - name: Validate Science bundle and signatures
+        run: |
+          uv run python plugins/qsaria-claude-science/scripts/validate_science_bundle.py
+          uv run python plugins/qsaria-claude-science/scripts/sync_qsaria_science.py --check
+
+      - name: Run Science integration tests
+        run: >-
+          uv run pytest
+          tests/unit/test_qsaria_science_bundle.py
+          tests/unit/mcp/qsaria/test_operations.py
+          tests/unit/mcp/test_server_build.py
+          -v --tb=short
+        env:
+          USE_S3: "false"

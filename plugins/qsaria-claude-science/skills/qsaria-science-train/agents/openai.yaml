@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qsaria Science Train"
+  short_description: "Train and validate Qsaria models"
+  default_prompt: "Train and validate governed Qsaria models from curated data."

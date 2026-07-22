@@ -239,6 +239,9 @@ class ExperimentManager:
                     "get_experiment_state",
                     "list_artifacts",
                     "get_artifact",
+                    "list_operations",
+                    "get_operation_state",
+                    "get_operation_result",
                 ],
                 "coordination": ["record_handoff", "complete_experiment"],
                 "reporting": ["build_report_context", "save_report"],
@@ -264,7 +267,7 @@ class ExperimentManager:
             "compatibility": {
                 "target": EXTERNAL_COORDINATOR_CONTRACT,
                 "coordinator_contract": EXTERNAL_COORDINATOR_CONTRACT,
-                "supported_clients": ["codex_v1", "claude_code_v1"],
+                "supported_clients": ["codex_v1", "claude_code_v1", "claude_science_v1"],
                 "scientific_toolkits": "existing_qsaria_toolkits",
                 "typed_training_requests": True,
                 "free_training_arguments": False,
@@ -275,6 +278,19 @@ class ExperimentManager:
                 "model_persistence_default": _DEFAULT_PERSISTENCE_POLICY,
                 "model_persistence_opt_out": "session_only",
                 "catalog_model_root": "data/model_assets/internal",
+                "catalog_path": str(
+                    os.getenv(
+                        "QSARIA_MODEL_CATALOG_PATH",
+                        "data/model_assets/catalog/qsaria_model_catalog.json",
+                    )
+                ),
+                "detached_operations": {
+                    "schema_version": "1.0",
+                    "client_tool_timeout_seconds": 60,
+                    "heartbeat_interval_seconds": 12,
+                    "poll_interval_seconds": {"minimum": 15, "recommended": 20},
+                    "cancellation": False,
+                },
                 "storage_concurrency": (
                     {
                         "mode": "s3_single_writer",
@@ -1238,7 +1254,9 @@ class ExperimentManager:
 
         from cs_copilot.tools.prediction.catalog import model_catalog_lock
 
-        with model_catalog_lock():
+        from .toolkit_hub import configured_catalog_path
+
+        with model_catalog_lock(configured_catalog_path()):
             yield
 
     # ------------------------------------------------------------------
@@ -1265,6 +1283,12 @@ class ExperimentManager:
         from cs_copilot.storage import is_s3_enabled
 
         return is_s3_enabled()
+
+    @property
+    def local_storage_root(self) -> Path:
+        """Return the local root inherited by a detached operation worker."""
+
+        return self._local_root().expanduser().resolve(strict=False)
 
     @staticmethod
     def _s3_single_writer_acknowledged() -> bool:

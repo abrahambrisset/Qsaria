@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/abrahambrisset/Qsaria/plugins/qsaria-claude-science/contracts/handoff.schema.json",
+  "title": "Qsaria agent handoff",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "agent",
+    "status",
+    "summary",
+    "facts",
+    "artifact_ids",
+    "model_ids",
+    "warnings",
+    "blockers",
+    "recommended_next_action"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^exp_[A-Za-z0-9][A-Za-z0-9._-]{2,95}$"
+    },
+    "agent": {
+      "type": "string",
+      "enum": [
+        "qsaria_curation",
+        "qsaria_training",
+        "qsaria_registry",
+        "qsaria_inference",
+        "qsaria_report"
+      ]
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["project_agent", "coordinator_manual_tools"],
+      "default": "project_agent"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "partial",
+        "retryable_error",
+        "terminal_failure",
+        "needs_user_input"
+      ]
+    },
+    "summary": {"type": "string", "minLength": 1},
+    "facts": {"type": "object"},
+    "artifact_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "model_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "recommended_next_action": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"agent": {"const": "qsaria_report"}},
+        "required": ["agent"]
+      },
+      "then": {
+        "properties": {
+          "status": {"enum": ["completed", "partial", "terminal_failure"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "agent": {"const": "qsaria_report"},
+          "status": {"enum": ["completed", "partial"]}
+        },
+        "required": ["agent", "status"]
+      },
+      "then": {
+        "properties": {"artifact_ids": {"minItems": 1, "maxItems": 1}}
+      }
+    }
+  ]
+}

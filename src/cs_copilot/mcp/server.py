@@ -39,7 +39,8 @@ SERVER_INSTRUCTIONS = (
 
 QSARIA_SERVER_INSTRUCTIONS = (
     "Qsaria MCP is a deterministic scientific execution surface. The external "
-    "MCP client (Codex or Claude Code) is the sole coordinator; this server "
+    "MCP client (Codex or Claude Code, or Claude Science) is the sole "
+    "coordinator; this server "
     "never runs an LLM or an Agno team. "
     "Start with qsaria_bootstrap. Create a new experiment for scientific "
     "work that writes artifacts, or explicitly open one by experiment_id. "

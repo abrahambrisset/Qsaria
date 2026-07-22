@@ -54,7 +54,11 @@ def test_phase_b_compatibility_signatures_are_current() -> None:
     assert compatibility["phase"] == "phase_b_integrated_bundle"
     assert compatibility["client_contract"] == "claude_code_v1"
     assert compatibility["coordinator_contract"] == "external_mcp_coordinator_v1"
-    assert compatibility["supported_clients"] == ["codex_v1", "claude_code_v1"]
+    assert compatibility["supported_clients"] == [
+        "codex_v1",
+        "claude_code_v1",
+        "claude_science_v1",
+    ]
     assert compatibility["runtime_bootstrap_validation"] == ("automated_validate_shared_runtime")
     assert compatibility["contracts"] == {
         "experiment": "1.0",
@@ -79,8 +83,8 @@ def test_phase_b_compatibility_signatures_are_current() -> None:
 def test_shared_runtime_validator_passes_without_scientific_writes() -> None:
     result = _run_script("validate_shared_runtime.py")
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-    assert "supported clients: codex_v1, claude_code_v1" in result.stdout
-    assert "deterministic tool inventory: 46" in result.stdout
+    assert "supported clients: codex_v1, claude_code_v1, claude_science_v1" in result.stdout
+    assert "deterministic tool inventory: 46 synchronous + 7 durable-operation" in result.stdout
     assert "bootstrap persistence writes: none" in result.stdout
 
 
@@ -124,7 +128,7 @@ def test_plugin_activates_the_main_coordinator() -> None:
     settings = json.loads((PLUGIN_ROOT / "settings.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "qsaria-claude-code"
     assert manifest["displayName"] == "Qsaria for Claude Code"
-    assert manifest["version"] == "0.3.1"
+    assert manifest["version"] == "0.3.2"
     assert "agents" not in manifest
     assert settings == {"agent": "qsaria-coordinator"}
 
@@ -144,6 +148,9 @@ def test_mcp_launcher_is_claude_native_and_deterministic() -> None:
     assert server["args"][server["args"].index("--profile") + 1] == "qsaria"
     assert server["args"][server["args"].index("--llm-policy") + 1] == "disabled"
     assert server["timeout"] == 3_600_000
+    assert server["env"] == {
+        "QSARIA_MODEL_CATALOG_PATH": "data/model_assets/catalog/qsaria_model_catalog.json"
+    }
     assert "tool_timeout_sec" not in server
     assert "startup_timeout_sec" not in server
     assert "required" not in server

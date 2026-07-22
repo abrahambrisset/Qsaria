@@ -90,7 +90,7 @@ def _validate_manifest(errors: list[str]) -> None:
     expected = {
         "name": "qsaria-claude-code",
         "displayName": "Qsaria for Claude Code",
-        "version": "0.3.1",
+        "version": "0.3.2",
         "skills": "./skills/",
         "mcpServers": "./.mcp.json",
     }
@@ -169,6 +169,10 @@ def _validate_mcp(errors: list[str]) -> None:
         errors.append("Qsaria MCP launcher is missing isolation arguments")
     if server.get("timeout") != 3_600_000:
         errors.append("Claude MCP timeout must be 3,600,000 milliseconds")
+    if (server.get("env") or {}).get("QSARIA_MODEL_CATALOG_PATH") != (
+        "data/model_assets/catalog/qsaria_model_catalog.json"
+    ):
+        errors.append("Claude MCP must use the shared data catalog")
     if any(key in server for key in ("tool_timeout_sec", "startup_timeout_sec", "required")):
         errors.append("Codex-only MCP fields must not appear in the Claude launcher")
     serialized = json.dumps(server)
