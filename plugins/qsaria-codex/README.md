@@ -1,6 +1,6 @@
 # Qsaria for Codex
 
-Current bundle: `0.3.0`. The only named scientific protocol is
+Current bundle: `0.3.1`. The only named scientific protocol is
 `standard_qsar`; advanced holdout, repeated holdout, cross-validation,
 scaffold, cluster, and full-train workflows use explicit validation strategies.
 

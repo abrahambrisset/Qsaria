@@ -49,6 +49,7 @@ from .qsar_training_policy import describe_compute_environment, resolve_training
 from .session_state import (
     bundle_artifacts,
     discover_curation_artifacts_near_dataset,
+    get_prediction_state,
     latest_curation_artifacts,
 )
 from .tabicl_toolkit import TabICLToolkit
@@ -683,6 +684,7 @@ class QSARTrainingToolkit(Toolkit):
         self.register(self.describe_backend_hyperparameters)
         self.register(self.describe_tuning_engines)
         self.register(self.describe_outlier_analysis)
+        self.register(self._agno_train_standard_qsar_model, name="train_standard_qsar_model")
         self.register(self._agno_train_qsar_model, name="train_qsar_model")
         self.register(self._agno_train_chemprop_model, name="train_chemprop_model")
         self.register(self._agno_train_lightgbm_model, name="train_lightgbm_model")
@@ -701,6 +703,82 @@ class QSARTrainingToolkit(Toolkit):
         bundle_dir = S3.path("training_bundles")
         return output_dir, bundle_dir
 
+    @staticmethod
+    def _agno_request_fingerprint(
+        train_csv: str,
+        request: QsariaTrainingRequest,
+    ) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "train_csv": str(train_csv),
+                    "request": request.model_dump(mode="json"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def _run_guarded_agno_training(
+        self,
+        *,
+        train_csv: str,
+        request: QsariaTrainingRequest,
+        output_dir: str,
+        bundle_dir: str,
+        agent: Optional[Agent],
+    ) -> Dict[str, Any]:
+        """Prevent an Agno turn from looping or changing science after failure."""
+
+        if agent is None:
+            return self.train_qsar_model(
+                train_csv=train_csv,
+                request=request,
+                output_dir=output_dir,
+                bundle_dir=bundle_dir,
+                agent=agent,
+            )
+
+        prediction_state = get_prediction_state(agent)
+        current_run_id = str(agent.session_state.get("current_run_id") or "unknown")
+        guard = prediction_state.get("training_retry_guard")
+        if not isinstance(guard, dict) or guard.get("run_id") != current_run_id:
+            guard = {"run_id": current_run_id, "failed_fingerprint": None, "failures": 0}
+            prediction_state["training_retry_guard"] = guard
+
+        fingerprint = self._agno_request_fingerprint(train_csv, request)
+        failed_fingerprint = guard.get("failed_fingerprint")
+        failures = int(guard.get("failures") or 0)
+        if failed_fingerprint and fingerprint != failed_fingerprint:
+            raise RuntimeError(
+                "Qsaria blocked a changed training request after a failure in the current "
+                "assistant turn. Do not switch facade, backend, representation, validation, "
+                "tuning, split, seed, or data silently; report the original error to the user."
+            )
+        if failed_fingerprint and failures >= 2:
+            raise RuntimeError(
+                "Qsaria blocked additional training attempts after the single allowed "
+                "same-intent retry in the current assistant turn. Report the preserved "
+                "training error to the user instead of retrying again."
+            )
+
+        try:
+            result = self.train_qsar_model(
+                train_csv=train_csv,
+                request=request,
+                output_dir=output_dir,
+                bundle_dir=bundle_dir,
+                agent=agent,
+            )
+        except Exception as exc:
+            guard["failed_fingerprint"] = fingerprint
+            guard["failures"] = failures + 1
+            guard["last_error"] = str(exc)
+            raise
+        else:
+            prediction_state.pop("training_retry_guard", None)
+            return result
+
     def _agno_train_qsar_model(
         self,
         train_csv: str,
@@ -708,9 +786,59 @@ class QSARTrainingToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         output_dir, bundle_dir = self._managed_agno_paths(request.backend.name)
-        return self.train_qsar_model(
+        return self._run_guarded_agno_training(
             train_csv=train_csv,
             request=request,
+            output_dir=output_dir,
+            bundle_dir=bundle_dir,
+            agent=agent,
+        )
+
+    def _agno_train_standard_qsar_model(
+        self,
+        train_csv: str,
+        backend_name: str,
+        target_columns: List[str],
+        task_type: str,
+        smiles_column: str = "smiles",
+        agent: Optional[Agent] = None,
+    ) -> Dict[str, Any]:
+        """Run the canonical unqualified Qsaria workflow in Agno/Chainlit.
+
+        This deliberately small Agno-only surface prevents a language model
+        from reconstructing the standard preset. Advanced or explicitly
+        customized workflows continue to use the strict typed request tools.
+        """
+
+        request_types = {
+            "chemprop": ChempropTrainingRequest,
+            "lightgbm": LightGBMTrainingRequest,
+            "tabicl": TabICLTrainingRequest,
+        }
+        if backend_name not in request_types:
+            raise ValueError(
+                "backend_name must be one of: chemprop, lightgbm, tabicl."
+            )
+        supported_task_types = {
+            "regression",
+            "classification",
+            "multiclass_classification",
+        }
+        if task_type not in supported_task_types:
+            raise ValueError(
+                "task_type must be one of: regression, classification, "
+                "multiclass_classification."
+            )
+        request_type = request_types[backend_name]
+        request = request_type(
+            smiles_column=smiles_column,
+            target_columns=target_columns,
+            task_type=task_type,
+        )
+        output_dir, bundle_dir = self._managed_agno_paths(backend_name)
+        return self._run_guarded_agno_training(
+            train_csv=train_csv,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -723,9 +851,9 @@ class QSARTrainingToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         output_dir, bundle_dir = self._managed_agno_paths("chemprop")
-        return self.train_chemprop_model(
+        return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=request,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -738,9 +866,9 @@ class QSARTrainingToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         output_dir, bundle_dir = self._managed_agno_paths("lightgbm")
-        return self.train_lightgbm_model(
+        return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=request,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -753,9 +881,9 @@ class QSARTrainingToolkit(Toolkit):
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
         output_dir, bundle_dir = self._managed_agno_paths("tabicl")
-        return self.train_tabicl_model(
+        return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=request,
+            request=QsariaTrainingRequest.model_validate(request.model_dump()),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -1483,7 +1611,11 @@ class QSARTrainingToolkit(Toolkit):
         if isinstance(request.representation, GeneratedRepresentation):
             representation_name = request.representation.name
             normalized_feature_columns = None
-            normalized_categorical_feature_columns = None
+            # Generated molecular representations are numeric. The internal
+            # LightGBM contract intentionally uses a concrete empty list here;
+            # passing None bypassed the public contract defaults and failed
+            # Pydantic validation before backend execution.
+            normalized_categorical_feature_columns = []
         elif isinstance(request.representation, PrecomputedRepresentation):
             representation_name = "precomputed_tabular"
             normalized_feature_columns = list(request.representation.feature_columns)

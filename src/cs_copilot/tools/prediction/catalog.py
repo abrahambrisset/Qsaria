@@ -18,7 +18,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -26,6 +26,7 @@ from .backend import PredictionModelRecord
 
 DEFAULT_MODEL_CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 DEFAULT_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal").resolve()
+PORTABLE_INTERNAL_MODEL_ROOT = Path("data/model_assets/internal")
 DEFAULT_ALLOWED_STATUSES = ("production", "robust_validated", "validated")
 _CATALOG_LOCKS_GUARD = threading.Lock()
 _CATALOG_PROCESS_LOCKS: dict[str, threading.RLock] = {}
@@ -131,7 +132,7 @@ def _read_catalog_payload(path: Path) -> dict[str, Any]:
         raise ValueError("Model catalog root must be a JSON object.")
     if payload.get("schema_version") != 2:
         raise ValueError(
-            "Unsupported model catalog schema_version. Qsaria 0.3.0 requires schema_version=2."
+            "Unsupported model catalog schema_version. Qsaria 0.3.1 requires schema_version=2."
         )
     models = payload.get("models")
     if not isinstance(models, list):
@@ -169,9 +170,76 @@ def _atomic_write_catalog(path: Path, payload: dict[str, Any]) -> None:
 
 def _records_from_payload(payload: dict[str, Any]) -> list[PredictionModelRecord]:
     return [
-        PredictionModelRecord.from_dict(record_payload)
+        _record_with_runtime_paths(PredictionModelRecord.from_dict(record_payload))
         for record_payload in payload.get("models", [])
     ]
+
+
+def _internal_path_tail(path: Path) -> Optional[Path]:
+    """Return the portion below data/model_assets/internal for any runtime root."""
+
+    marker = PORTABLE_INTERNAL_MODEL_ROOT.parts
+    parts = path.parts
+    for index in range(len(parts) - len(marker) + 1):
+        if parts[index : index + len(marker)] == marker:
+            return Path(*parts[index + len(marker) :])
+    return None
+
+
+def resolve_catalog_artifact_path(path: str | os.PathLike[str]) -> Path:
+    """Resolve a catalog artifact against the active host/container model root.
+
+    Catalogs created on macOS and consumed in the application container (or the
+    reverse) may contain an absolute path from the other runtime. The stable
+    portion is the path below ``data/model_assets/internal``.
+    """
+
+    expanded = Path(path).expanduser()
+    if expanded.exists():
+        return expanded.resolve()
+    tail = _internal_path_tail(expanded)
+    if tail is not None:
+        candidate = DEFAULT_INTERNAL_MODEL_ROOT / tail
+        if candidate.exists():
+            return candidate.resolve()
+    return expanded
+
+
+def _portable_catalog_path(path: Optional[str]) -> Optional[str]:
+    """Serialize internal artifacts independently of a host mount point."""
+
+    if path is None:
+        return None
+    expanded = Path(path).expanduser()
+    resolved = resolve_catalog_artifact_path(expanded)
+    try:
+        tail = resolved.resolve(strict=False).relative_to(
+            DEFAULT_INTERNAL_MODEL_ROOT.resolve(strict=False)
+        )
+    except ValueError:
+        tail = _internal_path_tail(expanded)
+    if tail is None:
+        return path
+    return (PORTABLE_INTERNAL_MODEL_ROOT / tail).as_posix()
+
+
+def _record_with_runtime_paths(record: PredictionModelRecord) -> PredictionModelRecord:
+    model_path = str(resolve_catalog_artifact_path(record.model_path))
+    metadata_path = (
+        str(resolve_catalog_artifact_path(record.metadata_path))
+        if record.metadata_path
+        else None
+    )
+    if model_path == record.model_path and metadata_path == record.metadata_path:
+        return record
+    return replace(record, model_path=model_path, metadata_path=metadata_path)
+
+
+def _record_payload_for_catalog(record: PredictionModelRecord) -> dict[str, Any]:
+    payload = record.as_dict()
+    payload["model_path"] = _portable_catalog_path(record.model_path)
+    payload["metadata_path"] = _portable_catalog_path(record.metadata_path)
+    return payload
 
 
 def _normalize_text(value: Optional[str]) -> str:
@@ -301,7 +369,7 @@ class PredictionModelCatalog:
         source_path: Path,
         schema_version: int = 2,
     ):
-        self.records = records
+        self.records = [_record_with_runtime_paths(record) for record in records]
         self.source_path = source_path
         self.schema_version = schema_version
 
@@ -349,7 +417,7 @@ class PredictionModelCatalog:
                 self.schema_version = 2
                 payload = {
                     "schema_version": self.schema_version,
-                    "models": [record.as_dict() for record in self.records],
+                    "models": [_record_payload_for_catalog(record) for record in self.records],
                 }
                 if payload != disk_payload:
                     _atomic_write_catalog(self.source_path, payload)
@@ -358,7 +426,7 @@ class PredictionModelCatalog:
     def save(self) -> None:
         payload = {
             "schema_version": 2,
-            "models": [record.as_dict() for record in self.records],
+            "models": [_record_payload_for_catalog(record) for record in self.records],
         }
         with model_catalog_lock(self.source_path):
             _atomic_write_catalog(self.source_path, payload)
@@ -375,6 +443,7 @@ class PredictionModelCatalog:
     def upsert_model(self, record: PredictionModelRecord) -> PredictionModelRecord:
         """Insert or replace a model without losing concurrent catalog entries."""
 
+        record = _record_with_runtime_paths(record)
         with model_catalog_lock(self.source_path):
             disk_payload = _read_catalog_payload(self.source_path)
             disk_records = _records_from_payload(disk_payload)
@@ -392,7 +461,7 @@ class PredictionModelCatalog:
                 self.source_path,
                 {
                     "schema_version": 2,
-                    "models": [item.as_dict() for item in self.records],
+                    "models": [_record_payload_for_catalog(item) for item in self.records],
                 },
             )
         return record

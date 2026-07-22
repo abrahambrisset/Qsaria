@@ -445,6 +445,16 @@ class QsariaTrainingRequest(TrainingRequestBase):
             )
         if backend_name == "tabicl" and self.tuning.enabled:
             raise ValueError("TabICL does not support hyperparameter tuning.")
+        if (
+            backend_name == "lightgbm"
+            and isinstance(self.validation, StandardQsarValidation)
+            and not self.tuning.enabled
+        ):
+            raise ValueError(
+                "LightGBM standard_qsar includes the canonical 50-trial Optuna/TPE "
+                "tuning stage. Use an explicit holdout validation contract when "
+                "requesting LightGBM without tuning."
+            )
         if self.tuning.search_space is not None:
             if self.tuning.search_space.backend != backend_name:
                 raise ValueError("The tuning search space must match backend.name.")

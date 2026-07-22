@@ -124,7 +124,7 @@ def test_plugin_activates_the_main_coordinator() -> None:
     settings = json.loads((PLUGIN_ROOT / "settings.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "qsaria-claude-code"
     assert manifest["displayName"] == "Qsaria for Claude Code"
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert "agents" not in manifest
     assert settings == {"agent": "qsaria-coordinator"}
 

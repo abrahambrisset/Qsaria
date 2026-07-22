@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "qsaria-claude-code",
   "displayName": "Qsaria for Claude Code",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Use Claude Code to coordinate deterministic Qsaria curation, training, registry, inference, and reporting workflows.",
   "author": {
     "name": "Qsaria contributors",

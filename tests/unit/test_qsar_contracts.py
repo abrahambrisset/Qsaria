@@ -127,6 +127,14 @@ def test_disabled_tuning_cannot_hide_a_configured_search():
         QsariaTrainingRequest.model_validate(payload)
 
 
+def test_lightgbm_standard_qsar_rejects_disabled_tuning():
+    payload = _lightgbm_payload()
+    payload["tuning"] = {"enabled": False}
+
+    with pytest.raises(ValidationError, match="standard_qsar includes the canonical 50-trial"):
+        QsariaTrainingRequest.model_validate(payload)
+
+
 def test_tabicl_scientific_option_enums_are_closed():
     payload = TabICLTrainingRequest(
         target_columns=["activity"], task_type="regression"

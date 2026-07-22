@@ -13,6 +13,7 @@ from cs_copilot.tools.prediction.qsar_contracts import (
     ChempropConfig,
     CrossValidation,
     GeneratedRepresentation,
+    HoldoutValidation,
     LightGBMConfig,
     MolecularGraphRepresentation,
     QsariaTrainingRequest,
@@ -366,6 +367,7 @@ def test_backend_toolkits_are_internal_and_facade_is_the_only_agent_surface():
         "describe_backend_hyperparameters",
         "describe_tuning_engines",
         "describe_outlier_analysis",
+        "train_standard_qsar_model",
         "train_qsar_model",
         "train_chemprop_model",
         "train_lightgbm_model",
@@ -375,6 +377,19 @@ def test_backend_toolkits_are_internal_and_facade_is_the_only_agent_surface():
 
 def test_agno_training_surface_uses_closed_typed_requests_and_hides_runtime_paths():
     toolkit = QSARTrainingToolkit()
+
+    standard_schema = toolkit.functions["train_standard_qsar_model"].parameters
+    assert standard_schema["additionalProperties"] is False
+    assert set(standard_schema["properties"]) == {
+        "train_csv",
+        "backend_name",
+        "target_columns",
+        "task_type",
+        "smiles_column",
+    }
+    assert "request" not in standard_schema["properties"]
+    assert standard_schema["properties"]["backend_name"]["type"] == "string"
+    assert standard_schema["properties"]["task_type"]["type"] == "string"
 
     for name in (
         "train_qsar_model",
@@ -395,6 +410,102 @@ def test_agno_training_surface_uses_closed_typed_requests_and_hides_runtime_path
             "split_payload",
         ):
             assert forbidden not in serialized
+
+
+def test_agno_standard_lightgbm_surface_builds_the_canonical_request(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    captured = {}
+
+    def fake_train_qsar_model(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(toolkit, "train_qsar_model", fake_train_qsar_model)
+    monkeypatch.setattr(
+        toolkit,
+        "_managed_agno_paths",
+        lambda backend_name: (str(tmp_path / backend_name), str(tmp_path / "bundles")),
+    )
+
+    result = toolkit._agno_train_standard_qsar_model(
+        train_csv=str(tmp_path / "curated.csv"),
+        backend_name="lightgbm",
+        target_columns=["pEC50"],
+        task_type="regression",
+    )
+
+    request = captured["request"]
+    assert result == {"status": "ok"}
+    assert request.validation.kind == "standard_qsar"
+    assert request.representation.kind == "generated"
+    assert request.representation.name == "rdkit_all"
+    assert request.tuning.enabled is True
+    assert request.tuning.n_trials == 50
+    assert request.outlier_analysis.enabled is True
+
+
+def test_agno_training_guard_allows_one_same_intent_retry_then_stops(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    agent = SimpleNamespace(session_state={"current_run_id": "run-1"})
+    calls = []
+
+    def failing_train(**kwargs):
+        calls.append(kwargs["request"])
+        raise RuntimeError("backend failed")
+
+    monkeypatch.setattr(toolkit, "train_qsar_model", failing_train)
+    request = _training_request("lightgbm")
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="backend failed"):
+            toolkit._run_guarded_agno_training(
+                train_csv=str(tmp_path / "curated.csv"),
+                request=request,
+                output_dir=str(tmp_path / "out"),
+                bundle_dir=str(tmp_path / "bundles"),
+                agent=agent,
+            )
+
+    with pytest.raises(RuntimeError, match="single allowed same-intent retry"):
+        toolkit._run_guarded_agno_training(
+            train_csv=str(tmp_path / "curated.csv"),
+            request=request,
+            output_dir=str(tmp_path / "out-3"),
+            bundle_dir=str(tmp_path / "bundles"),
+            agent=agent,
+        )
+    assert len(calls) == 2
+
+
+def test_agno_training_guard_rejects_changed_science_after_failure(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    agent = SimpleNamespace(session_state={"current_run_id": "run-1"})
+
+    def failing_train(**kwargs):
+        raise RuntimeError("backend failed")
+
+    monkeypatch.setattr(toolkit, "train_qsar_model", failing_train)
+    with pytest.raises(RuntimeError, match="backend failed"):
+        toolkit._run_guarded_agno_training(
+            train_csv=str(tmp_path / "curated.csv"),
+            request=_training_request("lightgbm"),
+            output_dir=str(tmp_path / "out"),
+            bundle_dir=str(tmp_path / "bundles"),
+            agent=agent,
+        )
+
+    changed_request = _training_request(
+        "lightgbm",
+        validation=CrossValidation(n_folds=5),
+    )
+    with pytest.raises(RuntimeError, match="blocked a changed training request"):
+        toolkit._run_guarded_agno_training(
+            train_csv=str(tmp_path / "curated.csv"),
+            request=changed_request,
+            output_dir=str(tmp_path / "out-2"),
+            bundle_dir=str(tmp_path / "bundles"),
+            agent=agent,
+        )
 
 
 def test_training_csv_resolution_falls_back_to_latest_curation(tmp_path, monkeypatch):
@@ -513,6 +624,7 @@ def _fake_cv_train_result(tmp_path: Path, *, backend_name: str, representation_n
 def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, monkeypatch):
     toolkit = QSARTrainingToolkit()
     called_representations: list[str] = []
+    captured_categorical_columns = None
 
     def fake_prepare(**kwargs):
         called_representations.append(kwargs["representation_name"])
@@ -530,6 +642,8 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
         }
 
     def fake_lightgbm_train(**kwargs):
+        nonlocal captured_categorical_columns
+        captured_categorical_columns = kwargs["categorical_feature_columns"]
         return _fake_train_result(
             tmp_path,
             backend_name="lightgbm",
@@ -547,6 +661,7 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
     )
 
     assert called_representations == ["rdkit_all"]
+    assert captured_categorical_columns == []
     assert result["representation_name"] == "rdkit_all"
     assert "campaign_started" not in result
     assert "candidate_registry_payloads" not in result
@@ -556,6 +671,53 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
     inference_profile = result["recommended_registry_payload"]["inference_profile"]
     assert "feature_columns" not in inference_profile
     assert inference_profile["feature_columns_count"] == 64
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [
+        HoldoutValidation(split_family="random"),
+        HoldoutValidation(split_family="scaffold"),
+        RepeatedHoldoutValidation(split_family="random", n_repeats=2),
+        CrossValidation(n_folds=3),
+    ],
+)
+def test_generated_lightgbm_never_passes_none_categorical_columns(
+    tmp_path, monkeypatch, validation
+):
+    toolkit = QSARTrainingToolkit()
+    captured = {}
+    monkeypatch.setattr(
+        toolkit,
+        "_prepare_tabular_training_dataset",
+        lambda **kwargs: {
+            "train_csv": str(tmp_path / "generated.csv"),
+            "feature_columns": ["feature_a"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        },
+    )
+
+    def fake_train(**kwargs):
+        captured.update(kwargs)
+        return _fake_train_result(
+            tmp_path,
+            backend_name="lightgbm",
+            representation_name="rdkit_all",
+            validation_protocol=kwargs["validation_protocol"],
+        )
+
+    monkeypatch.setattr(toolkit.lightgbm_toolkit, "train_lightgbm_model", fake_train)
+
+    toolkit.train_qsar_model(
+        train_csv=str(tmp_path / "train.csv"),
+        request=_training_request("lightgbm", validation=validation),
+        output_dir=str(tmp_path / "out"),
+    )
+
+    assert captured["categorical_feature_columns"] == []
 
 
 @pytest.mark.parametrize("backend_name", ["chemprop", "lightgbm"])

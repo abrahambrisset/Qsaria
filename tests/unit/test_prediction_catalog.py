@@ -215,6 +215,73 @@ def test_catalog_search_excludes_missing_paths_by_default(tmp_path):
     assert catalog.search(task_type="regression") == []
 
 
+def test_catalog_rebases_legacy_absolute_internal_path_to_active_runtime(monkeypatch, tmp_path):
+    internal_root = tmp_path / "data" / "model_assets" / "internal"
+    local_model = internal_root / "portable_model" / "model" / "best.pkl"
+    local_metadata = internal_root / "portable_model" / "metadata.json"
+    local_model.parent.mkdir(parents=True)
+    local_model.write_text("model")
+    local_metadata.write_text("{}")
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "models": [
+                    {
+                        "model_id": "portable_model",
+                        "backend_name": "lightgbm",
+                        "model_path": (
+                            "/Users/example/Qsaria/data/model_assets/internal/"
+                            "portable_model/model/best.pkl"
+                        ),
+                        "metadata_path": (
+                            "/Users/example/Qsaria/data/model_assets/internal/"
+                            "portable_model/metadata.json"
+                        ),
+                        "status": "validated",
+                        "task": {
+                            "task_type": "regression",
+                            "smiles_columns": ["smiles"],
+                            "target_columns": ["pEC50"],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    record = PredictionModelCatalog.load(str(catalog_path)).get_model("portable_model")
+
+    assert record.model_path == str(local_model.resolve())
+    assert record.metadata_path == str(local_metadata.resolve())
+
+
+def test_catalog_persists_internal_paths_relative_to_portable_root(monkeypatch, tmp_path):
+    internal_root = tmp_path / "data" / "model_assets" / "internal"
+    model_path = internal_root / "portable_model" / "model" / "best.pkl"
+    metadata_path = internal_root / "portable_model" / "metadata.json"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_text("model")
+    metadata_path.write_text("{}")
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    catalog_path = tmp_path / "catalog.json"
+    catalog = PredictionModelCatalog(records=[], source_path=catalog_path)
+    record = _catalog_record("portable_model", model_path)
+    record.metadata_path = str(metadata_path)
+
+    catalog.upsert_model(record)
+
+    persisted = json.loads(catalog_path.read_text())["models"][0]
+    assert persisted["model_path"] == (
+        "data/model_assets/internal/portable_model/model/best.pkl"
+    )
+    assert persisted["metadata_path"] == (
+        "data/model_assets/internal/portable_model/metadata.json"
+    )
+
+
 def test_stale_catalog_instances_merge_concurrent_upserts(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", tmp_path / "internal")
     catalog_path = tmp_path / "model_catalog.json"
