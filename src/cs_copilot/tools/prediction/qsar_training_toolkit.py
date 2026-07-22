@@ -67,6 +67,32 @@ PERSISTENCE_MANIFEST_FILENAME = "catalog_candidates_manifest.json"
 OUTLIER_VARIANTS_MANIFEST_FILENAME = "outlier_model_variants.json"
 
 
+def _to_unified_training_request(
+    request: (
+        QsariaTrainingRequest
+        | ChempropTrainingRequest
+        | LightGBMTrainingRequest
+        | TabICLTrainingRequest
+    ),
+) -> QsariaTrainingRequest:
+    """Convert a backend-specific request without making its defaults explicit.
+
+    Pydantic's regular ``model_dump`` includes backend defaults. Revalidating
+    that complete mapping as ``QsariaTrainingRequest`` marks those defaults as
+    user-supplied, which in turn removes them from the tuning search space.
+    Preserve only the backend fields that were actually supplied while keeping
+    the discriminator required by the unified request.
+    """
+
+    if isinstance(request, QsariaTrainingRequest):
+        return request
+    payload = request.model_dump(mode="python")
+    backend_payload = request.backend.model_dump(mode="python", exclude_unset=True)
+    backend_payload["name"] = request.backend.name
+    payload["backend"] = backend_payload
+    return QsariaTrainingRequest.model_validate(payload)
+
+
 def _agent_storage_path(path: str | Path) -> str:
     """Normalize agent-returned storage paths before passing them to S3.open."""
     raw = str(path)
@@ -838,7 +864,7 @@ class QSARTrainingToolkit(Toolkit):
         output_dir, bundle_dir = self._managed_agno_paths(backend_name)
         return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -853,7 +879,7 @@ class QSARTrainingToolkit(Toolkit):
         output_dir, bundle_dir = self._managed_agno_paths("chemprop")
         return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -868,7 +894,7 @@ class QSARTrainingToolkit(Toolkit):
         output_dir, bundle_dir = self._managed_agno_paths("lightgbm")
         return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -883,7 +909,7 @@ class QSARTrainingToolkit(Toolkit):
         output_dir, bundle_dir = self._managed_agno_paths("tabicl")
         return self._run_guarded_agno_training(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -1932,7 +1958,7 @@ class QSARTrainingToolkit(Toolkit):
             request = ChempropTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -1951,7 +1977,7 @@ class QSARTrainingToolkit(Toolkit):
             request = LightGBMTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,
@@ -1970,7 +1996,7 @@ class QSARTrainingToolkit(Toolkit):
             request = TabICLTrainingRequest.model_validate(request)
         return self.train_qsar_model(
             train_csv=train_csv,
-            request=QsariaTrainingRequest.model_validate(request.model_dump()),
+            request=_to_unified_training_request(request),
             output_dir=output_dir,
             bundle_dir=bundle_dir,
             agent=agent,

@@ -15,6 +15,7 @@ from cs_copilot.tools.prediction.qsar_contracts import (
     GeneratedRepresentation,
     HoldoutValidation,
     LightGBMConfig,
+    LightGBMTrainingRequest,
     MolecularGraphRepresentation,
     QsariaTrainingRequest,
     RepeatedHoldoutValidation,
@@ -718,6 +719,69 @@ def test_generated_lightgbm_never_passes_none_categorical_columns(
     )
 
     assert captured["categorical_feature_columns"] == []
+
+
+@pytest.mark.parametrize(
+    ("backend_kwargs", "expected_explicit_tuning_parameters"),
+    [
+        ({}, set()),
+        ({"n_estimators": 750, "learning_rate": 0.03}, {"n_estimators", "learning_rate"}),
+    ],
+)
+def test_agno_lightgbm_preserves_only_explicit_backend_parameters(
+    tmp_path,
+    monkeypatch,
+    backend_kwargs,
+    expected_explicit_tuning_parameters,
+):
+    toolkit = QSARTrainingToolkit()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        toolkit,
+        "_managed_agno_paths",
+        lambda _backend_name: (str(tmp_path / "out"), str(tmp_path / "bundles")),
+    )
+    monkeypatch.setattr(
+        toolkit,
+        "_prepare_tabular_training_dataset",
+        lambda **kwargs: {
+            "train_csv": str(tmp_path / "generated.csv"),
+            "feature_columns": ["feature_a"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        },
+    )
+
+    def fake_train(**kwargs):
+        captured.update(kwargs)
+        return _fake_train_result(
+            tmp_path,
+            backend_name="lightgbm",
+            representation_name="rdkit_all",
+            validation_protocol=kwargs["validation_protocol"],
+        )
+
+    monkeypatch.setattr(toolkit.lightgbm_toolkit, "train_lightgbm_model", fake_train)
+    request_kwargs = {
+        "target_columns": ["pEC50"],
+        "task_type": "regression",
+    }
+    if backend_kwargs:
+        request_kwargs["backend"] = LightGBMConfig(**backend_kwargs)
+
+    toolkit._agno_train_lightgbm_model(
+        train_csv=str(tmp_path / "train.csv"),
+        request=LightGBMTrainingRequest(**request_kwargs),
+    )
+
+    tuning_parameters = {"n_estimators", "learning_rate", "max_depth", "num_leaves"}
+    resolved_parameters = captured["resolved_parameters"]
+    assert isinstance(resolved_parameters, dict)
+    assert tuning_parameters.intersection(resolved_parameters) == (
+        expected_explicit_tuning_parameters
+    )
 
 
 @pytest.mark.parametrize("backend_name", ["chemprop", "lightgbm"])
