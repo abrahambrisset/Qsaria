@@ -1,12 +1,12 @@
 {
   "schema_version": "1.0",
-  "plugin_version": "0.3.1+codex.20260722125211",
+  "plugin_version": "0.3.1+codex.20260722132731",
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "e1b643c105708ee14db3c21c37ffdc8cf2ae53b5",
-    "tree": "22aa5825b40aff207b0c21eab284c5f5301a2e3b",
-    "signed_tree": "sha256:84e4df149938607e0305a533896d37d4dca03c58d4703c2e156f534691833024",
-    "describe": "v0.9.0-qsaria-applicability-domain-26-ge1b643c",
+    "commit": "e31b8a77f45650ac613fb32cebaabdbd8883fc33",
+    "tree": "c41283da3d04dcd53f0278be76c5c9265a737214",
+    "signed_tree": "sha256:871d157c52efb69cf35d77a03955fe2ed1cd2fc6a2403e2d170c30ee10fcb1d7",
+    "describe": "v0.9.0-qsaria-applicability-domain-28-ge31b8a7",
     "dirty": false
   },
   "contracts": {
@@ -16,9 +16,9 @@
     "training": "2.0"
   },
   "signatures": {
-    "prompts": "sha256:8157977deffaf9145658c6728ed82bce2bebd4d11f84c47f8dff6f1205a9cc22",
+    "prompts": "sha256:05c0fb257389055b58380112377744c49a113fe1d71ee4f748c2d224a7f81873",
     "tool_surface": "sha256:fdf764bc46cf0f191da03d26ae247bed8cdc90211acb02208f9d06baf343a605",
     "reporting": "sha256:0fcff38af7f0f77393e22a4fb27c5f07df21acfe214d1dbdef3006b778c3056e",
-    "bundle": "sha256:f375d0f276a45d564cea524064fffd2011c5857f91ba7d3bd6e6317bfdb4b0b6"
+    "bundle": "sha256:8f62ce48c8bd6f51557c0cfd78b0423ad4af03030a8e39bd0c8312ec98d4659c"
   }
 }
