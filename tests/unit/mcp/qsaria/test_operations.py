@@ -174,6 +174,24 @@ def test_start_validates_typed_training_request_before_launch(manager) -> None:
                 },
             },
         )
+    with pytest.raises(ValueError, match="invalid arguments"):
+        operations.start(
+            role="training",
+            experiment_id="exp_operations_123",
+            operation="qsaria_training_train_lightgbm_model",
+            arguments={
+                "train_csv": "missing.csv",
+                "request": {
+                    "schema_version": "2.0",
+                    "task_type": "regression",
+                    "smiles_column": "smiles",
+                    "target_columns": ["pEC50"],
+                    "tuning": {
+                        "objective": {"metric": "auc", "direction": "maximize"}
+                    },
+                },
+            },
+        )
     assert operations.list("exp_operations_123") == []
 
 

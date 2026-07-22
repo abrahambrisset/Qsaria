@@ -81,6 +81,29 @@ def test_custom_holdout_rejects_ratio_aliases():
         )
 
 
+def test_custom_validation_rejects_removed_selection_metric():
+    with pytest.raises(ValueError, match="selection_metric"):
+        resolve_validation_strategy(
+            requested_protocol="standard_qsar",
+            validation_strategy={
+                "type": "holdout",
+                "split_family": "random",
+                "selection_metric": "rmse",
+            },
+            training_profile="heavy_validation",
+        )
+
+
+def test_resolved_validation_policy_has_no_selection_metric():
+    policy = resolve_validation_strategy(
+        requested_protocol="standard_qsar",
+        validation_strategy={"type": "holdout", "split_family": "random"},
+        training_profile="heavy_validation",
+    )
+    assert "selection_metric" not in policy
+    assert "selection_metric" not in policy["validation_strategy"]
+
+
 def test_custom_holdout_rejects_agent_aliases():
     with pytest.raises(ValueError, match="Expected one of"):
         resolve_validation_strategy(

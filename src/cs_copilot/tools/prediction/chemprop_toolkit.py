@@ -2713,7 +2713,6 @@ class ChempropToolkit(Toolkit):
             result["validation_strategy"] = protocol_policy.get("validation_strategy")
             result["validation_strategy_type"] = protocol_policy.get("validation_strategy_type")
             result["validation_aggregation"] = protocol_policy.get("aggregation")
-            result["selection_metric"] = protocol_policy.get("selection_metric")
             result["final_refit"] = protocol_policy.get("final_refit")
             result["seed_policy"] = protocol_policy["seed_policy"]
             result["seed_policy_report"] = seed_policy_reporting_text(

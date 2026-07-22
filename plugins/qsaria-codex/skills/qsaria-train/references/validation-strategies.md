@@ -13,9 +13,10 @@
 - `kind`: `standard_qsar`, `holdout`, `repeated_holdout`, `cross_validation`, `full_train`
 - `split_family`: `random`, `scaffold`, `cluster` for holdouts; cross-validation currently accepts only `random`
 - `split_sizes`: `[train, test]` or `[train, validation, test]`
-- `n_folds`, `n_repeats`, `outer_test_size`, `final_refit`, `selection_metric`
+- `n_folds`, `n_repeats`, `outer_test_size`, `final_refit`
 
 Use `outer_test_size` for an isolated cross-validation test set. Never invent aliases. Never create split columns outside the training facade.
+Put an optimization metric only in `tuning.objective`, never in `validation`.
 
 ## Evidence
 

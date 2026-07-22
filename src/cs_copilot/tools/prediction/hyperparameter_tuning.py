@@ -16,7 +16,12 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from pydantic_core import PydanticUndefined
 
-from .qsar_contracts import ChempropConfig, LightGBMConfig, TabICLConfig
+from .qsar_contracts import (
+    ChempropConfig,
+    LightGBMConfig,
+    TabICLConfig,
+    validate_tuning_objective_compatibility,
+)
 
 HYPERPARAMETER_CONTRACT_VERSION = "2.0"
 
@@ -726,41 +731,16 @@ def normalize_tuning_config(
         )
     if objective.direction not in {"minimize", "maximize"}:
         raise HyperparameterTuningError("objective.direction must be minimize or maximize.")
-    if backend_name == "lightgbm":
-        regression_metrics = {
-            "mse": "minimize",
-            "mae": "minimize",
-            "rmse": "minimize",
-            "r2": "maximize",
-        }
-        classification_metrics = {
-            "accuracy": "maximize",
-            "balanced_accuracy": "maximize",
-            "precision_macro": "maximize",
-            "recall_macro": "maximize",
-            "f1_macro": "maximize",
-            "roc_auc": "maximize",
-        }
-        metric_directions = (
-            regression_metrics if task_type == "regression" else classification_metrics
+    try:
+        validate_tuning_objective_compatibility(
+            backend_name=backend_name,
+            task_type=task_type,
+            metric=objective.metric,
+            direction=objective.direction,
+            subset=objective.subset,
         )
-        expected_direction = metric_directions.get(objective.metric)
-        if expected_direction is None:
-            raise HyperparameterTuningError(
-                f"Metric `{objective.metric}` is not compatible with LightGBM {task_type} tuning."
-            )
-        if objective.direction != expected_direction:
-            raise HyperparameterTuningError(
-                f"Metric `{objective.metric}` must use direction `{expected_direction}`."
-            )
-    if backend_name == "chemprop" and objective.metric != "val_loss":
-        raise HyperparameterTuningError(
-            "Chemprop native HPO always selects the global native val_loss."
-        )
-    if backend_name == "chemprop" and objective.subset != "all":
-        raise HyperparameterTuningError(
-            "Chemprop native HPO always uses the global validation loss; objective.subset must be all."
-        )
+    except ValueError as exc:
+        raise HyperparameterTuningError(str(exc)) from exc
     return TuningConfig(
         enabled=True,
         engine=engine,

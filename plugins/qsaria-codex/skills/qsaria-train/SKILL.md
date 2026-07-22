@@ -44,6 +44,11 @@ Custom tuning intervals belong only in `request.tuning.search_space`, using the
 declared typed integer or float distribution for an officially tunable field.
 Do not emulate a distribution with backend fields or undeclared keys.
 
+Put an explicit optimization metric only in `request.tuning.objective`. Use a
+canonical metric name or an unambiguous supported spelling; the contract
+normalizes case, separators, long forms, and `r²`. Never use bare `auc`, invent
+a metric, or put an optimization metric under `request.validation`.
+
 Never convert a failed training call into a different backend, split, seed, validation protocol, or method. Follow the terminal-failure reference.
 
 ## Return the handoff

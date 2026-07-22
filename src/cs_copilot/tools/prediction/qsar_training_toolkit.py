@@ -545,7 +545,6 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
         "validation_strategy",
         "validation_strategy_type",
         "validation_aggregation",
-        "selection_metric",
         "final_refit",
         "training_profile",
         "profile_reason",
@@ -655,38 +654,6 @@ def _compact_training_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(variant, dict)
         ]
     return compact
-
-
-def _candidate_registry_payload(result: Dict[str, Any]) -> Dict[str, Any]:
-    payload = _compact_registry_payload(result.get("recommended_registry_payload")) or {}
-    if not payload.get("model_id"):
-        suffix = _cache_key(
-            {
-                "candidate_id": result.get("candidate_id"),
-                "model_path": result.get("best_model_path") or result.get("model_path"),
-            }
-        )
-        payload["model_id"] = f"{result.get('candidate_id') or 'qsar_candidate'}_{suffix}"
-    return payload
-
-
-def _rank_training_campaign_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    def score(item: Dict[str, Any]) -> tuple:
-        validation = item.get("validation_assessment") or {}
-        aggregated = validation.get("aggregated_split_metrics") or {}
-        hardest = validation.get("hardest_split")
-        hardest_family = aggregated.get(hardest) if hardest else None
-        random_family = aggregated.get("random") or {}
-        hardest_r2 = (hardest_family or {}).get("r2_mean", (hardest_family or {}).get("r2"))
-        random_r2 = random_family.get("r2_mean", random_family.get("r2"))
-        duration = (item.get("training_durations") or {}).get("total_duration_seconds")
-        return (
-            float(hardest_r2) if hardest_r2 is not None else float("-inf"),
-            float(random_r2) if random_r2 is not None else float("-inf"),
-            -float(duration) if duration is not None else 0.0,
-        )
-
-    return sorted(results, key=score, reverse=True)
 
 
 class QSARTrainingToolkit(Toolkit):

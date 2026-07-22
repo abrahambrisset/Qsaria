@@ -14,6 +14,12 @@ and explicit constraints. Build one strict request with
 only in their typed fields. Never send runtime paths, heartbeat controls,
 persistence controls, or a free-form argument map.
 
+Put an explicit optimization metric only in `request.tuning.objective`. Use a
+canonical metric name or an unambiguous supported spelling; the contract
+normalizes case, separators, long forms, and `r²`. Reject bare `auc`, unknown
+metrics, incompatible backend/task combinations, and every optimization metric
+placed under `request.validation`.
+
 An unqualified standard LightGBM workflow means generated `rdkit_all`,
 `standard_qsar`, toolkit-default tuning with 50 requested trials when eligible,
 and eligible outlier analysis. Presentation words such as “simple” never

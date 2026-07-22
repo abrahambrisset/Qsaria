@@ -42,6 +42,60 @@ ChempropMetric = Literal[
     "accuracy",
     "f1",
 ]
+TuningMetric = Literal[
+    "mse",
+    "mae",
+    "rmse",
+    "r2",
+    "accuracy",
+    "balanced_accuracy",
+    "precision_macro",
+    "recall_macro",
+    "f1_macro",
+    "roc_auc",
+    "val_loss",
+]
+
+_TUNING_METRIC_ALIASES = {
+    "mse": "mse",
+    "mean squared error": "mse",
+    "mae": "mae",
+    "mean absolute error": "mae",
+    "rmse": "rmse",
+    "root mean squared error": "rmse",
+    "r2": "r2",
+    "r2 score": "r2",
+    "coefficient of determination": "r2",
+    "accuracy": "accuracy",
+    "acc": "accuracy",
+    "balanced accuracy": "balanced_accuracy",
+    "balanced acc": "balanced_accuracy",
+    "precision macro": "precision_macro",
+    "macro precision": "precision_macro",
+    "recall macro": "recall_macro",
+    "macro recall": "recall_macro",
+    "f1 macro": "f1_macro",
+    "macro f1": "f1_macro",
+    "roc auc": "roc_auc",
+    "auc roc": "roc_auc",
+    "val loss": "val_loss",
+    "validation loss": "val_loss",
+}
+
+_LIGHTGBM_REGRESSION_TUNING_DIRECTIONS = {
+    "mse": "minimize",
+    "mae": "minimize",
+    "rmse": "minimize",
+    "r2": "maximize",
+}
+_LIGHTGBM_CLASSIFICATION_TUNING_DIRECTIONS = {
+    "accuracy": "maximize",
+    "balanced_accuracy": "maximize",
+    "precision_macro": "maximize",
+    "recall_macro": "maximize",
+    "f1_macro": "maximize",
+    "roc_auc": "maximize",
+}
 
 
 class StrictContract(BaseModel):
@@ -106,7 +160,6 @@ class HoldoutValidation(StrictContract):
     split_family: SplitFamily = "random"
     split_sizes: List[float] = Field(default_factory=lambda: [0.8, 0.1, 0.1])
     seed: Optional[int] = Field(default=None, ge=0)
-    selection_metric: Optional[str] = None
 
     @field_validator("split_sizes")
     @classmethod
@@ -133,7 +186,6 @@ class CrossValidation(StrictContract):
     n_repeats: int = Field(default=1, ge=1)
     outer_test_size: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
     seed: Optional[int] = Field(default=None, ge=0)
-    selection_metric: Optional[str] = None
     final_refit: bool = True
 
 
@@ -208,9 +260,56 @@ TuningSpace = Annotated[
 
 
 class TuningObjective(StrictContract):
-    metric: str
+    metric: TuningMetric
     direction: Literal["minimize", "maximize"]
     subset: Literal["all", "in_domain", "out_of_domain"] = "in_domain"
+
+    @field_validator("metric", mode="before")
+    @classmethod
+    def _canonical_metric(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        key = value.strip().casefold().replace("²", "2").replace("^2", "2")
+        key = " ".join(key.replace("_", " ").replace("-", " ").split())
+        return _TUNING_METRIC_ALIASES.get(key, key.replace(" ", "_"))
+
+
+def validate_tuning_objective_compatibility(
+    *,
+    backend_name: str,
+    task_type: str,
+    metric: str,
+    direction: str,
+    subset: str,
+) -> None:
+    """Validate one canonical tuning objective before scientific execution."""
+
+    if backend_name == "lightgbm":
+        metric_directions = (
+            _LIGHTGBM_REGRESSION_TUNING_DIRECTIONS
+            if task_type == "regression"
+            else _LIGHTGBM_CLASSIFICATION_TUNING_DIRECTIONS
+        )
+        expected_direction = metric_directions.get(metric)
+        if expected_direction is None:
+            raise ValueError(
+                f"Metric `{metric}` is not compatible with LightGBM {task_type} tuning."
+            )
+        if direction != expected_direction:
+            raise ValueError(f"Metric `{metric}` must use direction `{expected_direction}`.")
+        return
+    if backend_name == "chemprop":
+        if metric != "val_loss":
+            raise ValueError("Chemprop native HPO always selects the global native val_loss.")
+        if direction != "minimize":
+            raise ValueError("Metric `val_loss` must use direction `minimize`.")
+        if subset != "all":
+            raise ValueError(
+                "Chemprop native HPO always uses the global validation loss; "
+                "objective.subset must be all."
+            )
+        return
+    raise ValueError(f"{backend_name} does not support a tuning objective.")
 
 
 class TuningConfig(StrictContract):
@@ -476,6 +575,14 @@ class QsariaTrainingRequest(TrainingRequestBase):
         }[backend_name]
         if self.tuning.engine not in compatible_engines:
             raise ValueError(f"Tuning engine {self.tuning.engine!r} is not supported by {backend_name}.")
+        if self.tuning.objective is not None:
+            validate_tuning_objective_compatibility(
+                backend_name=backend_name,
+                task_type=self.task_type,
+                metric=self.tuning.objective.metric,
+                direction=self.tuning.objective.direction,
+                subset=self.tuning.objective.subset,
+            )
         has_validation = not isinstance(self.validation, FullTrainValidation)
         if isinstance(self.validation, (HoldoutValidation, RepeatedHoldoutValidation)):
             has_validation = len(self.validation.split_sizes) == 3
@@ -840,8 +947,3 @@ def canonical_validation_strategy(validation: ValidationConfig) -> Optional[Dict
     payload = validation.model_dump(exclude_none=True)
     payload["type"] = payload.pop("kind")
     return payload
-
-
-def public_contract_schema() -> Dict[str, Any]:
-    """Return the canonical JSON schema used by MCP/client bundle tests."""
-    return QsariaTrainingRequest.model_json_schema()

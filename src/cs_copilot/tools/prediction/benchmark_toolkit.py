@@ -109,26 +109,6 @@ def _benchmark_target_token(target_columns: List[str]) -> str:
     return safe_slug(str(target_columns[0])) or "target"
 
 
-def _matches_latest_training_run(
-    agent: Agent,
-    *,
-    train_csv: str,
-    task_type: str,
-    target_columns: List[str],
-) -> bool:
-    state = getattr(agent, "session_state", {}).get("prediction_models", {})
-    runs = state.get("training_runs") or []
-    if not runs or not isinstance(runs[-1], dict):
-        return False
-    latest = runs[-1]
-    return (
-        str(latest.get("train_csv") or "") == str(train_csv)
-        and str(latest.get("task_type") or "") == str(task_type)
-        and [str(item) for item in latest.get("target_columns") or []]
-        == [str(item) for item in target_columns]
-    )
-
-
 class BenchmarkToolkit(Toolkit):
     """Toolkit orchestrating multi-backend QSAR benchmark campaigns."""
 
@@ -1032,7 +1012,6 @@ class BenchmarkToolkit(Toolkit):
             "validation_strategy": protocol_policy.get("validation_strategy"),
             "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
             "validation_aggregation": protocol_policy.get("aggregation"),
-            "selection_metric": protocol_policy.get("selection_metric"),
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
             "candidate_inventory": [
@@ -1063,7 +1042,6 @@ class BenchmarkToolkit(Toolkit):
             "validation_strategy": protocol_policy.get("validation_strategy"),
             "validation_strategy_type": protocol_policy.get("validation_strategy_type"),
             "validation_aggregation": protocol_policy.get("aggregation"),
-            "selection_metric": protocol_policy.get("selection_metric"),
             "seed_policy_report": seed_policy_reporting_text(campaign_seed_policy),
             "reproducibility": seed_policy_reproducibility_metadata(campaign_seed_policy),
             "candidate_results": compact_candidate_results,

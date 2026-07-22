@@ -14,7 +14,6 @@ from .qsar_training_policy import (
 )
 
 DEFAULT_SPLIT_SIZES = list(DEFAULT_QSAR_SPLIT_SIZES)
-DEFAULT_SELECTION_METRIC = "rmse"
 
 SPLIT_FAMILY_TO_BACKEND_TYPE = {
     "random": "random",
@@ -151,7 +150,6 @@ def _build_policy(
     reason: str,
     split_runs: List[SplitRun],
     seed_policy: Dict[str, Any],
-    selection_metric: str,
     validation_strategy: Dict[str, Any],
     aggregation: str = "mean_std",
     final_refit: bool = False,
@@ -168,7 +166,6 @@ def _build_policy(
         "validation_strategy": validation_strategy,
         "validation_strategy_type": strategy_type,
         "aggregation": aggregation,
-        "selection_metric": selection_metric,
         "final_refit": final_refit,
     }
 
@@ -195,13 +192,12 @@ def resolve_validation_strategy(
 
     strategy_type = str(strategy.get("type") or "").strip().lower()
     allowed_fields = {
-        "holdout": {"type", "split_family", "split_sizes", "seed", "selection_metric"},
+        "holdout": {"type", "split_family", "split_sizes", "seed"},
         "repeated_holdout": {
             "type",
             "split_family",
             "split_sizes",
             "seed",
-            "selection_metric",
             "n_repeats",
         },
         "cross_validation": {
@@ -211,7 +207,6 @@ def resolve_validation_strategy(
             "n_repeats",
             "outer_test_size",
             "seed",
-            "selection_metric",
             "final_refit",
         },
         "full_train": {"type", "seed"},
@@ -226,10 +221,6 @@ def resolve_validation_strategy(
         raise ValueError(
             f"Unsupported validation_strategy fields for {strategy_type}: {', '.join(unexpected)}."
         )
-    selection_metric = (
-        str(strategy.get("selection_metric") or DEFAULT_SELECTION_METRIC).strip().lower()
-    )
-
     if strategy_type == "full_train":
         seed_payload = _seed_policy_for_custom_strategy(
             strategy_name="full_train",
@@ -254,7 +245,6 @@ def resolve_validation_strategy(
             reason="Train on 100% of the dataset without internal validation or test metrics.",
             split_runs=[run],
             seed_policy=seed_payload,
-            selection_metric=selection_metric,
             validation_strategy={**strategy, "type": "full_train", "split_sizes": [1.0]},
             aggregation="none",
             final_refit=True,
@@ -286,7 +276,6 @@ def resolve_validation_strategy(
             reason="Custom holdout validation strategy.",
             split_runs=[run],
             seed_policy=seed_payload,
-            selection_metric=selection_metric,
             validation_strategy={**strategy, "split_sizes": split_sizes, "split_family": family},
         )
 
@@ -323,7 +312,6 @@ def resolve_validation_strategy(
             reason="Custom repeated holdout validation strategy.",
             split_runs=runs,
             seed_policy=seed_payload,
-            selection_metric=selection_metric,
             validation_strategy={
                 **strategy,
                 "split_family": family,
@@ -397,7 +385,6 @@ def resolve_validation_strategy(
             reason="Repeated random K-fold cross-validation strategy.",
             split_runs=runs,
             seed_policy=seed_payload,
-            selection_metric=selection_metric,
             validation_strategy={
                 **strategy,
                 "type": "cross_validation",

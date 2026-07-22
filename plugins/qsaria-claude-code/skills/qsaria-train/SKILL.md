@@ -31,6 +31,12 @@ Custom tuning intervals belong only in the backend-matched typed
 `request.tuning.search_space`, and every customized field must also appear in
 `request.tuning.parameters`.
 
+Put an explicit optimization metric only in `request.tuning.objective`. Use a
+canonical metric name or an unambiguous supported spelling; the contract
+normalizes case, separators, long forms, and `r²`. Reject bare `auc`, unknown
+metrics, incompatible backend/task combinations, and every optimization metric
+placed under `request.validation`.
+
 An unqualified standard LightGBM workflow means:
 
 - representation `{"kind":"generated","name":"rdkit_all"}`;

@@ -11,6 +11,7 @@ from cs_copilot.tools.prediction.qsar_contracts import (
     QsariaBenchmarkRequest,
     QsariaTrainingRequest,
     TabICLTrainingRequest,
+    TuningObjective,
     canonical_validation_strategy,
 )
 
@@ -69,6 +70,80 @@ def test_validation_contract_uses_canonical_names_only():
         "outer_test_size": 0.1,
         "final_refit": True,
     }
+
+
+@pytest.mark.parametrize("kind", ["holdout", "repeated_holdout", "cross_validation"])
+def test_validation_contract_rejects_removed_selection_metric(kind: str):
+    payload = _lightgbm_payload()
+    payload["validation"] = {"kind": kind, "selection_metric": "rmse"}
+    with pytest.raises(ValidationError, match="selection_metric"):
+        QsariaTrainingRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("MSE", "mse"),
+        ("mean squared error", "mse"),
+        ("MAE", "mae"),
+        ("mean-absolute-error", "mae"),
+        ("RMSE", "rmse"),
+        ("root_mean_squared_error", "rmse"),
+        ("R2", "r2"),
+        ("r²", "r2"),
+        ("R^2", "r2"),
+        ("r2_score", "r2"),
+        ("coefficient of determination", "r2"),
+        ("acc", "accuracy"),
+        ("balanced accuracy", "balanced_accuracy"),
+        ("balanced acc", "balanced_accuracy"),
+        ("precision macro", "precision_macro"),
+        ("macro precision", "precision_macro"),
+        ("recall macro", "recall_macro"),
+        ("macro recall", "recall_macro"),
+        ("F1 macro", "f1_macro"),
+        ("macro F1", "f1_macro"),
+        ("ROC-AUC", "roc_auc"),
+        ("ROC AUC", "roc_auc"),
+        ("AUC ROC", "roc_auc"),
+        ("validation loss", "val_loss"),
+        ("validation_loss", "val_loss"),
+    ],
+)
+def test_tuning_metric_aliases_are_persisted_canonically(alias: str, canonical: str):
+    objective = TuningObjective(metric=alias, direction="minimize")
+    assert objective.metric == canonical
+    assert objective.model_dump()["metric"] == canonical
+
+
+@pytest.mark.parametrize("metric", ["auc", "r2ish", "unknown metric"])
+def test_ambiguous_or_unknown_tuning_metrics_are_rejected(metric: str):
+    with pytest.raises(ValidationError, match="metric"):
+        TuningObjective(metric=metric, direction="maximize")
+
+
+def test_tuning_objective_is_validated_for_backend_task_and_direction():
+    payload = _lightgbm_payload()
+    payload["tuning"]["objective"] = {
+        "metric": "balanced accuracy",
+        "direction": "maximize",
+    }
+    with pytest.raises(ValidationError, match="not compatible with LightGBM regression"):
+        QsariaTrainingRequest.model_validate(payload)
+
+    payload["tuning"]["objective"] = {"metric": "R²", "direction": "minimize"}
+    with pytest.raises(ValidationError, match="must use direction `maximize`"):
+        QsariaTrainingRequest.model_validate(payload)
+
+    payload["backend"] = {"name": "chemprop"}
+    payload["representation"] = {"kind": "molecular_graph"}
+    payload["tuning"]["objective"] = {
+        "metric": "validation loss",
+        "direction": "maximize",
+        "subset": "all",
+    }
+    with pytest.raises(ValidationError, match="must use direction `minimize`"):
+        QsariaTrainingRequest.model_validate(payload)
 
 
 def test_backend_and_representation_must_match():
@@ -188,6 +263,7 @@ def test_json_schema_forbids_additional_properties_and_internal_fields():
     assert '"additionalProperties": false' in serialized
     for forbidden in ("extra_args", "feature_cache_dir", "heartbeat_path", "split_payload"):
         assert forbidden not in serialized
+    assert "selection_metric" not in serialized
 
     def assert_closed(node):
         if isinstance(node, dict):
