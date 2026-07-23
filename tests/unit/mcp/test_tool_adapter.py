@@ -128,14 +128,7 @@ def test_adapter_coerces_dataframe_return():
 
 def _manifest_payloads(tmp_path, session_name: str):
     manifest_root = (
-        tmp_path
-        / ".files"
-        / "sessions"
-        / session_name
-        / "workflows"
-        / session_name
-        / "manifests"
-        / "mcp"
+        tmp_path / S3.local_session_root() / "workflows" / session_name / "manifests" / "mcp"
     )
     return [
         json.loads(path.read_text(encoding="utf-8"))

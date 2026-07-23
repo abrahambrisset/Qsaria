@@ -454,12 +454,12 @@ class TestChemblToolkit:
 
         original_prefix = S3.prefix
         S3.prefix = "sessions/test-session"
+        session_root = tmp_path / S3.local_session_root()
         try:
             result = ChemblToolkit().fetch_compounds("kinase")
         finally:
             S3.prefix = original_prefix
 
-        session_root = tmp_path / ".files" / "sessions" / "test-session"
         expected_paths = {
             "clean": "workflows/*/01_chemical_space/datasets/clean/chembl_kinase_clean.csv",
             "raw": "workflows/*/01_chemical_space/datasets/raw/chembl_kinase_raw.csv",
