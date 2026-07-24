@@ -11,10 +11,10 @@
   "minimum_claude_science_version": "0.1.21",
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "e31b8a77f45650ac613fb32cebaabdbd8883fc33",
-    "tree": "c41283da3d04dcd53f0278be76c5c9265a737214",
-    "describe": "v0.9.0-qsaria-applicability-domain-28-ge31b8a7",
-    "signed_tree": "sha256:726ddec75d78667cb13da96a80a507decc835d3100f5cc9eb799c29d8116ebac",
+    "commit": "bb71384ca452386b4dffcc61325440ef25b320b5",
+    "tree": "ac3008a6a3ab0e9ffd73ce9d583ca242d80e8148",
+    "describe": "v1.0.0-alpha-3-gbb71384",
+    "signed_tree": "sha256:5b758b0109f4f5c708cf76db17c612c18f9e59b95e77e45ac6749710f38007d5",
     "dirty": false
   },
   "contracts": {
@@ -27,7 +27,7 @@
     "canonical_handoff": "sha256:fcb1db75c95bf630607e6236125989545003b0ac7628f18dd74780be31ed74b3",
     "canonical_agent_tools": "sha256:5fbd651e3dd4363191c9eebca8fb6f8bb2b2006ea15d7144b9cad72db8a1d3d8",
     "science_agent_tools": "sha256:c5c77fa18dbd5aff8d61545bb43f183f007d1cae24f902ae434d5862887869d6",
-    "runtime": "sha256:5ef676e50c74dfdce57cccbadb07fc195758c37b05138bab718ce9b9fb236db7",
+    "runtime": "sha256:cb1cc2780341f435f31c541ea2db8d93b6b76ca4b4ea936f6cf8c69396d5ed70",
     "bundle": "sha256:5325676f937a731abfee8669a5f8d891da1a75aae0e7a57e9495e8f229df882e"
   },
   "operation_contract": {
