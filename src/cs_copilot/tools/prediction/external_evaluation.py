@@ -28,9 +28,11 @@ from .applicability_domain import (
     score_record_applicability_domain,
 )
 from .backend import PredictionModelRecord
+from .backend_capabilities import backend_requires_feature_preparation
 from .qsar_reporting import build_external_evaluation_reporting_handoff
 from .qsar_response_compaction import compact_applicability_domain_for_response
 from .qsar_training_policy import project_now, safe_slug
+from .tabular_feature_preparation import TabularFeaturePreparationService
 from .training_orchestration import (
     compute_classification_metrics,
     compute_regression_metrics,
@@ -434,6 +436,7 @@ def evaluate_model_on_external_dataset(
     smiles_column: str = "smiles",
     target_columns: Optional[Sequence[str]] = None,
     evaluation_label: Optional[str] = None,
+    tabular_feature_service: Optional[TabularFeaturePreparationService] = None,
 ) -> Dict[str, Any]:
     if not record.metadata_path:
         raise ValueError(
@@ -474,8 +477,24 @@ def evaluate_model_on_external_dataset(
     prediction_input.to_csv(evaluation_input, index=False)
 
     predictions_path = eval_dir / "predictions.csv"
+    backend_input = str(evaluation_input)
+    tabular_preparation = None
+    try:
+        requires_tabular_preparation = backend_requires_feature_preparation(record.backend_name)
+    except KeyError:
+        requires_tabular_preparation = False
+    if requires_tabular_preparation:
+        service = tabular_feature_service or TabularFeaturePreparationService()
+        tabular_preparation = service.prepare_for_model(
+            input_csv=str(evaluation_input),
+            output_dir=str(eval_dir / "tabular_features"),
+            record=record,
+            purpose="external_evaluation",
+            smiles_column="smiles",
+        )
+        backend_input = tabular_preparation.prepared_csv
     backend.predict_from_csv(
-        input_csv=str(evaluation_input),
+        input_csv=backend_input,
         model_record=record,
         preds_path=str(predictions_path),
         return_uncertainty=False,
@@ -492,6 +511,9 @@ def evaluate_model_on_external_dataset(
             output_dir=eval_dir / "applicability_domain",
             score_label="external_dataset",
             backend=backend,
+            prepared_feature_csv=(
+                tabular_preparation.prepared_csv if tabular_preparation is not None else None
+            ),
         )
         if ad_result.get("scores") is not None:
             for column in AD_COLUMNS:

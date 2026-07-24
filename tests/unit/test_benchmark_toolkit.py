@@ -18,6 +18,15 @@ from cs_copilot.tools.prediction.qsar_contracts import (
     canonical_validation_strategy,
 )
 from cs_copilot.tools.prediction.qsar_training_toolkit import QSARTrainingToolkit
+from cs_copilot.tools.prediction.tabular_feature_preparation import (
+    TabularRepresentationContract,
+    _component_contract,
+    current_rdkit_version,
+    representation_recipe_signature,
+)
+from cs_copilot.tools.prediction.tabular_representations import (
+    get_tabular_representation,
+)
 
 
 def _fake_agent() -> SimpleNamespace:
@@ -303,6 +312,25 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
         resolved_representation = representation_name or (
             "molecular_graph" if backend_name == "chemprop" else "rdkit_all"
         )
+        tabular_contract = {}
+        if backend_name in {"lightgbm", "tabicl"}:
+            components = [
+                _component_contract(component)
+                for component in get_tabular_representation(resolved_representation).components
+            ]
+            tabular_contract = TabularRepresentationContract(
+                kind="generated",
+                representation_name=resolved_representation,
+                components=components,
+                recipe_signature=representation_recipe_signature(
+                    kind="generated",
+                    representation_name=resolved_representation,
+                    components=components,
+                ),
+                feature_columns=feature_columns,
+                rdkit_version=current_rdkit_version(),
+                qsaria_version="0.4.0",
+            ).model_dump(mode="json")
 
         result = {
             "best_model_path": str(model_path),
@@ -350,6 +378,7 @@ def test_benchmark_standard_qsar_persists_all_candidates(tmp_path, monkeypatch):
             "candidate_train_csv": train_csv,
             "backend_name": backend_name,
             "representation_name": resolved_representation,
+            "tabular_representation_contract": tabular_contract,
             "trained_at": "2026-04-27T12:00:00+02:00",
         }
         (root / "cs_copilot_training_summary.json").write_text(json.dumps(result))

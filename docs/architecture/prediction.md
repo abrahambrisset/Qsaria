@@ -16,7 +16,8 @@ Agents
   |     |-- training_orchestration.py
   |     |-- backend_factory.py
   |     |-- tabular_representations.py
-  |     |-- MolecularFeatureToolkit
+  |     |-- tabular_feature_preparation.py
+  |     |     `-- MolecularFeatureToolkit
   |     |-- ActivityCliffToolkit
   |     |-- ChempropToolkit  -> ChempropBackend
   |     |-- LightGBMToolkit  -> LightGBMBackend
@@ -65,11 +66,20 @@ Explicit advanced representations:
 - `morgan_binary_count_rdkit_all`
 - `morgan_rdkit_all`
 
-`MolecularFeatureToolkit` owns feature generation for all tabular backends.
-Features are cached by dataset fingerprint, SMILES column, representation, and
-feature parameters. Combined representations reuse the cached RDKit all, Morgan
-binary, and Morgan count feature tables rather than regenerating them per split
-or candidate.
+`TabularFeaturePreparationService` is the sole representation orchestrator for
+Training, Inference, External Evaluation, Ensemble, and Applicability Domain.
+It uses `MolecularFeatureToolkit` only as its low-level calculation engine.
+Features are cached under `.files/cache/tabular_representations/v1` by ordered
+dataset content, immutable component recipe, generator version, exact RDKit
+version, and retained base columns. Combined representations reuse the cached
+RDKit all, Morgan binary, and Morgan count component tables.
+
+Every LightGBM or TabICL model created by Qsaria 0.4.0 carries a strict
+`tabular_representation_contract`. This contract, rather than model names or
+legacy metadata, is the only inference recipe. Generated representations require
+the exact recorded RDKit and feature-generator versions. Older tabular models
+without this contract are rejected explicitly and must be retrained. Chemprop is
+outside this tabular contract.
 
 ## Training Contracts
 

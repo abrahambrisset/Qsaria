@@ -24,12 +24,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from sklearn.ensemble import IsolationForest
 
-from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
-from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
-
 from .backend import PredictionModelRecord
 from .qsar_training_policy import safe_slug
-from .tabular_representations import get_tabular_representation
+from .tabular_feature_preparation import (
+    TabularFeaturePreparationService,
+    require_tabular_model_contract,
+)
 
 MODERN_AD_VERSION = "3.0"
 BOUNDING_BOX_METHOD = "bounding_box"
@@ -2128,110 +2128,11 @@ def build_modern_ad_plots(scores: pd.DataFrame, output_dir: str | Path) -> Dict[
     return artifacts
 
 
-def _tabular_representation_name(record: PredictionModelRecord) -> Optional[str]:
-    return (
-        (record.inference_profile or {}).get("representation_name")
-        or (record.training_data_summary or {}).get("representation_name")
-        or (record.selection_hints or {}).get("representation_name")
-    )
-
-
-def _feature_columns(record: PredictionModelRecord, manifest: Mapping[str, Any]) -> List[str]:
-    methods = manifest.get("methods") or {}
-    method = methods.get(BOUNDING_BOX_METHOD) or {}
-    feature_count = int(method.get("feature_count") or manifest.get("feature_count") or 0)
-    columns = list((record.inference_profile or {}).get("feature_columns") or [])
-    if not columns:
-        columns = list((record.training_data_summary or {}).get("feature_columns") or [])
-    if not columns:
-        columns = list((record.selection_hints or {}).get("feature_columns") or [])
-    if columns and feature_count and len(columns) != feature_count:
-        return [str(column) for column in columns[:feature_count]]
-    return [str(column) for column in columns]
-
-
-def prepare_tabular_features_for_ad(
-    *,
-    input_csv: str,
-    record: PredictionModelRecord,
-    output_dir: str | Path,
-    feature_columns: Sequence[str],
-) -> pd.DataFrame:
-    """Rebuild the tabular feature frame used by LightGBM/TabICL models."""
-    source = pd.read_csv(Path(input_csv).expanduser())
-    existing = [column for column in feature_columns if column in source.columns]
-    if len(existing) == len(feature_columns):
-        return source
-
-    representation_name = _tabular_representation_name(record)
-    if not representation_name:
-        return source
-    try:
-        spec = get_tabular_representation(str(representation_name))
-    except ValueError:
-        return source
-
-    try:
-        smiles_column = resolve_smiles_column_name(source, "smiles")
-    except ValueError:
-        return source
-
-    feature_dir = Path(output_dir).expanduser() / "ad_features"
-    feature_dir.mkdir(parents=True, exist_ok=True)
-    toolkit = MolecularFeatureToolkit()
-    feature_frames: List[pd.DataFrame] = []
-    if spec.use_morgan_binary:
-        output_csv = feature_dir / "morgan_binary.csv"
-        toolkit.smiles_to_morgan_fingerprints(
-            input_csv=input_csv,
-            smiles_column=smiles_column,
-            output_csv=str(output_csv),
-            include_input_columns=True,
-            input_columns_to_keep=["smiles"],
-            feature_prefix="fp_",
-            fingerprint_kind="binary",
-            n_jobs=1,
-        )
-        feature_frames.append(pd.read_csv(output_csv))
-    if spec.use_morgan_count:
-        output_csv = feature_dir / "morgan_count.csv"
-        toolkit.smiles_to_morgan_fingerprints(
-            input_csv=input_csv,
-            smiles_column=smiles_column,
-            output_csv=str(output_csv),
-            include_input_columns=True,
-            input_columns_to_keep=["smiles"],
-            feature_prefix="cfp_",
-            fingerprint_kind="count",
-            n_jobs=1,
-        )
-        feature_frames.append(pd.read_csv(output_csv))
-    if spec.use_rdkit:
-        output_csv = feature_dir / "rdkit_descriptors.csv"
-        toolkit.smiles_to_rdkit_descriptors(
-            input_csv=input_csv,
-            smiles_column=smiles_column,
-            output_csv=str(output_csv),
-            descriptor_set=str(spec.descriptor_set or "basic"),
-            include_input_columns=True,
-            input_columns_to_keep=["smiles"],
-            n_jobs=1,
-        )
-        feature_frames.append(pd.read_csv(output_csv))
-
-    assembled = source.copy()
-    additions: List[pd.DataFrame] = []
-    for frame in feature_frames:
-        columns_to_add = [
-            column
-            for column in feature_columns
-            if column in frame.columns and column not in assembled
-        ]
-        if columns_to_add:
-            additions.append(frame[columns_to_add].reset_index(drop=True))
-    if additions:
-        assembled = pd.concat([assembled.reset_index(drop=True), *additions], axis=1)
-    return assembled
+def _contract_feature_columns(record: PredictionModelRecord) -> List[str]:
+    if record.backend_name not in {"lightgbm", "tabicl"}:
+        return []
+    contract = require_tabular_model_contract(record)
+    return list(contract.feature_columns)
 
 
 def score_record_applicability_domain(
@@ -2241,6 +2142,8 @@ def score_record_applicability_domain(
     output_dir: str | Path,
     score_label: str,
     backend: Optional[Any] = None,
+    prepared_feature_csv: Optional[str] = None,
+    tabular_feature_service: Optional[TabularFeaturePreparationService] = None,
 ) -> Dict[str, Any]:
     """Score a catalog/session model's modern AD on an input CSV."""
     manifest, _ = load_modern_ad_manifest(
@@ -2291,7 +2194,7 @@ def score_record_applicability_domain(
                 )
                 or similarity_method.get("feature_names")
                 or similarity_columns
-                or _feature_columns(record, manifest)
+                or _contract_feature_columns(record)
             )
         ]
 
@@ -2344,19 +2247,27 @@ def score_record_applicability_domain(
                 "scores": scores,
                 "summary": _summarize_scores(scores),
             }
-    elif (
-        record.backend_name in {"lightgbm", "tabicl"}
-        or _tabular_representation_name(record)
-        or feature_space in {"rdkit_all", "morgan_only", "morgan_count_only"}
-        or feature_space.startswith("morgan")
-        or feature_space.startswith("rdkit")
-    ):
-        feature_frame = prepare_tabular_features_for_ad(
-            input_csv=input_csv,
-            record=record,
-            output_dir=output_dir,
-            feature_columns=expected_columns,
-        )
+    elif record.backend_name in {"lightgbm", "tabicl"}:
+        if prepared_feature_csv:
+            feature_frame = pd.read_csv(Path(prepared_feature_csv).expanduser())
+        else:
+            service = tabular_feature_service or TabularFeaturePreparationService()
+            prepared = service.prepare_for_model(
+                input_csv=input_csv,
+                output_dir=str(Path(output_dir).expanduser() / "tabular_features"),
+                record=record,
+                purpose="applicability_domain",
+                smiles_column="smiles",
+            )
+            feature_frame = pd.read_csv(prepared.prepared_csv)
+        missing_expected = [
+            column for column in expected_columns if column not in feature_frame.columns
+        ]
+        if missing_expected:
+            raise ValueError(
+                "Prepared tabular matrix does not match the applicability-domain "
+                f"feature space: missing {missing_expected}"
+            )
 
     result = score_modern_applicability_domain(
         feature_frame=feature_frame,

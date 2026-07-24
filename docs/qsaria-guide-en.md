@@ -545,9 +545,16 @@ Prompts:
 ### TabICL
 
 - input: tabular dataset;
+- at inference time, a SMILES-only CSV is transformed with exactly the same
+  tabular recipe used during training;
 - uses the configured TabICL checkpoint;
 - more RAM-sensitive than LightGBM;
 - should be tested carefully on large datasets and wide representations.
+
+Since Qsaria 0.4.0, every new LightGBM or TabICL model carries a strict
+representation contract. Older tabular models without that contract are no
+longer usable and must be retrained. Feature caches are reconstructible and are
+never a model dependency.
 
 ### Ensemble
 

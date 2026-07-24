@@ -30,6 +30,56 @@ from cs_copilot.tools.prediction.qsar_training_toolkit import (
     _resolve_existing_training_csv,
 )
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+from cs_copilot.tools.prediction.tabular_feature_preparation import (
+    TabularRepresentationContract,
+    _component_contract,
+    current_rdkit_version,
+    representation_recipe_signature,
+)
+from cs_copilot.tools.prediction.tabular_representations import (
+    get_tabular_representation,
+)
+
+
+def _fake_tabular_contract(
+    representation_name: str,
+    feature_columns: list[str],
+) -> dict:
+    spec = get_tabular_representation(representation_name)
+    components = [_component_contract(component) for component in spec.components]
+    return TabularRepresentationContract(
+        kind="generated",
+        representation_name=representation_name,
+        components=components,
+        recipe_signature=representation_recipe_signature(
+            kind="generated",
+            representation_name=representation_name,
+            components=components,
+        ),
+        feature_columns=feature_columns,
+        rdkit_version=current_rdkit_version(),
+        qsaria_version="0.4.0",
+    ).model_dump(mode="json")
+
+
+def _fake_prepared_tabular(
+    tmp_path: Path,
+    representation_name: str,
+    feature_columns: list[str],
+    *,
+    filename: str = "generated.csv",
+) -> dict:
+    contract = _fake_tabular_contract(representation_name, feature_columns)
+    return {
+        "train_csv": str(tmp_path / filename),
+        "feature_columns": feature_columns,
+        "tabular_representation_contract": contract,
+        "feature_preparation": {
+            "representation_name": representation_name,
+            "tabular_representation_contract": contract,
+            "durations": {"total_duration_seconds": 0.1, "steps": []},
+        },
+    }
 
 
 def _training_request(
@@ -149,6 +199,23 @@ def test_registry_payload_response_preserves_tuning_provenance(tmp_path):
 
     assert training_summary["hyperparameter_tuning"] == tuning
     assert training_summary["hyperparameter_tuning_summary_path"] == str(tuning_summary_path)
+
+
+def test_registry_payload_response_preserves_tabular_representation_contract():
+    contract = _fake_tabular_contract("rdkit_all", ["rdkit_A", "rdkit_B"])
+    compact = _compact_registry_payload(
+        {
+            "model_id": "lightgbm_rdkit_all",
+            "backend_name": "lightgbm",
+            "model_path": "/tmp/best.pkl",
+            "training_data_summary": {
+                "training_summary_path": "/tmp/cs_copilot_training_summary.json",
+                "tabular_representation_contract": contract,
+            },
+        }
+    )
+
+    assert compact["training_data_summary"]["tabular_representation_contract"] == contract
 
 
 def test_outlier_variants_are_exposed_as_independent_catalog_candidates(tmp_path):
@@ -629,18 +696,21 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
 
     def fake_prepare(**kwargs):
         called_representations.append(kwargs["representation_name"])
-        return {
-            "train_csv": str(tmp_path / f"{kwargs['representation_name']}.csv"),
-            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
+        prepared = _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            [f"feature_{index:04d}" for index in range(64)],
+            filename=f"{kwargs['representation_name']}.csv",
+        )
+        prepared["feature_preparation"].update(
+            {
                 "feature_cache_key": f"cache-{kwargs['representation_name']}",
                 "feature_cache_status": "generated",
                 "cache_hits": 0,
                 "cache_misses": 2,
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        }
+            }
+        )
+        return prepared
 
     def fake_lightgbm_train(**kwargs):
         nonlocal captured_categorical_columns
@@ -691,14 +761,11 @@ def test_generated_lightgbm_never_passes_none_categorical_columns(
     monkeypatch.setattr(
         toolkit,
         "_prepare_tabular_training_dataset",
-        lambda **kwargs: {
-            "train_csv": str(tmp_path / "generated.csv"),
-            "feature_columns": ["feature_a"],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        },
+        lambda **kwargs: _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            ["feature_a"],
+        ),
     )
 
     def fake_train(**kwargs):
@@ -744,14 +811,11 @@ def test_agno_lightgbm_preserves_only_explicit_backend_parameters(
     monkeypatch.setattr(
         toolkit,
         "_prepare_tabular_training_dataset",
-        lambda **kwargs: {
-            "train_csv": str(tmp_path / "generated.csv"),
-            "feature_columns": ["feature_a"],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        },
+        lambda **kwargs: _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            ["feature_a"],
+        ),
     )
 
     def fake_train(**kwargs):
@@ -793,14 +857,12 @@ def test_training_facade_forwards_explicit_bundle_destination(tmp_path, monkeypa
         monkeypatch.setattr(
             toolkit,
             "_prepare_tabular_training_dataset",
-            lambda **kwargs: {
-                "train_csv": str(tmp_path / "rdkit.csv"),
-                "feature_columns": ["feature_a"],
-                "feature_preparation": {
-                    "representation_name": kwargs["representation_name"],
-                    "durations": {"total_duration_seconds": 0.1, "steps": []},
-                },
-            },
+            lambda **kwargs: _fake_prepared_tabular(
+                tmp_path,
+                kwargs["representation_name"],
+                ["feature_a"],
+                filename="rdkit.csv",
+            ),
         )
 
         def fake_train(**kwargs):
@@ -844,14 +906,12 @@ def test_explicit_combined_representation_does_not_start_campaign(tmp_path, monk
 
     def fake_prepare(**kwargs):
         captured.update(kwargs)
-        return {
-            "train_csv": str(tmp_path / "combined.csv"),
-            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        }
+        return _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            [f"feature_{index:04d}" for index in range(64)],
+            filename="combined.csv",
+        )
 
     def fake_lightgbm_train(**kwargs):
         return _fake_train_result(
@@ -887,16 +947,28 @@ def test_repeated_holdout_single_representation_returns_registry_payload_for_eac
     monkeypatch.setattr(
         toolkit,
         "_prepare_tabular_training_dataset",
-        lambda **kwargs: {
-            "train_csv": str(tmp_path / "morgan.csv"),
-            "feature_columns": ["feature_a", "feature_b"],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "input_csv": str(tmp_path / "train.csv"),
-                "feature_csvs": [str(tmp_path / "morgan_features.csv")],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        },
+        lambda **kwargs: (
+            _fake_prepared_tabular(
+                tmp_path,
+                kwargs["representation_name"],
+                ["feature_a", "feature_b"],
+                filename="morgan.csv",
+            )
+            | {
+                "feature_preparation": (
+                    _fake_prepared_tabular(
+                        tmp_path,
+                        kwargs["representation_name"],
+                        ["feature_a", "feature_b"],
+                        filename="morgan.csv",
+                    )["feature_preparation"]
+                    | {
+                        "input_csv": str(tmp_path / "train.csv"),
+                        "feature_csvs": [str(tmp_path / "morgan_features.csv")],
+                    }
+                )
+            }
+        ),
     )
     monkeypatch.setattr(
         toolkit.lightgbm_toolkit,
@@ -950,14 +1022,12 @@ def test_cross_validation_single_representation_catalogs_only_final_refit(tmp_pa
     monkeypatch.setattr(
         toolkit,
         "_prepare_tabular_training_dataset",
-        lambda **kwargs: {
-            "train_csv": str(tmp_path / "morgan_count.csv"),
-            "feature_columns": ["feature_a", "feature_b"],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        },
+        lambda **kwargs: _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            ["feature_a", "feature_b"],
+            filename="morgan_count.csv",
+        ),
     )
     monkeypatch.setattr(
         toolkit.lightgbm_toolkit,
@@ -993,14 +1063,12 @@ def test_standard_qsar_tabular_training_uses_rdkit_all_single_candidate(tmp_path
 
     def fake_prepare(**kwargs):
         captured.update(kwargs)
-        return {
-            "train_csv": str(tmp_path / "rdkit_all.csv"),
-            "feature_columns": [f"feature_{index:04d}" for index in range(64)],
-            "feature_preparation": {
-                "representation_name": kwargs["representation_name"],
-                "durations": {"total_duration_seconds": 0.1, "steps": []},
-            },
-        }
+        return _fake_prepared_tabular(
+            tmp_path,
+            kwargs["representation_name"],
+            [f"feature_{index:04d}" for index in range(64)],
+            filename="rdkit_all.csv",
+        )
 
     def fake_tabicl_train(**kwargs):
         return _fake_train_result(

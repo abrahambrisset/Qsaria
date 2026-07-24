@@ -10,8 +10,6 @@ from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
 
-from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
-
 from .backend import (
     BackendNotAvailableError,
     InvalidPredictionInputError,
@@ -30,6 +28,7 @@ from .chemprop_backend import ChempropBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import safe_slug
 from .tabicl_backend import TabICLBackend
+from .tabular_feature_preparation import TabularFeaturePreparationService
 from .training_orchestration import is_classification_task, is_multiclass_task, json_safe_label
 
 
@@ -52,28 +51,12 @@ def _prediction_column(frame: pd.DataFrame, target_columns: list[str]) -> str:
 
 
 def _component_representation(component: Dict[str, Any]) -> str:
-    sources = [
-        component,
-        component.get("inference_profile") or {},
-        component.get("training_data_summary") or {},
-        component.get("selection_hints") or {},
-    ]
-    for source in sources:
-        for key in ("representation_name", "representation"):
-            value = (source or {}).get(key)
-            if value:
-                return str(value)
-    for key in ("model_id", "display_name", "description"):
-        value = component.get(key)
-        if value and any(token in str(value).lower() for token in ("morgan", "rdkit")):
-            return str(value)
-    return ""
-
-
-def _expected_feature_columns(record: PredictionModelRecord) -> list[str]:
-    profile = record.inference_profile or {}
-    columns = profile.get("feature_columns") or profile.get("features") or []
-    return [str(column) for column in columns]
+    contract = component.get("tabular_representation_contract") or {}
+    if contract.get("representation_name"):
+        return str(contract["representation_name"])
+    if component.get("backend_name") == "chemprop":
+        return "molecular_graph"
+    return "unknown"
 
 
 def _finite_float(value: Any) -> Optional[float]:
@@ -106,6 +89,7 @@ class EnsembleBackend(PredictionBackend):
         backends: Optional[Dict[str, PredictionBackend]] = None,
         *,
         backend_capabilities: Optional[Mapping[str, BackendCapabilities]] = None,
+        tabular_feature_service: Optional[TabularFeaturePreparationService] = None,
     ) -> None:
         self.backends = backends or {
             "chemprop": ChempropBackend(),
@@ -116,7 +100,7 @@ class EnsembleBackend(PredictionBackend):
             **BACKEND_CAPABILITIES,
             **dict(backend_capabilities or {}),
         }
-        self.feature_toolkit = MolecularFeatureToolkit()
+        self.tabular_feature_service = tabular_feature_service or TabularFeaturePreparationService()
 
     def is_available(self) -> bool:
         return True
@@ -207,6 +191,9 @@ class EnsembleBackend(PredictionBackend):
             inference_profile=dict(component.get("inference_profile") or {}),
             selection_hints=dict(component.get("selection_hints") or {}),
             applicability_domain=dict(component.get("applicability_domain") or {}),
+            tabular_representation_contract=dict(
+                component.get("tabular_representation_contract") or {}
+            ),
             task=PredictionTaskSpec(
                 task_type=task_payload.get("task_type") or ensemble_record.task.task_type,
                 smiles_columns=task_payload.get("smiles_columns")
@@ -220,104 +207,21 @@ class EnsembleBackend(PredictionBackend):
         self,
         *,
         backend_name: str,
-        component: Dict[str, Any],
         record: PredictionModelRecord,
         source_csv: str,
-        source_df: pd.DataFrame,
         work_dir: Path,
         slug: str,
-        feature_cache: Dict[str, str],
-        prefer_rdkit_all: bool,
     ) -> str:
         if not self._requires_feature_preparation(backend_name):
             return source_csv
-
-        expected_columns = _expected_feature_columns(record)
-        if expected_columns and all(column in source_df.columns for column in expected_columns):
-            return source_csv
-
-        representation = _component_representation(component).strip().lower()
-        needs_morgan = "morgan" in representation or any(
-            column.startswith("fp_") for column in expected_columns
+        prepared = self.tabular_feature_service.prepare_for_model(
+            input_csv=source_csv,
+            output_dir=str(work_dir / "_feature_inputs" / slug),
+            record=record,
+            purpose="ensemble",
+            smiles_column="smiles",
         )
-        needs_rdkit = "rdkit" in representation or any(
-            column.startswith("desc_") for column in expected_columns
-        )
-        if not needs_morgan and not needs_rdkit:
-            return source_csv
-        if "smiles" not in source_df.columns:
-            raise InvalidPredictionInputError(
-                f"Cannot prepare tabular features for `{record.model_id}`: normalized `smiles` column is missing."
-            )
-
-        feature_dir = work_dir / "_feature_inputs"
-        feature_dir.mkdir(parents=True, exist_ok=True)
-        feature_csvs: list[str] = []
-
-        if needs_morgan:
-            cache_key = "morgan_radius2_2048"
-            if cache_key not in feature_cache:
-                result = self.feature_toolkit.smiles_to_morgan_fingerprints(
-                    input_csv=source_csv,
-                    smiles_column="smiles",
-                    output_csv=str(feature_dir / "morgan_radius2_2048_fp.csv"),
-                    input_columns_to_keep=["smiles"],
-                )
-                feature_cache[cache_key] = str(result["output_csv"])
-            feature_csvs.append(feature_cache[cache_key])
-
-        if needs_rdkit:
-            descriptor_set = "all" if "all" in representation else "basic"
-            if (
-                descriptor_set == "basic"
-                and len([c for c in expected_columns if c.startswith("desc_")]) > 10
-            ):
-                descriptor_set = "all"
-            if descriptor_set == "basic" and prefer_rdkit_all:
-                descriptor_set = "all"
-            cache_key = f"rdkit_{descriptor_set}"
-            if cache_key not in feature_cache:
-                result = self.feature_toolkit.smiles_to_rdkit_descriptors(
-                    input_csv=source_csv,
-                    smiles_column="smiles",
-                    output_csv=str(feature_dir / f"rdkit_{descriptor_set}.csv"),
-                    descriptor_set=descriptor_set,
-                    input_columns_to_keep=["smiles"],
-                )
-                feature_cache[cache_key] = str(result["output_csv"])
-            feature_csvs.append(feature_cache[cache_key])
-
-        assembled = source_df.copy().reset_index(drop=True)
-        for feature_csv in feature_csvs:
-            feature_df = _read_csv(feature_csv).reset_index(drop=True)
-            if len(feature_df) != len(assembled):
-                raise InvalidPredictionInputError(
-                    f"Feature table `{feature_csv}` has {len(feature_df)} rows for {len(assembled)} inputs."
-                )
-            if "smiles" in feature_df.columns and not feature_df["smiles"].equals(
-                assembled["smiles"]
-            ):
-                raise InvalidPredictionInputError(
-                    f"Feature table `{feature_csv}` is not aligned with the ensemble input SMILES order."
-                )
-            feature_columns = [
-                column
-                for column in feature_df.columns
-                if column != "smiles" and column not in assembled.columns
-            ]
-            assembled = pd.concat([assembled, feature_df[feature_columns]], axis=1)
-
-        missing_after_prepare = [
-            column for column in expected_columns if column not in assembled.columns
-        ]
-        if missing_after_prepare:
-            raise InvalidPredictionInputError(
-                f"Could not prepare all required feature columns for `{record.model_id}`: {missing_after_prepare}"
-            )
-
-        component_input = feature_dir / f"{slug}_input.csv"
-        assembled.to_csv(component_input, index=False)
-        return str(component_input)
+        return prepared.prepared_csv
 
     def _top_disagreement_rows(
         self,
@@ -389,23 +293,6 @@ class EnsembleBackend(PredictionBackend):
         component_paths: Dict[str, str] = {}
         component_input_paths: Dict[str, str] = {}
         component_summaries: list[Dict[str, Any]] = []
-        feature_cache: Dict[str, str] = {}
-        prefer_rdkit_all = False
-        for component in components:
-            backend_name = str(component.get("backend_name") or "")
-            if backend_name not in self.backends:
-                continue
-            if not self._requires_feature_preparation(backend_name):
-                continue
-            record = self._component_record(component, model_record)
-            representation = _component_representation(component).strip().lower()
-            expected_columns = _expected_feature_columns(record)
-            if (
-                "rdkit_all" in representation
-                or len([c for c in expected_columns if c.startswith("desc_")]) > 10
-            ):
-                prefer_rdkit_all = True
-                break
         failures: list[str] = []
 
         for component in components:
@@ -429,14 +316,10 @@ class EnsembleBackend(PredictionBackend):
             try:
                 prepared_input_csv = self._prepare_component_input_csv(
                     backend_name=backend_name,
-                    component=component,
                     record=record,
                     source_csv=component_input_csv,
-                    source_df=source_df,
                     work_dir=work_dir,
                     slug=slug,
-                    feature_cache=feature_cache,
-                    prefer_rdkit_all=prefer_rdkit_all,
                 )
                 backend.predict_from_csv(
                     input_csv=prepared_input_csv,

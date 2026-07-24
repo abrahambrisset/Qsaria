@@ -5,7 +5,54 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+TABULAR_REPRESENTATION_CONTRACT_VERSION = "1.0"
+
+
+@dataclass(frozen=True)
+class RDKitDescriptors:
+    """One deterministic RDKit descriptor component."""
+
+    kind: str = "rdkit_descriptors"
+    descriptor_set: str = "all"
+
+
+@dataclass(frozen=True)
+class MorganBinaryFingerprint:
+    """One deterministic binary Morgan fingerprint component."""
+
+    kind: str = "morgan_binary"
+    radius: int = 2
+    n_bits: int = 2048
+    feature_prefix: str = "fp_"
+
+
+@dataclass(frozen=True)
+class MorganCountFingerprint:
+    """One deterministic count-based Morgan fingerprint component."""
+
+    kind: str = "morgan_count"
+    radius: int = 2
+    n_bits: int = 2048
+    feature_prefix: str = "cfp_"
+
+
+@dataclass(frozen=True)
+class PrecomputedFeatures:
+    """Explicit precomputed tabular features."""
+
+    feature_columns: Tuple[str, ...]
+    categorical_feature_columns: Tuple[str, ...] = ()
+    kind: str = "precomputed"
+
+
+TabularRepresentationComponent = Union[
+    RDKitDescriptors,
+    MorganBinaryFingerprint,
+    MorganCountFingerprint,
+    PrecomputedFeatures,
+]
 
 
 @dataclass(frozen=True)
@@ -14,58 +61,92 @@ class TabularRepresentationSpec:
 
     name: str
     display_name: str
-    use_morgan_binary: bool = False
-    use_morgan_count: bool = False
-    use_rdkit: bool = False
-    descriptor_set: Optional[str] = None
+    components: Tuple[TabularRepresentationComponent, ...] = ()
     automatic: bool = False
-    description: str = ""
+
+    @property
+    def use_morgan_binary(self) -> bool:
+        return any(isinstance(component, MorganBinaryFingerprint) for component in self.components)
+
+    @property
+    def use_morgan_count(self) -> bool:
+        return any(isinstance(component, MorganCountFingerprint) for component in self.components)
+
+    @property
+    def use_rdkit(self) -> bool:
+        return any(isinstance(component, RDKitDescriptors) for component in self.components)
+
+    @property
+    def descriptor_set(self) -> Optional[str]:
+        component = next(
+            (component for component in self.components if isinstance(component, RDKitDescriptors)),
+            None,
+        )
+        return component.descriptor_set if component is not None else None
+
+    @property
+    def description(self) -> str:
+        descriptions = {
+            RDKitDescriptors: "Full RDKit descriptor table",
+            MorganBinaryFingerprint: "Binary ECFP/Morgan fingerprint bits",
+            MorganCountFingerprint: "Count-based ECFP/Morgan fingerprint bins",
+            PrecomputedFeatures: "Explicit precomputed tabular features",
+        }
+        return " + ".join(descriptions[type(component)] for component in self.components) + "."
 
     def as_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # Preserve the existing public capability shape while exposing the new
+        # composable recipe additively.
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "use_morgan_binary": self.use_morgan_binary,
+            "use_morgan_count": self.use_morgan_count,
+            "use_rdkit": self.use_rdkit,
+            "descriptor_set": self.descriptor_set,
+            "automatic": self.automatic,
+            "description": self.description,
+            "components": [asdict(component) for component in self.components],
+        }
 
 
 TABULAR_REPRESENTATIONS: Dict[str, TabularRepresentationSpec] = {
     "rdkit_all": TabularRepresentationSpec(
         name="rdkit_all",
         display_name="RDKit all descriptors",
-        use_rdkit=True,
-        descriptor_set="all",
+        components=(RDKitDescriptors(descriptor_set="all"),),
         automatic=True,
-        description="Full RDKit descriptor table.",
     ),
     "morgan_only": TabularRepresentationSpec(
         name="morgan_only",
         display_name="Morgan binary fingerprint",
-        use_morgan_binary=True,
+        components=(MorganBinaryFingerprint(),),
         automatic=True,
-        description="Binary ECFP/Morgan fingerprint bits.",
     ),
     "morgan_count_only": TabularRepresentationSpec(
         name="morgan_count_only",
         display_name="Morgan count fingerprint",
-        use_morgan_count=True,
+        components=(MorganCountFingerprint(),),
         automatic=True,
-        description="Count-based ECFP/Morgan fingerprint bins.",
     ),
     "morgan_binary_count_rdkit_all": TabularRepresentationSpec(
         name="morgan_binary_count_rdkit_all",
         display_name="Morgan binary + count + RDKit all",
-        use_morgan_binary=True,
-        use_morgan_count=True,
-        use_rdkit=True,
-        descriptor_set="all",
+        components=(
+            MorganBinaryFingerprint(),
+            MorganCountFingerprint(),
+            RDKitDescriptors(descriptor_set="all"),
+        ),
         automatic=False,
-        description="Explicit advanced combined representation. Use only when requested.",
     ),
     "morgan_rdkit_all": TabularRepresentationSpec(
         name="morgan_rdkit_all",
         display_name="Morgan binary + RDKit all",
-        use_morgan_binary=True,
-        use_rdkit=True,
-        descriptor_set="all",
+        components=(
+            MorganBinaryFingerprint(),
+            RDKitDescriptors(descriptor_set="all"),
+        ),
         automatic=False,
-        description="Historical high-validation combined representation retained for compatibility and explicit use.",
     ),
 }
 

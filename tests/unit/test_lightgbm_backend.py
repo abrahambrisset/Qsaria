@@ -13,6 +13,11 @@ from cs_copilot.tools.prediction.backend import (
 )
 from cs_copilot.tools.prediction.lightgbm_backend import LightGBMBackend
 from cs_copilot.tools.prediction.qsar_contracts import build_backend_run_request
+from cs_copilot.tools.prediction.tabular_feature_preparation import (
+    PrecomputedFeaturesContract,
+    TabularRepresentationContract,
+    representation_recipe_signature,
+)
 
 
 class PickleableFakeClassifier:
@@ -165,6 +170,21 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
     assert {"prediction", "active_true", "positive_probability"}.issubset(preds.columns)
 
     prediction_csv = tmp_path / "predictions.csv"
+    component = PrecomputedFeaturesContract(feature_columns=["x"])
+    contract = TabularRepresentationContract(
+        kind="precomputed",
+        representation_name="precomputed_tabular",
+        components=[component],
+        recipe_signature=representation_recipe_signature(
+            kind="precomputed",
+            representation_name="precomputed_tabular",
+            components=[component],
+        ),
+        feature_columns=["x"],
+        feature_generator_version="not_applicable",
+        rdkit_version="not_applicable",
+        qsaria_version="0.4.0",
+    )
     record = PredictionModelRecord(
         model_id="binary",
         backend_name="lightgbm",
@@ -172,6 +192,7 @@ def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, mon
         task=PredictionTaskSpec(
             task_type="classification", smiles_columns=["smiles"], target_columns=["active"]
         ),
+        tabular_representation_contract=contract.model_dump(mode="json"),
     )
     backend.predict_from_csv(str(train_csv), record, str(prediction_csv))
     assert "positive_probability" in pd.read_csv(prediction_csv).columns

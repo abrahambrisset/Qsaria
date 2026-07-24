@@ -22,6 +22,7 @@ from .applicability_domain import (
     has_modern_applicability_domain,
     score_record_applicability_domain,
 )
+from .backend_capabilities import backend_requires_feature_preparation
 from .external_evaluation import evaluate_model_on_external_dataset
 from .model_registry_toolkit import ModelRegistryToolkit
 from .qsar_response_compaction import (
@@ -29,6 +30,7 @@ from .qsar_response_compaction import (
     compact_prediction_result_for_response,
 )
 from .session_state import get_prediction_state
+from .tabular_feature_preparation import TabularFeaturePreparationService
 
 _MISSING_TARGETS_ERROR = "missing required target columns"
 
@@ -60,10 +62,12 @@ class PredictionInferenceToolkit(Toolkit):
         backends: Mapping[str, Any],
         registry_toolkit: ModelRegistryToolkit,
         register_tools: bool = True,
+        tabular_feature_service: Optional[TabularFeaturePreparationService] = None,
     ):
         super().__init__("prediction_inference")
         self.backends = dict(backends)
         self.registry_toolkit = registry_toolkit
+        self.tabular_feature_service = tabular_feature_service or TabularFeaturePreparationService()
 
         if register_tools:
             self.register(self.predict_from_csv)
@@ -140,12 +144,35 @@ class PredictionInferenceToolkit(Toolkit):
         local_input.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(local_input, index=False)
 
+        backend_input = str(local_input)
+        tabular_preparation = None
+        try:
+            requires_tabular_preparation = backend_requires_feature_preparation(record.backend_name)
+        except KeyError:
+            requires_tabular_preparation = False
+        if requires_tabular_preparation:
+            tabular_preparation = self.tabular_feature_service.prepare_for_model(
+                input_csv=str(local_input),
+                output_dir=str(output_path.parent / f"{output_path.stem}_tabular_features"),
+                record=record,
+                purpose="inference",
+                smiles_column="smiles",
+            )
+            backend_input = tabular_preparation.prepared_csv
+
         result = backend.predict_from_csv(
-            input_csv=str(local_input),
+            input_csv=backend_input,
             model_record=record,
             preds_path=str(output_path),
             return_uncertainty=return_uncertainty,
         )
+        if tabular_preparation is not None:
+            result["tabular_preparation"] = {
+                "representation_name": tabular_preparation.representation_name,
+                "recipe_signature": tabular_preparation.recipe_signature,
+                "cache_status": tabular_preparation.cache_status,
+                "cache_key": tabular_preparation.cache_key,
+            }
         record_ad = record.applicability_domain or {}
         has_modern_ad = has_modern_applicability_domain(record_ad)
         if has_modern_ad:
@@ -155,6 +182,9 @@ class PredictionInferenceToolkit(Toolkit):
                 output_dir=output_path.parent / f"{Path(output_path).stem}_applicability_domain",
                 score_label="inference",
                 backend=backend,
+                prepared_feature_csv=(
+                    tabular_preparation.prepared_csv if tabular_preparation is not None else None
+                ),
             )
             if common_ad_result.get("scores") is not None:
                 ad_columns = append_ad_scores_to_csv(output_path, common_ad_result["scores"])
@@ -277,6 +307,7 @@ class PredictionInferenceToolkit(Toolkit):
                 smiles_column=smiles_column,
                 target_columns=target_columns,
                 evaluation_label=evaluation_label,
+                tabular_feature_service=self.tabular_feature_service,
             )
         except ValueError as exc:
             if _MISSING_TARGETS_ERROR in str(exc):

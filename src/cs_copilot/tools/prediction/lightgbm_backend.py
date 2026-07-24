@@ -20,8 +20,6 @@ import pandas as pd
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.activity_cliffs import ACTIVITY_CLIFF_ANNOTATION_PREFIX
-from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
-from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
 from .backend import (
     BackendNotAvailableError,
@@ -34,8 +32,8 @@ from .backend import (
 from .backend_capabilities import enrich_backend_environment
 from .qsar_contracts import LightGBMRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
-from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
-from .tabular_representations import get_tabular_representation
+from .qsar_training_policy import describe_compute_environment, project_now
+from .tabular_feature_preparation import require_tabular_model_contract
 from .training_orchestration import (
     build_classification_prediction_frame,
     classification_task_kind,
@@ -419,91 +417,6 @@ class LightGBMBackend(PredictionBackend):
                     output.insert(0, column, source[column].reset_index(drop=True))
         return output
 
-    def _featurize_prediction_input_if_possible(
-        self,
-        df: pd.DataFrame,
-        *,
-        input_csv: str,
-        model_record: PredictionModelRecord,
-        feature_columns: List[str],
-    ) -> pd.DataFrame:
-        representation_name = (
-            (model_record.inference_profile or {}).get("representation_name")
-            or (model_record.training_data_summary or {}).get("representation_name")
-            or (model_record.selection_hints or {}).get("representation_name")
-        )
-        if not representation_name:
-            return df
-        try:
-            spec = get_tabular_representation(str(representation_name))
-        except ValueError:
-            return df
-        try:
-            smiles_column = resolve_smiles_column_name(df, "smiles")
-        except ValueError:
-            return df
-
-        input_path = Path(input_csv).expanduser()
-        feature_dir = (
-            input_path.parent / ".lightgbm_prediction_features"
-            if input_path.is_absolute()
-            else Path(".files") / "prediction_features" / safe_slug(model_record.model_id)
-        )
-        feature_dir.mkdir(parents=True, exist_ok=True)
-        toolkit = MolecularFeatureToolkit()
-        feature_frames: List[pd.DataFrame] = []
-
-        if spec.use_morgan_binary:
-            output_csv = str(feature_dir / "morgan_binary.csv")
-            toolkit.smiles_to_morgan_fingerprints(
-                input_csv=input_csv,
-                smiles_column=smiles_column,
-                output_csv=output_csv,
-                include_input_columns=True,
-                input_columns_to_keep=["smiles"],
-                fingerprint_kind="binary",
-                n_jobs=1,
-            )
-            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
-        if spec.use_morgan_count:
-            output_csv = str(feature_dir / "morgan_count.csv")
-            toolkit.smiles_to_morgan_fingerprints(
-                input_csv=input_csv,
-                smiles_column=smiles_column,
-                output_csv=output_csv,
-                include_input_columns=True,
-                input_columns_to_keep=["smiles"],
-                fingerprint_kind="count",
-                n_jobs=1,
-            )
-            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
-        if spec.use_rdkit:
-            output_csv = str(feature_dir / "rdkit_descriptors.csv")
-            toolkit.smiles_to_rdkit_descriptors(
-                input_csv=input_csv,
-                smiles_column=smiles_column,
-                output_csv=output_csv,
-                descriptor_set=str(spec.descriptor_set or "basic"),
-                include_input_columns=True,
-                input_columns_to_keep=["smiles"],
-                n_jobs=1,
-            )
-            feature_frames.append(_strip_unnamed_columns(pd.read_csv(output_csv)))
-
-        assembled = df.copy()
-        feature_additions: List[pd.DataFrame] = []
-        for feature_df in feature_frames:
-            columns_to_add = [
-                column
-                for column in feature_columns
-                if column in feature_df.columns and column not in assembled.columns
-            ]
-            if columns_to_add:
-                feature_additions.append(feature_df[columns_to_add].reset_index(drop=True))
-        if feature_additions:
-            assembled = pd.concat([assembled.reset_index(drop=True), *feature_additions], axis=1)
-        return assembled
-
     def _is_gpu_runtime_unavailable(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "no opencl device found" in message or "opencl" in message
@@ -533,20 +446,27 @@ class LightGBMBackend(PredictionBackend):
         with S3.open(input_csv, "r") as fh:
             df = _strip_unnamed_columns(pd.read_csv(fh))
 
-        feature_columns = list((payload or {}).get("feature_columns") or [])
-        categorical_feature_columns = list((payload or {}).get("categorical_feature_columns") or [])
+        contract = require_tabular_model_contract(model_record)
+        feature_columns = list(contract.feature_columns)
+        categorical_feature_columns = list(contract.categorical_feature_columns)
+        artifact_feature_columns = list((payload or {}).get("feature_columns") or [])
+        artifact_categorical_columns = list(
+            (payload or {}).get("categorical_feature_columns") or []
+        )
+        if artifact_feature_columns != feature_columns:
+            raise InvalidPredictionInputError(
+                "LightGBM artifact feature columns do not match the model's "
+                "tabular_representation_contract."
+            )
+        if artifact_categorical_columns != categorical_feature_columns:
+            raise InvalidPredictionInputError(
+                "LightGBM artifact categorical feature columns do not match the model's "
+                "tabular_representation_contract."
+            )
         category_mappings = dict((payload or {}).get("categorical_mappings") or {})
         target_columns = list(model_record.task.target_columns)
 
         missing_features = [column for column in feature_columns if column not in df.columns]
-        if missing_features:
-            df = self._featurize_prediction_input_if_possible(
-                df,
-                input_csv=input_csv,
-                model_record=model_record,
-                feature_columns=feature_columns,
-            )
-            missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:
             raise InvalidPredictionInputError(
                 f"Prediction input is missing feature columns: {missing_features}"

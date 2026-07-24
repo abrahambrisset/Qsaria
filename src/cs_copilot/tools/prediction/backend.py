@@ -73,6 +73,7 @@ class PredictionModelRecord:
     inference_profile: Dict[str, Any] = field(default_factory=dict)
     selection_hints: Dict[str, Any] = field(default_factory=dict)
     applicability_domain: Dict[str, Any] = field(default_factory=dict)
+    tabular_representation_contract: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -96,6 +97,7 @@ class PredictionModelRecord:
             "inference_profile": dict(self.inference_profile),
             "selection_hints": dict(self.selection_hints),
             "applicability_domain": dict(self.applicability_domain),
+            "tabular_representation_contract": dict(self.tabular_representation_contract),
             "task": {
                 "task_type": self.task.task_type,
                 "smiles_columns": list(self.task.smiles_columns),
@@ -133,6 +135,7 @@ class PredictionModelRecord:
             inference_profile=payload.get("inference_profile", {}),
             selection_hints=payload.get("selection_hints", {}),
             applicability_domain=payload.get("applicability_domain", {}),
+            tabular_representation_contract=payload.get("tabular_representation_contract", {}),
             task=PredictionTaskSpec(
                 task_type=task_payload.get("task_type", "regression"),
                 smiles_columns=task_payload.get("smiles_columns", ["smiles"]),

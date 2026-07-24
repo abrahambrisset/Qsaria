@@ -1,12 +1,19 @@
 # Qsaria for Claude Code
 
-Current bundle: `0.3.2`. The only named scientific protocol is
+Current bundle: `0.4.0`. The only named scientific protocol is
 `standard_qsar`; advanced validation is expressed with an explicit strategy.
 
 This personal plugin makes Claude Code the sole coordinator of deterministic
 Qsaria workflows. Five restricted specialists perform curation, training,
 registry, inference, and reporting work through the existing Qsaria MCP
 profile. The MCP server launches no LLM and no Agno team.
+
+Qsaria 0.4.0 gives every new LightGBM and TabICL model a strict tabular
+representation contract shared by training, inference, external evaluation,
+ensembles, and applicability-domain scoring. A new SMILES-only CSV therefore
+does not depend on an experiment's training cache. Older tabular models without
+the contract are intentionally rejected and must be retrained; Chemprop models
+are unaffected.
 
 ## Prerequisites
 

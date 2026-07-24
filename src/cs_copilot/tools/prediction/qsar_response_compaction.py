@@ -69,6 +69,10 @@ def compact_training_data_summary_for_response(summary: Optional[Dict[str, Any]]
             "feature_preparation",
             "feature_preparation_durations",
             "activity_cliffs",
+            # Registry must receive this contract losslessly. It is the sole
+            # source of truth for every later tabular feature preparation and
+            # cannot be reconstructed from compact representation metadata.
+            "tabular_representation_contract",
             # These fields are small but essential when the payload describes
             # one member of an outlier-analysis variant set.  Omitting them
             # forces the registry agent to reconstruct provenance and makes

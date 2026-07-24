@@ -16,7 +16,10 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from .backend import PredictionModelRecord, PredictionTaskSpec
-from .backend_capabilities import get_backend_capabilities
+from .backend_capabilities import (
+    backend_requires_feature_preparation,
+    get_backend_capabilities,
+)
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .qsar_reporting import build_registry_reporting_handoff
 from .qsar_response_compaction import (
@@ -41,6 +44,7 @@ from .session_state import (
     get_prediction_state,
     latest_curation_artifacts,
 )
+from .tabular_feature_preparation import TabularRepresentationContract
 
 ARCHIVE_MODEL_PATH_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 _REGISTER_MODEL_PAYLOAD_KEYS = {
@@ -621,7 +625,10 @@ class ModelRegistryToolkit(Toolkit):
             recommended_for=record.recommended_for,
             not_recommended_for=record.not_recommended_for,
             known_metrics=record.known_metrics,
-            training_data_summary=record.training_data_summary,
+            training_data_summary={
+                **record.training_data_summary,
+                "tabular_representation_contract": dict(record.tabular_representation_contract),
+            },
             inference_profile=record.inference_profile,
             selection_hints=record.selection_hints,
             applicability_domain=record.applicability_domain,
@@ -673,6 +680,10 @@ class ModelRegistryToolkit(Toolkit):
         if agent is None:
             raise ValueError("Agent is required to register a model")
 
+        resolved_training_data_summary = dict(training_data_summary or {})
+        tabular_representation_contract = dict(
+            resolved_training_data_summary.pop("tabular_representation_contract", {}) or {}
+        )
         resolved_backend_name = backend_name or self.default_backend_name
         backend = self.get_backend(resolved_backend_name)
         if _is_archive_model_path(model_path):
@@ -690,6 +701,19 @@ class ModelRegistryToolkit(Toolkit):
                     "for Chemprop), not the downloadable training bundle/archive."
                 ),
             }
+        try:
+            requires_tabular_contract = backend_requires_feature_preparation(backend.backend_name)
+        except KeyError:
+            requires_tabular_contract = False
+        if requires_tabular_contract:
+            if not tabular_representation_contract:
+                raise ValueError(
+                    "New LightGBM and TabICL models require a "
+                    "tabular_representation_contract produced by Qsaria Training."
+                )
+            tabular_representation_contract = TabularRepresentationContract.model_validate(
+                tabular_representation_contract
+            ).model_dump(mode="json")
         validated_path = backend.validate_model_path(model_path)
         task = PredictionTaskSpec(
             task_type=task_type,
@@ -717,10 +741,11 @@ class ModelRegistryToolkit(Toolkit):
             recommended_for=recommended_for or [],
             not_recommended_for=not_recommended_for or [],
             known_metrics=known_metrics or {},
-            training_data_summary=training_data_summary or {},
+            training_data_summary=resolved_training_data_summary,
             inference_profile=inference_profile or {},
             selection_hints=selection_hints or {},
             applicability_domain=applicability_domain or {},
+            tabular_representation_contract=tabular_representation_contract,
         )
 
         prediction_state = get_prediction_state(agent)
@@ -1279,6 +1304,7 @@ class ModelRegistryToolkit(Toolkit):
             ),
             "inference_profile": dict(record.inference_profile),
             "selection_hints": dict(record.selection_hints),
+            "tabular_representation_contract": dict(record.tabular_representation_contract),
             "tags": dict(record.tags),
             "artifacts": copied_files,
         }
@@ -1491,6 +1517,7 @@ class ModelRegistryToolkit(Toolkit):
                 "trained_time": (record.training_data_summary or {}).get("trained_time"),
                 "inference_profile": dict(record.inference_profile),
                 "selection_hints": dict(record.selection_hints),
+                "tabular_representation_contract": dict(record.tabular_representation_contract),
                 "strengths": list(record.strengths),
                 "limitations": list(record.limitations),
                 "recommended_for": list(record.recommended_for),
@@ -1955,6 +1982,7 @@ class ModelRegistryToolkit(Toolkit):
                 current.applicability_domain,
                 resolved_applicability_domain,
             ),
+            tabular_representation_contract=dict(current.tabular_representation_contract),
         )
 
         self.catalog.upsert_model(persisted_record)

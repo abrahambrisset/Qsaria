@@ -17,6 +17,36 @@ from cs_copilot.tools.prediction.backend_capabilities import BackendCapabilities
 from cs_copilot.tools.prediction.catalog import PredictionModelCatalog
 from cs_copilot.tools.prediction.ensemble_backend import EnsembleBackend
 from cs_copilot.tools.prediction.ensemble_toolkit import EnsembleToolkit
+from cs_copilot.tools.prediction.tabular_feature_preparation import (
+    TabularRepresentationContract,
+    _component_contract,
+    current_rdkit_version,
+    representation_recipe_signature,
+)
+from cs_copilot.tools.prediction.tabular_representations import (
+    get_tabular_representation,
+)
+
+
+def _generated_contract(
+    representation_name: str,
+    feature_columns: list[str],
+) -> dict:
+    spec = get_tabular_representation(representation_name)
+    components = [_component_contract(component) for component in spec.components]
+    return TabularRepresentationContract(
+        kind="generated",
+        representation_name=representation_name,
+        components=components,
+        recipe_signature=representation_recipe_signature(
+            kind="generated",
+            representation_name=representation_name,
+            components=components,
+        ),
+        feature_columns=feature_columns,
+        rdkit_version=current_rdkit_version(),
+        qsaria_version="0.4.0",
+    ).model_dump(mode="json")
 
 
 class FakeBackend(PredictionBackend):
@@ -310,6 +340,10 @@ def test_ensemble_backend_uses_capabilities_for_tabular_preparation(tmp_path):
                         "component_slug": "tabular",
                         "backend_name": "fake_tabular",
                         "model_path": str(model_path),
+                        "tabular_representation_contract": _generated_contract(
+                            "morgan_only",
+                            ["fp_0000"],
+                        ),
                         "inference_profile": {
                             "representation_name": "morgan_only",
                             "feature_columns": ["fp_0000"],
@@ -329,24 +363,19 @@ def test_ensemble_backend_uses_capabilities_for_tabular_preparation(tmp_path):
         backend_capabilities=FAKE_CAPABILITIES,
     )
 
-    def fake_morgan(input_csv, smiles_column="smiles", output_csv=None, **kwargs):
-        source = pd.read_csv(input_csv)
-        pd.DataFrame({"smiles": source["smiles"], "fp_0000": [5.0, 7.0]}).to_csv(
-            output_csv, index=False
-        )
-        return {"output_csv": output_csv}
-
-    backend.feature_toolkit = SimpleNamespace(smiles_to_morgan_fingerprints=fake_morgan)
     output = tmp_path / "preds.csv"
     record = _record("ens", "ensemble", ensemble_path)
 
     result = backend.predict_from_csv(str(input_csv), record, str(output))
 
     preds = pd.read_csv(output)
-    assert preds["prediction"].tolist() == [15.0, 17.0]
     component_input = Path(result["component_input_paths"]["tabular"])
     assert component_input.exists()
-    assert "fp_0000" in pd.read_csv(component_input).columns
+    component_frame = pd.read_csv(component_input)
+    assert "fp_0000" in component_frame.columns
+    assert (
+        preds["prediction"].tolist() == (component_frame["fp_0000"].astype(float) + 10.0).tolist()
+    )
 
 
 def test_ensemble_backend_rejects_configured_backend_without_capabilities(tmp_path):

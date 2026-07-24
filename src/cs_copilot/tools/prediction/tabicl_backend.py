@@ -36,6 +36,7 @@ from .backend_capabilities import enrich_backend_environment
 from .qsar_contracts import TabICLRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import project_now
+from .tabular_feature_preparation import require_tabular_model_contract
 from .training_orchestration import (
     classification_task_kind,
     compute_classification_metrics,
@@ -349,10 +350,9 @@ class TabICLBackend(PredictionBackend):
         with S3.open(input_csv, "r") as fh:
             df = _strip_unnamed_columns(pd.read_csv(fh))
 
+        contract = require_tabular_model_contract(model_record)
         target_columns = list(model_record.task.target_columns)
-        feature_columns = list((model_record.inference_profile or {}).get("feature_columns", []))
-        if not feature_columns:
-            feature_columns = self._select_feature_columns(df, target_columns, {})
+        feature_columns = list(contract.feature_columns)
 
         missing_features = [column for column in feature_columns if column not in df.columns]
         if missing_features:

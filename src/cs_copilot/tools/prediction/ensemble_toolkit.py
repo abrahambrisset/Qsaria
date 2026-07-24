@@ -14,7 +14,11 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
-from .backend import PredictionModelRecord, PredictionTaskSpec
+from .backend import (
+    InvalidPredictionInputError,
+    PredictionModelRecord,
+    PredictionTaskSpec,
+)
 from .backend_capabilities import backend_supports_component_orchestration
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
@@ -27,6 +31,7 @@ from .qsar_response_compaction import (
 )
 from .qsar_training_policy import project_now, safe_slug
 from .tabicl_backend import TabICLBackend
+from .tabular_feature_preparation import require_tabular_model_contract
 from .training_orchestration import (
     compute_classification_metrics,
     is_classification_task,
@@ -130,6 +135,8 @@ def _target_matches(record: PredictionModelRecord, target: str) -> bool:
 
 
 def _representation(record: PredictionModelRecord) -> str:
+    if record.backend_name in {"lightgbm", "tabicl"}:
+        return require_tabular_model_contract(record).representation_name
     for source in (
         record.inference_profile,
         record.selection_hints,
@@ -340,7 +347,12 @@ class EnsembleToolkit(Toolkit):
     def _candidate_evidence(
         self, record: PredictionModelRecord, target: str, task_type: str
     ) -> Dict[str, Any]:
-        representation = _representation(record)
+        representation_error = None
+        try:
+            representation = _representation(record)
+        except InvalidPredictionInputError as exc:
+            representation = "unknown"
+            representation_error = str(exc)
         representation_slug = safe_slug(representation) or "unknown"
         metrics = _metric_summary(record)
         metadata = _load_json(record.metadata_path)
@@ -355,6 +367,9 @@ class EnsembleToolkit(Toolkit):
         compatible = True
         reasons: List[str] = []
         warnings: List[str] = []
+        if representation_error:
+            compatible = False
+            warnings.append(representation_error)
         if not _task_compatible(record.task.task_type, task_type):
             compatible = False
             warnings.append(f"Task type mismatch: {record.task.task_type}.")
@@ -448,6 +463,7 @@ class EnsembleToolkit(Toolkit):
             "applicability_domain": compact_applicability_domain_for_response(
                 record.applicability_domain
             ),
+            "tabular_representation_contract": dict(record.tabular_representation_contract),
             "selection_evidence": {
                 "evidence_tier": evidence.get("evidence_tier"),
                 "selection_reason": evidence.get("selection_reason"),

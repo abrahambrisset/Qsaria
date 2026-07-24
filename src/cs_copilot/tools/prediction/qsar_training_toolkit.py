@@ -53,6 +53,10 @@ from .session_state import (
     latest_curation_artifacts,
 )
 from .tabicl_toolkit import TabICLToolkit
+from .tabular_feature_preparation import (
+    TabularFeaturePreparationService,
+    TabularPreparationRequest,
+)
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
     default_tabular_representation_for_protocol,
@@ -61,7 +65,6 @@ from .tabular_representations import (
 )
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
-QSAR_ROW_ID_COLUMN = "__qsar_row_id"
 PERSISTENCE_MANIFEST_SCHEMA_VERSION = "1.0"
 PERSISTENCE_MANIFEST_FILENAME = "catalog_candidates_manifest.json"
 OUTLIER_VARIANTS_MANIFEST_FILENAME = "outlier_model_variants.json"
@@ -111,38 +114,9 @@ def _agent_storage_path(path: str | Path) -> str:
     return raw
 
 
-def _feature_columns_from_csv(path: str, target_columns: List[str]) -> List[str]:
-    with S3.open(_agent_storage_path(path), "r") as fh:
-        columns = list(pd.read_csv(fh, nrows=0).columns)
-    excluded = {"smiles", QSAR_ROW_ID_COLUMN, *target_columns}
-    return [column for column in columns if column not in excluded]
-
-
-def _hash_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with S3.open(_agent_storage_path(path), "rb") as fh:
-        while True:
-            chunk = fh.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _cache_key(payload: Dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def _read_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
-    try:
-        with S3.open(_agent_storage_path(path), "r") as fh:
-            payload = json.load(fh)
-    except FileNotFoundError:
-        return None
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _storage_path_exists(path: Path | str) -> bool:
@@ -666,12 +640,16 @@ class QSARTrainingToolkit(Toolkit):
         lightgbm_toolkit: Optional[LightGBMToolkit] = None,
         tabicl_toolkit: Optional[TabICLToolkit] = None,
         molecular_feature_toolkit: Optional[MolecularFeatureToolkit] = None,
+        tabular_feature_service: Optional[TabularFeaturePreparationService] = None,
     ):
         super().__init__("qsar_training")
         self.chemprop_toolkit = chemprop_toolkit or ChempropToolkit()
         self.lightgbm_toolkit = lightgbm_toolkit or LightGBMToolkit()
         self.tabicl_toolkit = tabicl_toolkit or TabICLToolkit()
         self.molecular_feature_toolkit = molecular_feature_toolkit or MolecularFeatureToolkit()
+        self.tabular_feature_service = tabular_feature_service or TabularFeaturePreparationService(
+            feature_toolkit=self.molecular_feature_toolkit
+        )
 
         self.register(self.describe_qsar_training_environment)
         self.register(self.describe_backend_hyperparameters)
@@ -983,343 +961,78 @@ class QSARTrainingToolkit(Toolkit):
         feature_cache_dir: Optional[str] = None,
         feature_n_jobs: Optional[int] = None,
     ) -> Dict[str, Any]:
-        spec = get_tabular_representation(representation_name)
-        resolved_feature_n_jobs = _resolve_feature_n_jobs(feature_n_jobs)
-
-        total_started_at = time.monotonic()
-        duration_steps: List[Dict[str, Any]] = []
-        output_path = Path(output_dir).expanduser().resolve()
-        features_dir = output_path / "features"
-        features_dir.mkdir(parents=True, exist_ok=True)
-        cache_root = (
-            Path(feature_cache_dir).expanduser().resolve()
-            if feature_cache_dir
-            else features_dir / "cache"
+        prepared = self.tabular_feature_service.prepare(
+            TabularPreparationRequest(
+                input_csv=train_csv,
+                output_dir=str(Path(output_dir).expanduser().resolve() / "features"),
+                kind="generated",
+                representation_name=representation_name,
+                smiles_column=smiles_column,
+                target_columns=list(target_columns),
+                cache_root=feature_cache_dir,
+                n_jobs=_resolve_feature_n_jobs(feature_n_jobs),
+                purpose="training",
+            )
         )
-        cache_root.mkdir(parents=True, exist_ok=True)
-
-        step_started_at = time.monotonic()
-        with S3.open(_agent_storage_path(train_csv), "r") as fh:
-            source_df = pd.read_csv(fh)
-        resolved_smiles_column = resolve_smiles_column_name(source_df, smiles_column)
-        missing_targets = [column for column in target_columns if column not in source_df.columns]
-        if missing_targets:
-            raise ValueError(f"Missing target columns: {missing_targets}")
-        normalized_df = source_df.copy()
-        if resolved_smiles_column != "smiles":
-            normalized_df["smiles"] = normalized_df[resolved_smiles_column]
-            normalized_df = normalized_df.drop(columns=[resolved_smiles_column])
-        normalized_df[QSAR_ROW_ID_COLUMN] = range(len(normalized_df))
-        normalized_csv = features_dir / f"{Path(train_csv).stem}_feature_base.csv"
-        with S3.open(str(normalized_csv), "w") as fh:
-            normalized_df[[QSAR_ROW_ID_COLUMN, "smiles", *target_columns]].to_csv(fh, index=False)
-        base_csv_for_features = str(normalized_csv)
-        feature_smiles_column = "smiles"
-        duration_steps.append(
-            {
-                "step": "feature_base_dataset",
-                "duration_seconds": round(time.monotonic() - step_started_at, 3),
-                "output_csv": base_csv_for_features,
-                "row_id_column": QSAR_ROW_ID_COLUMN,
-                "source_rows": int(len(normalized_df)),
-            }
-        )
-
-        dataset_hash = _hash_file(base_csv_for_features)
-
-        def component_from_cache(
-            *,
-            component_name: str,
-            generator_payload: Dict[str, Any],
-        ) -> Optional[Dict[str, Any]]:
-            component_key_payload = {
-                "kind": "feature_component",
-                "component_name": component_name,
-                "dataset_hash": dataset_hash,
-                "smiles_column": feature_smiles_column,
-                "target_columns": list(target_columns),
-                **generator_payload,
-            }
-            cache_key = _cache_key(component_key_payload)
-            output_csv = cache_root / f"{component_name}_{cache_key}.csv"
-            metadata_path = cache_root / f"{component_name}_{cache_key}.json"
-            cached = _read_json_if_exists(metadata_path)
-            if cached and cached.get("cache_key") == cache_key and _storage_path_exists(output_csv):
-                return {
-                    "cache_key": cache_key,
-                    "output_csv": str(output_csv),
-                    "metadata_path": str(metadata_path),
-                    "cache_status": "reused_from_cache",
-                    "result": cached.get("result") or {"output_csv": str(output_csv)},
-                    "key_payload": component_key_payload,
-                }
-            return {
-                "cache_key": cache_key,
-                "output_csv": str(output_csv),
-                "metadata_path": str(metadata_path),
-                "cache_status": "generated",
-                "result": None,
-                "key_payload": component_key_payload,
-            }
-
-        def persist_component_cache(component: Dict[str, Any], result: Dict[str, Any]) -> None:
-            _write_json(
-                Path(component["metadata_path"]),
-                {
-                    "cache_key": component["cache_key"],
-                    "cache_status": "generated",
-                    "key_payload": component["key_payload"],
-                    "result": result,
-                },
+        spec = get_tabular_representation(prepared.representation_name)
+        component_steps = []
+        for artifact in prepared.component_artifacts:
+            component_result = dict(artifact.get("result") or {})
+            component_kind = str(artifact["kind"])
+            component_name = (
+                "rdkit_all" if component_kind == "rdkit_descriptors" else component_kind
             )
-
-        feature_csvs: List[str] = []
-        component_records: List[Dict[str, Any]] = []
-
-        if spec.use_morgan_binary:
-            component = component_from_cache(
-                component_name="morgan_binary",
-                generator_payload={"radius": 2, "n_bits": 2048, "fingerprint_kind": "binary"},
-            )
-            if component["cache_status"] == "generated":
-                step_started_at = time.monotonic()
-                result = self.molecular_feature_toolkit.smiles_to_morgan_fingerprints(
-                    input_csv=base_csv_for_features,
-                    smiles_column=feature_smiles_column,
-                    output_csv=component["output_csv"],
-                    radius=2,
-                    n_bits=2048,
-                    include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
-                    feature_prefix="fp_",
-                    fingerprint_kind="binary",
-                    n_jobs=resolved_feature_n_jobs,
-                )
-                persist_component_cache(component, result)
-                duration_seconds = float(
-                    result.get("duration_seconds") or round(time.monotonic() - step_started_at, 3)
-                )
-            else:
-                result = component["result"]
-                duration_seconds = 0.0
-            feature_csvs.append(component["output_csv"])
-            component_records.append(component)
-            duration_steps.append(
-                {
-                    "step": _feature_step_name("morgan_binary"),
-                    "cache_status": component["cache_status"],
-                    "cache_hit": component["cache_status"] == "reused_from_cache",
-                    "cache_key": component["cache_key"],
-                    "duration_seconds": duration_seconds,
-                    "output_csv": component["output_csv"],
-                    "num_features": result.get("num_features"),
-                    "radius": result.get("radius", 2),
-                    "n_bits": result.get("n_bits", 2048),
-                    "fingerprint_kind": "binary",
-                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
-                }
-            )
-
-        if spec.use_morgan_count:
-            component = component_from_cache(
-                component_name="morgan_count",
-                generator_payload={"radius": 2, "n_bits": 2048, "fingerprint_kind": "count"},
-            )
-            if component["cache_status"] == "generated":
-                step_started_at = time.monotonic()
-                result = self.molecular_feature_toolkit.smiles_to_morgan_fingerprints(
-                    input_csv=base_csv_for_features,
-                    smiles_column=feature_smiles_column,
-                    output_csv=component["output_csv"],
-                    radius=2,
-                    n_bits=2048,
-                    include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
-                    feature_prefix="cfp_",
-                    fingerprint_kind="count",
-                    n_jobs=resolved_feature_n_jobs,
-                )
-                persist_component_cache(component, result)
-                duration_seconds = float(
-                    result.get("duration_seconds") or round(time.monotonic() - step_started_at, 3)
-                )
-            else:
-                result = component["result"]
-                duration_seconds = 0.0
-            feature_csvs.append(component["output_csv"])
-            component_records.append(component)
-            duration_steps.append(
-                {
-                    "step": _feature_step_name("morgan_count"),
-                    "cache_status": component["cache_status"],
-                    "cache_hit": component["cache_status"] == "reused_from_cache",
-                    "cache_key": component["cache_key"],
-                    "duration_seconds": duration_seconds,
-                    "output_csv": component["output_csv"],
-                    "num_features": result.get("num_features"),
-                    "radius": result.get("radius", 2),
-                    "n_bits": result.get("n_bits", 2048),
-                    "fingerprint_kind": "count",
-                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
-                }
-            )
-
-        if spec.use_rdkit:
-            descriptor_set = str(spec.descriptor_set)
-            component_name = f"rdkit_{descriptor_set}"
-            component = component_from_cache(
-                component_name=component_name,
-                generator_payload={"descriptor_set": descriptor_set},
-            )
-            if component["cache_status"] == "generated":
-                step_started_at = time.monotonic()
-                result = self.molecular_feature_toolkit.smiles_to_rdkit_descriptors(
-                    input_csv=base_csv_for_features,
-                    smiles_column=feature_smiles_column,
-                    output_csv=component["output_csv"],
-                    descriptor_set=descriptor_set,
-                    include_input_columns=True,
-                    input_columns_to_keep=[
-                        QSAR_ROW_ID_COLUMN,
-                        feature_smiles_column,
-                        *target_columns,
-                    ],
-                    n_jobs=resolved_feature_n_jobs,
-                )
-                persist_component_cache(component, result)
-                duration_seconds = float(
-                    result.get("duration_seconds") or round(time.monotonic() - step_started_at, 3)
-                )
-            else:
-                result = component["result"]
-                duration_seconds = 0.0
-            feature_csvs.append(component["output_csv"])
-            component_records.append(component)
-            duration_steps.append(
+            component_steps.append(
                 {
                     "step": _feature_step_name(component_name),
-                    "cache_status": component["cache_status"],
-                    "cache_hit": component["cache_status"] == "reused_from_cache",
-                    "cache_key": component["cache_key"],
-                    "duration_seconds": duration_seconds,
-                    "output_csv": component["output_csv"],
-                    "descriptor_set": result.get("descriptor_set", descriptor_set),
-                    "num_descriptors": result.get("num_descriptors"),
-                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
-                }
-            )
-
-        tabular_key_payload = {
-            "kind": "assembled_tabular_representation",
-            "representation_name": representation_name,
-            "dataset_hash": dataset_hash,
-            "smiles_column": feature_smiles_column,
-            "row_id_column": QSAR_ROW_ID_COLUMN,
-            "target_columns": list(target_columns),
-            "component_cache_keys": [component["cache_key"] for component in component_records],
-        }
-        tabular_cache_key = _cache_key(tabular_key_payload)
-        tabular_output_csv = cache_root / f"tabular_{representation_name}_{tabular_cache_key}.csv"
-        tabular_metadata_path = (
-            cache_root / f"tabular_{representation_name}_{tabular_cache_key}.json"
-        )
-        cached_tabular = _read_json_if_exists(tabular_metadata_path)
-        tabular_cache_status = "generated"
-        if (
-            cached_tabular
-            and cached_tabular.get("cache_key") == tabular_cache_key
-            and _storage_path_exists(tabular_output_csv)
-        ):
-            tabular_cache_status = "reused_from_cache"
-            tabular = cached_tabular.get("result") or {"output_csv": str(tabular_output_csv)}
-            tabular["output_csv"] = str(tabular_output_csv)
-            duration_steps.append(
-                {
-                    "step": "tabular_dataset_assembly",
-                    "cache_status": "reused_from_cache",
-                    "cache_hit": True,
-                    "cache_key": tabular_cache_key,
-                    "duration_seconds": 0.0,
-                    "output_csv": str(tabular_output_csv),
-                    "num_added_feature_columns": tabular.get("num_added_feature_columns"),
-                    "final_column_count": tabular.get("final_column_count"),
-                    "canonicalize_smiles_join": tabular.get("canonicalize_smiles_join"),
-                }
-            )
-        else:
-            step_started_at = time.monotonic()
-            tabular = self.molecular_feature_toolkit.build_tabular_qsar_dataset(
-                base_csv=base_csv_for_features,
-                output_csv=str(tabular_output_csv),
-                feature_csvs=feature_csvs,
-                join_on=[QSAR_ROW_ID_COLUMN],
-                base_columns_to_keep=[QSAR_ROW_ID_COLUMN, "smiles", *target_columns],
-                drop_duplicate_feature_columns=True,
-                canonicalize_smiles_join=False,
-            )
-            _write_json(
-                tabular_metadata_path,
-                {
-                    "cache_key": tabular_cache_key,
-                    "cache_status": "generated",
-                    "key_payload": tabular_key_payload,
-                    "result": tabular,
-                },
-            )
-            duration_steps.append(
-                {
-                    "step": "tabular_dataset_assembly",
-                    "cache_status": "generated",
-                    "cache_hit": False,
-                    "cache_key": tabular_cache_key,
-                    "duration_seconds": float(
-                        tabular.get("duration_seconds")
-                        or round(time.monotonic() - step_started_at, 3)
+                    "cache_status": artifact["cache_status"],
+                    "cache_hit": artifact["cache_status"] == "reused_from_cache",
+                    "cache_key": artifact["cache_key"],
+                    "output_csv": artifact["output_csv"],
+                    "duration_seconds": (
+                        0.0
+                        if artifact["cache_status"] == "reused_from_cache"
+                        else component_result.get("duration_seconds")
                     ),
-                    "output_csv": tabular["output_csv"],
-                    "num_added_feature_columns": tabular.get("num_added_feature_columns"),
-                    "final_column_count": tabular.get("final_column_count"),
-                    "canonicalize_smiles_join": tabular.get("canonicalize_smiles_join"),
+                    "num_features": component_result.get("num_features"),
+                    "num_descriptors": component_result.get("num_descriptors"),
+                    "radius": component_result.get("radius"),
+                    "n_bits": component_result.get("n_bits"),
+                    "fingerprint_kind": component_result.get("fingerprint_kind"),
+                    "descriptor_set": component_result.get("descriptor_set"),
                 }
             )
-
-        feature_columns = _feature_columns_from_csv(tabular["output_csv"], target_columns)
-        cache_hits = [step for step in duration_steps if step.get("cache_hit") is True]
-        cache_misses = [step for step in duration_steps if step.get("cache_hit") is False]
         feature_preparation = {
             "mode": "generated_tabular_features",
-            "representation_name": representation_name,
+            "representation_name": prepared.representation_name,
             "representation_display_name": spec.display_name,
             "input_csv": train_csv,
-            "base_csv_for_features": base_csv_for_features,
-            "prepared_train_csv": tabular["output_csv"],
-            "feature_csvs": feature_csvs,
-            "feature_cache_dir": str(cache_root),
-            "feature_cache_key": tabular_cache_key,
-            "feature_cache_status": tabular_cache_status,
-            "feature_n_jobs": resolved_feature_n_jobs,
-            "cache_hits": len(cache_hits),
-            "cache_misses": len(cache_misses),
-            "feature_count": len(feature_columns),
+            "prepared_train_csv": prepared.prepared_csv,
+            "feature_csvs": [artifact["output_csv"] for artifact in prepared.component_artifacts],
+            "feature_cache_dir": prepared.cache_root,
+            "feature_cache_key": prepared.cache_key,
+            "feature_cache_status": prepared.cache_status,
+            "feature_n_jobs": _resolve_feature_n_jobs(feature_n_jobs),
+            "cache_hits": prepared.cache_hits,
+            "cache_misses": prepared.cache_misses,
+            "feature_count": len(prepared.feature_columns),
+            "recipe_signature": prepared.recipe_signature,
+            "tabular_representation_contract": prepared.contract.model_dump(mode="json"),
             "durations": {
-                "total_duration_seconds": round(time.monotonic() - total_started_at, 3),
-                "steps": duration_steps,
+                "total_duration_seconds": prepared.duration_seconds,
+                "steps": component_steps,
             },
         }
         return {
-            "train_csv": tabular["output_csv"],
-            "representation_name": representation_name,
-            "feature_csvs": feature_csvs,
-            "feature_columns": feature_columns,
-            "tabular_dataset": tabular,
+            "train_csv": prepared.prepared_csv,
+            "representation_name": prepared.representation_name,
+            "feature_csvs": feature_preparation["feature_csvs"],
+            "feature_columns": list(prepared.feature_columns),
+            "tabular_dataset": {
+                "output_csv": prepared.prepared_csv,
+                "rows": prepared.row_count,
+            },
+            "tabular_representation_contract": prepared.contract.model_dump(mode="json"),
             "feature_preparation": feature_preparation,
             "feature_preparation_durations": feature_preparation["durations"],
         }
@@ -1412,6 +1125,9 @@ class QSARTrainingToolkit(Toolkit):
                 "catalog_model_policy": result.get("catalog_model_policy"),
                 "outlier_analysis": result.get("outlier_analysis") or {},
                 "outlier_variant": result.get("outlier_variant"),
+                "tabular_representation_contract": (
+                    result.get("tabular_representation_contract") or {}
+                ),
             },
             "inference_profile": {
                 "representation_name": result.get("representation_name"),
@@ -1652,7 +1368,7 @@ class QSARTrainingToolkit(Toolkit):
         requested_resolved_parameters["training_profile"] = compute_profile
         requested_resolved_parameters["allow_heavy_compute"] = request.compute.allow_heavy_compute
         requested_resolved_parameters["feature_cache_dir"] = str(
-            (Path(output_dir).expanduser().resolve() / "feature_cache")
+            self.tabular_feature_service.cache_root
         )
         requested_resolved_parameters["feature_n_jobs"] = _resolve_feature_n_jobs()
         requested_resolved_parameters["validation_protocol"] = validation_protocol
@@ -1726,14 +1442,34 @@ class QSARTrainingToolkit(Toolkit):
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
                 feature_preparation = prepared["feature_preparation"]
+                tabular_representation_contract = prepared["tabular_representation_contract"]
             else:
                 resolved_representation = resolved_representation or "precomputed_tabular"
+                prepared = self.tabular_feature_service.prepare(
+                    TabularPreparationRequest(
+                        input_csv=train_csv,
+                        output_dir=str(Path(output_dir).expanduser().resolve() / "features"),
+                        kind="precomputed",
+                        representation_name=resolved_representation,
+                        smiles_column=smiles_column,
+                        target_columns=list(normalized_target_columns),
+                        expected_feature_columns=list(normalized_feature_columns or []),
+                        categorical_feature_columns=list(
+                            normalized_categorical_feature_columns or []
+                        ),
+                        n_jobs=_resolve_feature_n_jobs(),
+                        purpose="training",
+                    )
+                )
+                working_train_csv = prepared.prepared_csv
+                tabular_representation_contract = prepared.contract.model_dump(mode="json")
                 feature_preparation = {
                     "mode": "precomputed_tabular_features",
                     "representation_name": resolved_representation,
                     "input_csv": train_csv,
                     "prepared_train_csv": working_train_csv,
                     "feature_count": len(normalized_feature_columns or []),
+                    "tabular_representation_contract": (tabular_representation_contract),
                     "durations": {"total_duration_seconds": 0.0, "steps": []},
                 }
 
@@ -1792,6 +1528,7 @@ class QSARTrainingToolkit(Toolkit):
             result["representation_name"] = resolved_representation
             result["candidate_train_csv"] = working_train_csv
             result["feature_columns"] = list(normalized_feature_columns or [])
+            result["tabular_representation_contract"] = tabular_representation_contract
             result["feature_preparation"] = feature_preparation
             result["feature_preparation_durations"] = feature_preparation["durations"]
         else:

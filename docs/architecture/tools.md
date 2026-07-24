@@ -27,6 +27,7 @@ tools/
 │   ├── backend.py                 Backend contract for pluggable predictors
 │   ├── backend_factory.py         Shared backend construction
 │   ├── tabular_representations.py Canonical tabular representation registry
+│   ├── tabular_feature_preparation.py Shared preparation, contract, and cache
 │   ├── qsar_training_toolkit.py   Public QSAR training facade
 │   ├── model_registry_toolkit.py  Public model registry and catalog facade
 │   ├── prediction_inference_toolkit.py  Public inference facade
@@ -49,11 +50,14 @@ reached through `QSARTrainingToolkit`, not exposed directly to agents.
 
 ## QSAR Tabular Features
 
-`QSARTrainingToolkit` and `BenchmarkToolkit` must not maintain their own
-representation lists. They consume `tabular_representations.py`, while
-`MolecularFeatureToolkit` generates and caches RDKit all descriptors, Morgan
-binary fingerprints, and Morgan count fingerprints for LightGBM/TabICL and any
-future tabular backend.
+No workflow or backend maintains its own representation recipe.
+`tabular_representations.py` declares immutable RDKit, Morgan binary, Morgan
+count, and precomputed components. `TabularFeaturePreparationService` assembles
+and caches them once for Training, Inference, External Evaluation, Ensemble,
+Applicability Domain, and any future tabular backend.
+`MolecularFeatureToolkit` remains the low-level calculation engine; LightGBM and
+TabICL receive only matrices whose columns have already been validated and
+ordered.
 
 ## ChEMBL Backends
 

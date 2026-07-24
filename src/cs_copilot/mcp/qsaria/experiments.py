@@ -26,6 +26,9 @@ from urllib.parse import unquote, urlsplit
 
 from cs_copilot.mcp.context import MCPAgentContext
 from cs_copilot.tools.prediction.qsar_contracts import TRAINING_CONTRACT_VERSION
+from cs_copilot.tools.prediction.tabular_representations import (
+    TABULAR_REPRESENTATION_CONTRACT_VERSION,
+)
 
 from .contracts import (
     COMPLETION_STATUSES,
@@ -230,6 +233,7 @@ class ExperimentManager:
                 "report_context": REPORT_CONTEXT_SCHEMA_VERSION,
                 "report_facts": "2.0",
                 "training": TRAINING_CONTRACT_VERSION,
+                "tabular_representation": TABULAR_REPRESENTATION_CONTRACT_VERSION,
             },
             "capabilities": {
                 "lifecycle": [
@@ -278,6 +282,12 @@ class ExperimentManager:
                 "model_persistence_default": _DEFAULT_PERSISTENCE_POLICY,
                 "model_persistence_opt_out": "session_only",
                 "catalog_model_root": "data/model_assets/internal",
+                "tabular_model_policy": {
+                    "contract_version": TABULAR_REPRESENTATION_CONTRACT_VERSION,
+                    "legacy_lightgbm_tabicl_models_supported": False,
+                    "exact_rdkit_version_required_for_generated_features": True,
+                    "shared_cache": ".files/cache/tabular_representations/v1",
+                },
                 "catalog_path": str(
                     os.getenv(
                         "QSARIA_MODEL_CATALOG_PATH",
@@ -1266,7 +1276,7 @@ class ExperimentManager:
         try:
             package_version = importlib_metadata.version("cs_copilot")
         except importlib_metadata.PackageNotFoundError:
-            package_version = "0.3.1"
+            package_version = "0.4.0"
         return {
             "cs_copilot": package_version,
             "qsaria": package_version,
@@ -1274,6 +1284,7 @@ class ExperimentManager:
             "runtime_state": RUNTIME_SCHEMA_VERSION,
             "handoff": HANDOFF_SCHEMA_VERSION,
             "training": TRAINING_CONTRACT_VERSION,
+            "tabular_representation": TABULAR_REPRESENTATION_CONTRACT_VERSION,
             "plugin": PLUGIN_CONTRACT_VERSION,
         }
 

@@ -132,7 +132,7 @@ def _read_catalog_payload(path: Path) -> dict[str, Any]:
         raise ValueError("Model catalog root must be a JSON object.")
     if payload.get("schema_version") != 2:
         raise ValueError(
-            "Unsupported model catalog schema_version. Qsaria 0.3.1 requires schema_version=2."
+            "Unsupported model catalog schema_version. Qsaria 0.4.0 requires schema_version=2."
         )
     models = payload.get("models")
     if not isinstance(models, list):
@@ -302,6 +302,9 @@ def _record_from_internal_metadata(metadata_path: Path) -> Optional[PredictionMo
         inference_profile=dict(payload.get("inference_profile", {}) or {}),
         selection_hints=dict(payload.get("selection_hints", {}) or {}),
         applicability_domain=applicability_domain,
+        tabular_representation_contract=dict(
+            payload.get("tabular_representation_contract", {}) or {}
+        ),
         task=PredictionModelRecord.from_dict(
             {
                 "model_id": model_id,

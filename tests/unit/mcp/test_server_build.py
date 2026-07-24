@@ -174,6 +174,13 @@ def test_qsaria_bootstrap_does_not_resume_or_list_experiments(qsaria_server):
     ]
     assert result["training_contract_version"] == "2.0"
     assert result["contracts"]["training"] == "2.0"
+    assert result["contracts"]["tabular_representation"] == "1.0"
+    assert result["compatibility"]["tabular_model_policy"] == {
+        "contract_version": "1.0",
+        "legacy_lightgbm_tabicl_models_supported": False,
+        "exact_rdkit_version_required_for_generated_features": True,
+        "shared_cache": ".files/cache/tabular_representations/v1",
+    }
     assert result["compatibility"]["typed_training_requests"] is True
     assert result["compatibility"]["free_training_arguments"] is False
 

@@ -72,6 +72,12 @@ application and the external integrations.
 | **Chemprop** | Message-passing neural networks operating on molecular graphs. |
 | **TabICL** | Tabular in-context learning for supported molecular datasets. |
 
+Qsaria 0.4.0 centralizes every LightGBM and TabICL representation in one
+strict, cached preparation service. New tabular models persist the complete
+recipe and can regenerate features from a new SMILES-only CSV in another
+session. Pre-0.4.0 LightGBM and TabICL models without this contract are
+intentionally rejected and must be retrained; Chemprop is unaffected.
+
 ### Validation
 
 Qsaria provides a standard QSAR workflow through `standard_qsar` and supports

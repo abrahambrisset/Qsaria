@@ -546,9 +546,16 @@ Prompts:
 ### TabICL
 
 - entree: dataset tabulaire;
+- a l'inference, un CSV contenant seulement des SMILES est transforme avec
+  exactement la meme recette tabulaire que pendant l'entrainement;
 - utilise le checkpoint TabICL configure;
 - plus sensible a la RAM que LightGBM;
 - a tester avec prudence sur gros jeux de donnees et representations larges.
+
+Depuis Qsaria 0.4.0, chaque nouveau modele LightGBM ou TabICL porte un contrat
+strict de representation. Les anciens modeles tabulaires sans ce contrat ne
+sont plus utilisables et doivent etre reentraines. Les caches de features sont
+reconstructibles et ne constituent jamais une dependance du modele.
 
 ### Ensemble
 

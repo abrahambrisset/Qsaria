@@ -52,6 +52,14 @@ from cs_copilot.tools.prediction.tabicl_backend import (
     DEFAULT_TABICL_REGRESSOR_CHECKPOINT,
     TabICLBackend,
 )
+from cs_copilot.tools.prediction.tabular_feature_preparation import (
+    FEATURE_GENERATOR_VERSION,
+    MorganBinaryFingerprintContract,
+    PrecomputedFeaturesContract,
+    TabularRepresentationContract,
+    current_rdkit_version,
+    representation_recipe_signature,
+)
 from cs_copilot.tools.prediction.training_orchestration import (
     apply_training_profile,
     build_training_plots_if_possible,
@@ -61,6 +69,33 @@ from cs_copilot.tools.prediction.training_orchestration import (
     normalize_json_list_argument,
     write_training_summary,
 )
+
+
+def _tabular_registry_summary(
+    payload: dict | None = None,
+    *,
+    feature_columns: list[str] | None = None,
+) -> dict:
+    features = list(feature_columns or ["feature_a"])
+    component = PrecomputedFeaturesContract(feature_columns=features)
+    contract = TabularRepresentationContract(
+        kind="precomputed",
+        representation_name="precomputed_tabular",
+        components=[component],
+        recipe_signature=representation_recipe_signature(
+            kind="precomputed",
+            representation_name="precomputed_tabular",
+            components=[component],
+        ),
+        feature_columns=features,
+        feature_generator_version="not_applicable",
+        rdkit_version="not_applicable",
+        qsaria_version="0.4.0",
+    )
+    return {
+        **dict(payload or {}),
+        "tabular_representation_contract": contract.model_dump(mode="json"),
+    }
 
 
 def test_collision_safe_model_id_preserves_legacy_first_and_isolates_later_models(
@@ -618,10 +653,25 @@ def test_lightgbm_final_refit_without_external_test_is_allowed(monkeypatch, tmp_
     assert result["test_predictions_path"] is None
 
 
-def test_lightgbm_predict_featurizes_smiles_for_morgan_model(tmp_path):
+def test_lightgbm_backend_rejects_raw_smiles_for_morgan_model(tmp_path):
     backend = LightGBMBackend()
     model_path = tmp_path / "model.pkl"
     feature_columns = [f"fp_{index:04d}" for index in range(2048)]
+    component = MorganBinaryFingerprintContract()
+    contract = TabularRepresentationContract(
+        kind="generated",
+        representation_name="morgan_only",
+        components=[component],
+        recipe_signature=representation_recipe_signature(
+            kind="generated",
+            representation_name="morgan_only",
+            components=[component],
+        ),
+        feature_columns=feature_columns,
+        feature_generator_version=FEATURE_GENERATOR_VERSION,
+        rdkit_version=current_rdkit_version(),
+        qsaria_version="0.4.0",
+    )
     with model_path.open("wb") as fh:
         pickle.dump(
             {
@@ -636,25 +686,25 @@ def test_lightgbm_predict_featurizes_smiles_for_morgan_model(tmp_path):
     pd.DataFrame({"SMILES": ["CCO", "CCC"], "pEC50": [5.0, 6.0]}).to_csv(input_csv, index=False)
     preds_path = tmp_path / "predictions.csv"
 
-    result = backend.predict_from_csv(
-        input_csv=str(input_csv),
-        model_record=PredictionModelRecord(
-            model_id="morgan_model",
-            backend_name="lightgbm",
-            model_path=str(model_path),
-            task=PredictionTaskSpec(
-                task_type="regression",
-                smiles_columns=["smiles"],
-                target_columns=["pEC50"],
+    with pytest.raises(
+        InvalidPredictionInputError,
+        match="missing feature columns",
+    ):
+        backend.predict_from_csv(
+            input_csv=str(input_csv),
+            model_record=PredictionModelRecord(
+                model_id="morgan_model",
+                backend_name="lightgbm",
+                model_path=str(model_path),
+                task=PredictionTaskSpec(
+                    task_type="regression",
+                    smiles_columns=["smiles"],
+                    target_columns=["pEC50"],
+                ),
+                tabular_representation_contract=contract.model_dump(mode="json"),
             ),
-            inference_profile={"representation_name": "morgan_only"},
-        ),
-        preds_path=str(preds_path),
-    )
-
-    predictions = pd.read_csv(preds_path)
-    assert result["rows"] == 2
-    assert predictions["prediction"].tolist() == [0.0, 1.0]
+            preds_path=str(preds_path),
+        )
 
 
 def test_training_orchestration_materializes_summary_and_bundle_inputs(tmp_path):
@@ -957,7 +1007,7 @@ def test_qsar_training_toolkit_routes_lightgbm_through_facade(monkeypatch, tmp_p
     )
 
     assert result["backend_name"] == "lightgbm"
-    assert captured["train_csv"] == str(train_csv)
+    assert captured["train_csv"].endswith("features/precomputed_tabular_features.csv")
     assert captured["feature_columns"] == ["feature_a"]
     assert result["recommended_registry_payload"]["backend_name"] == "lightgbm"
 
@@ -1039,6 +1089,7 @@ def test_qsar_training_toolkit_normalizes_tabular_smiles_column(tmp_path):
         smiles_column="standardized_smiles",
         target_columns=["Y"],
         representation_name="morgan_only",
+        feature_cache_dir=str(tmp_path / "cache"),
     )
 
     output_columns = list(pd.read_csv(result["train_csv"], nrows=0).columns)
@@ -1078,6 +1129,7 @@ def test_prediction_registry_rejects_archive_model_paths_without_backend_validat
         backend_name="lightgbm",
         task_type="regression",
         target_columns=["pEC50"],
+        training_data_summary=_tabular_registry_summary(),
         agent=agent,
     )
 
@@ -1114,6 +1166,7 @@ def test_prediction_registry_register_model_is_session_only(tmp_path):
         task_type="regression",
         target_columns=["pEC50"],
         status="workflow_demo",
+        training_data_summary=_tabular_registry_summary(),
         agent=agent,
     )
 
@@ -1123,6 +1176,37 @@ def test_prediction_registry_register_model_is_session_only(tmp_path):
     assert result["persistence_state"] == "session_registered_only"
     assert result["next_required_tool"] == "persist_registered_model"
     assert "session" in result["usage_hint"]
+    stored = get_prediction_state(agent)["registered"]["session_model"]
+    assert stored["tabular_representation_contract"]["schema_version"] == "1.0"
+    assert "tabular_representation_contract" not in stored["training_data_summary"]
+
+
+def test_prediction_registry_rejects_new_tabular_model_without_contract(tmp_path):
+    model_path = tmp_path / "best.pkl"
+    model_path.write_text("model")
+
+    class FakeBackend:
+        backend_name = "tabicl"
+
+        def validate_model_path(self, model_path):
+            return Path(model_path)
+
+    toolkit = ModelRegistryToolkit(
+        backends={"tabicl": FakeBackend()},
+        catalog=SimpleNamespace(refresh_from_internal_store=lambda persist=True: None),
+        default_backend_name="tabicl",
+        register_tools=False,
+    )
+
+    with pytest.raises(ValueError, match="tabular_representation_contract"):
+        toolkit.register_model(
+            model_id="legacy_session_model",
+            model_path=str(model_path),
+            backend_name="tabicl",
+            task_type="regression",
+            target_columns=["pEC50"],
+            agent=SimpleNamespace(session_state={}),
+        )
 
 
 def test_model_registry_persistence_uses_governance_recommended_status(monkeypatch, tmp_path):
@@ -1190,10 +1274,12 @@ def test_model_registry_persistence_uses_governance_recommended_status(monkeypat
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="experimental",
-        training_data_summary={
-            "hyperparameter_tuning": tuning_provenance,
-            "hyperparameter_tuning_summary_path": tuning_summary_path,
-        },
+        training_data_summary=_tabular_registry_summary(
+            {
+                "hyperparameter_tuning": tuning_provenance,
+                "hyperparameter_tuning_summary_path": tuning_summary_path,
+            }
+        ),
         agent=agent,
     )
 
@@ -1308,20 +1394,22 @@ def test_model_registry_persists_variant_specific_outlier_artifacts(monkeypatch,
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         known_metrics={"test": {"rmse": 0.3}},
-        training_data_summary={
-            "validation_protocol": "random_holdout_outlier_filtered",
-            "metrics_status": "evaluated",
-            "outlier_variant": "outlier_filtered",
-            "outlier_analysis": outlier_analysis,
-            "hyperparameter_tuning": {"engine": "optuna_tpe"},
-            "hyperparameter_tuning_summary_path": str(tuning_summary),
-            "artifact_sources": {
-                "training_summary_path": str(campaign_summary),
-                "test_predictions_path": str(filtered_predictions),
-                "hyperparameter_tuning_summary_path": str(tuning_summary),
+        training_data_summary=_tabular_registry_summary(
+            {
+                "validation_protocol": "random_holdout_outlier_filtered",
+                "metrics_status": "evaluated",
+                "outlier_variant": "outlier_filtered",
                 "outlier_analysis": outlier_analysis,
-            },
-        },
+                "hyperparameter_tuning": {"engine": "optuna_tpe"},
+                "hyperparameter_tuning_summary_path": str(tuning_summary),
+                "artifact_sources": {
+                    "training_summary_path": str(campaign_summary),
+                    "test_predictions_path": str(filtered_predictions),
+                    "hyperparameter_tuning_summary_path": str(tuning_summary),
+                    "outlier_analysis": outlier_analysis,
+                },
+            }
+        ),
         agent=agent,
     )
 
@@ -1531,6 +1619,7 @@ def test_model_registry_persistence_copies_modern_applicability_domain(monkeypat
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="experimental",
+        training_data_summary=_tabular_registry_summary(feature_columns=["desc_a"]),
         agent=agent,
     )
 
@@ -1627,6 +1716,7 @@ def test_model_registry_persistence_does_not_add_bounding_box_to_iforest_only_ad
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="experimental",
+        training_data_summary=_tabular_registry_summary(feature_columns=["desc_a"]),
         agent=agent,
     )
 
@@ -1709,6 +1799,7 @@ def test_model_registry_persistence_copies_similarity_matrix_ad(monkeypatch, tmp
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="experimental",
+        training_data_summary=_tabular_registry_summary(feature_columns=["fp_0000", "fp_0001"]),
         agent=agent,
     )
 
@@ -1812,6 +1903,7 @@ def test_model_registry_persistence_keeps_full_train_as_workflow_demo(monkeypatc
         target_columns=["pEC50"],
         status="experimental",
         known_metrics={"stale": {"r2": 0.1}},
+        training_data_summary=_tabular_registry_summary(),
         agent=agent,
     )
 
@@ -1845,12 +1937,14 @@ def test_model_registry_resolves_persisted_catalog_metadata(monkeypatch, tmp_pat
     model_root.mkdir(parents=True)
     (model_root / "best.pkl").write_text("model")
     metadata_path = model_root / "metadata.json"
+    tabular_contract = _tabular_registry_summary()["tabular_representation_contract"]
     metadata_path.write_text(
         json.dumps(
             {
                 "model_id": "persisted_model",
                 "backend_name": "lightgbm",
                 "status": "workflow_demo",
+                "tabular_representation_contract": tabular_contract,
                 "task": {
                     "task_type": "regression",
                     "smiles_columns": ["smiles"],
@@ -1938,10 +2032,12 @@ def test_model_registry_persistence_keeps_split_specific_protocol(monkeypatch, t
         smiles_columns=["smiles"],
         target_columns=["pEC50"],
         status="workflow_demo",
-        training_data_summary={
-            "validation_protocol": "repeated_scaffold_holdout_scaffold_repeat_2",
-            "representation_name": "rdkit_all",
-        },
+        training_data_summary=_tabular_registry_summary(
+            {
+                "validation_protocol": "repeated_scaffold_holdout_scaffold_repeat_2",
+                "representation_name": "rdkit_all",
+            }
+        ),
         agent=agent,
     )
 
@@ -2019,6 +2115,7 @@ def test_model_registry_persistence_exposes_classification_metadata(monkeypatch,
         smiles_columns=["smiles"],
         target_columns=["Y"],
         status="workflow_demo",
+        training_data_summary=_tabular_registry_summary(),
         agent=agent,
     )
 

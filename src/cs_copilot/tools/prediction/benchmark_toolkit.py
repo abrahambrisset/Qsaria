@@ -404,6 +404,9 @@ class BenchmarkToolkit(Toolkit):
                 ),
                 "feature_preparation": result.get("feature_preparation") or {},
                 "feature_preparation_durations": result.get("feature_preparation_durations") or {},
+                "tabular_representation_contract": (
+                    result.get("tabular_representation_contract") or {}
+                ),
                 "trained_at": result.get("trained_at"),
             },
             inference_profile={

@@ -1,6 +1,6 @@
 # Qsaria for Codex
 
-Current bundle: `0.3.1`. The only named scientific protocol is
+Current bundle: `0.4.0`. The only named scientific protocol is
 `standard_qsar`; advanced holdout, repeated holdout, cross-validation,
 scaffold, cluster, and full-train workflows use explicit validation strategies.
 
@@ -8,13 +8,21 @@ This repo-local plugin lets Codex coordinate Qsaria without launching an
 additional LLM inside the MCP server. The server exposes deterministic Qsaria
 operations; Codex remains the only coordinator and reasoning layer.
 
-The existing Agno/Chainlit application is unchanged. This bundle contains
-Codex-specific skills and project-agent templates only.
+The Agno/Chainlit UI and agent-facing tool surfaces remain unchanged. The
+shared Qsaria runtime is used by the application and both plugins; this bundle
+contains Codex-specific skills and project-agent templates only.
+
+Qsaria 0.4.0 gives every new LightGBM and TabICL model a strict tabular
+representation contract. Training, prediction, external evaluation, ensembles,
+and applicability-domain scoring use one shared preparation service, so a new
+SMILES-only CSV never depends on an experiment's training cache. Older tabular
+models without the contract are intentionally rejected and must be retrained;
+Chemprop models are unaffected.
 
 Codex plugins do not currently install project agents as a native plugin
 component. The distributable templates therefore live under `assets/agents/`
 and are copied explicitly into the repository's `.codex/agents/` directory.
-The 0.2.x line adds no hook and no separate asynchronous runner.
+The 0.4.x line adds no hook and no separate asynchronous runner.
 
 ## Runtime boundaries
 
