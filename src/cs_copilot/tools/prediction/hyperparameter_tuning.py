@@ -573,6 +573,20 @@ BACKEND_TUNING_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_objectives": {},
         "parameters": _typed_parameter_catalog("tabicl", TABICL_SPECS),
     },
+    "sklearn": {
+        "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
+        "backend_name": "sklearn",
+        # The scikit-learn baselines are deliberately untuned: they exist as the
+        # reference point the other backends are measured against, and giving
+        # them a tuning budget would make that comparison harder to read rather
+        # than easier. Their hyperparameters stay settable on SklearnRunRequest.
+        "supports_hyperparameter_tuning": False,
+        "default_engine": None,
+        "supported_engines": [],
+        "default_trials": None,
+        "default_objectives": {},
+        "parameters": [],
+    },
 }
 
 

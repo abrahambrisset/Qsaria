@@ -15,15 +15,18 @@ def build_default_prediction_backends(
     from .chemprop_backend import ChempropBackend
     from .ensemble_backend import EnsembleBackend
     from .lightgbm_backend import LightGBMBackend
+    from .sklearn_backend import SklearnBackend
     from .tabicl_backend import TabICLBackend
 
     primary_backend = chemprop_backend or ChempropBackend()
     tabicl_backend = TabICLBackend()
     lightgbm_backend = LightGBMBackend()
+    sklearn_backend = SklearnBackend()
     component_backends = {
         primary_backend.backend_name: primary_backend,
         tabicl_backend.backend_name: tabicl_backend,
         lightgbm_backend.backend_name: lightgbm_backend,
+        sklearn_backend.backend_name: sklearn_backend,
     }
     ensemble_backend = EnsembleBackend(backends=component_backends)
     return {

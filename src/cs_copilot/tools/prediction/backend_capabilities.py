@@ -90,6 +90,23 @@ BACKEND_CAPABILITIES: Dict[str, BackendCapabilities] = {
         test_prediction_relative_paths=("test_predictions.csv",),
         hyperparameter_tuning=BACKEND_TUNING_CATALOG["tabicl"],
     ),
+    "sklearn": BackendCapabilities(
+        backend_name="sklearn",
+        can_train=True,
+        can_predict=True,
+        prediction_input_kinds=("tabular_features_csv",),
+        requires_feature_preparation=True,
+        supported_task_types=("regression", "classification", "multiclass_classification"),
+        # Single target only, matching the LightGBM restriction.
+        multi_target_task_types=(),
+        supported_representations=SUPPORTED_TABULAR_REPRESENTATION_NAMES,
+        supports_applicability_domain=True,
+        supports_uncertainty="none",
+        gpu_support="not_applicable",
+        catalog_model_filename="best.pkl",
+        test_prediction_relative_paths=("test_predictions.csv",),
+        hyperparameter_tuning=BACKEND_TUNING_CATALOG["sklearn"],
+    ),
     "ensemble": BackendCapabilities(
         backend_name="ensemble",
         can_train=False,
