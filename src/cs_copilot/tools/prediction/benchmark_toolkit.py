@@ -18,6 +18,7 @@ from agno.tools.toolkit import Toolkit
 
 from cs_copilot.storage import S3
 
+from .backend_capabilities import get_backend_capabilities
 from .model_registry_toolkit import ModelRegistryToolkit
 from .qsar_contracts import (
     ChempropConfig,
@@ -169,20 +170,19 @@ class BenchmarkToolkit(Toolkit):
     ) -> List[str]:
         backends = self.training_toolkit.backend_mapping()
         available: List[str] = []
-        if backends["chemprop"].is_available():
-            available.append("chemprop")
-        if (
-            backends["lightgbm"].is_available()
-            and task_type == "regression"
-            and len(target_columns) == 1
-        ):
-            available.append("lightgbm")
-        if (
-            backends["tabicl"].is_available()
-            and task_type == "regression"
-            and len(target_columns) == 1
-        ):
-            available.append("tabicl")
+        for name in ("chemprop", "lightgbm", "tabicl"):
+            capabilities = get_backend_capabilities(name)
+            if task_type not in capabilities.supported_task_types:
+                continue
+            if len(target_columns) != 1 and task_type not in capabilities.multi_target_task_types:
+                continue
+            backend = backends[name]
+            if not backend.is_available():
+                continue
+            if name == "tabicl" and task_type in {"classification", "multiclass_classification"}:
+                if not backend.describe_environment().get("classification_available"):
+                    continue
+            available.append(name)
 
         if requested_backends:
             filtered = [name for name in requested_backends if name in available]

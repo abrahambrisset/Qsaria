@@ -209,6 +209,36 @@ def test_expand_candidates_includes_heavy_lightgbm_all():
     assert "lightgbm_morgan_rdkit_basic" not in candidate_ids
 
 
+@pytest.mark.parametrize("task_type", ["classification", "multiclass_classification"])
+@pytest.mark.parametrize("tabicl_classifier_available", [True, False])
+def test_classification_benchmark_includes_available_tabular_backends(
+    task_type, tabicl_classifier_available
+):
+    toolkit = BenchmarkToolkit()
+    toolkit.training_toolkit.backend_mapping = lambda: {
+        "chemprop": SimpleNamespace(is_available=lambda: True),
+        "lightgbm": SimpleNamespace(is_available=lambda: True),
+        "tabicl": SimpleNamespace(
+            is_available=lambda: True,
+            describe_environment=lambda: {"classification_available": tabicl_classifier_available},
+        ),
+    }
+
+    candidates = toolkit._expand_candidates(
+        task_type=task_type,
+        target_columns=["Y"],
+        requested_backends=None,
+        include_candidate_variants=False,
+        requested_tabicl_variants=None,
+        training_profile="local_light",
+    )
+
+    expected = {"chemprop", "lightgbm"}
+    if tabicl_classifier_available:
+        expected.add("tabicl")
+    assert {candidate["backend_name"] for candidate in candidates} == expected
+
+
 def test_rank_summary_rows_prefers_hardest_split_then_gap():
     toolkit = BenchmarkToolkit()
     ranked = toolkit._rank_summary_rows(
