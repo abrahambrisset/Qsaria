@@ -1,0 +1,379 @@
+{
+  "datasets": {
+    "CHEMBL1862_Ki": {
+      "cohorts": {
+        "all_scored": {
+          "by_seed": {
+            "42": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.8528842548990158,
+                "rmse_cliff": 0.8098536965353265
+              },
+              "random_forest": {
+                "rmse": 0.76716640938885,
+                "rmse_cliff": 0.6793910867995369
+              }
+            },
+            "1701": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.8483301664949217,
+                "rmse_cliff": 0.8060178363306084
+              },
+              "random_forest": {
+                "rmse": 0.7691823825267441,
+                "rmse_cliff": 0.6820780522501672
+              }
+            },
+            "2026": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.850403954935327,
+                "rmse_cliff": 0.8179716802572969
+              },
+              "random_forest": {
+                "rmse": 0.768974344172197,
+                "rmse_cliff": 0.6731674549278871
+              }
+            }
+          },
+          "n": 161,
+          "n_cliff": 67
+        },
+        "identity_unseen": {
+          "by_seed": {
+            "42": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.8528842548990158,
+                "rmse_cliff": 0.8098536965353265
+              },
+              "random_forest": {
+                "rmse": 0.76716640938885,
+                "rmse_cliff": 0.6793910867995369
+              }
+            },
+            "1701": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.8483301664949217,
+                "rmse_cliff": 0.8060178363306084
+              },
+              "random_forest": {
+                "rmse": 0.7691823825267441,
+                "rmse_cliff": 0.6820780522501672
+              }
+            },
+            "2026": {
+              "dummy": {
+                "rmse": 1.47861405223795,
+                "rmse_cliff": 1.4389001200579885
+              },
+              "lightgbm": {
+                "rmse": 0.850403954935327,
+                "rmse_cliff": 0.8179716802572969
+              },
+              "random_forest": {
+                "rmse": 0.768974344172197,
+                "rmse_cliff": 0.6731674549278871
+              }
+            }
+          },
+          "n": 161,
+          "n_cliff": 67
+        }
+      },
+      "fit_predict_seconds_by_seed": {
+        "42": {
+          "dummy": 0.0,
+          "lightgbm": 0.232,
+          "random_forest": 1.386
+        },
+        "1701": {
+          "dummy": 0.0,
+          "lightgbm": 0.257,
+          "random_forest": 1.349
+        },
+        "2026": {
+          "dummy": 0.0,
+          "lightgbm": 0.254,
+          "random_forest": 1.353
+        }
+      },
+      "identity_audit": {
+        "evaluation_rows": 161,
+        "evaluation_valid_rows": 161,
+        "exact_overlap_count": 0,
+        "identity": "qsaria_standardized_smiles_without_stereochemistry",
+        "near_duplicate_counts": {
+          "0.95": 4,
+          "0.99": 1
+        },
+        "nearest_neighbor_similarity": {
+          "max": 1.0,
+          "median": 0.7872340425531915
+        },
+        "similarity": "sparse_count_morgan_radius_2_tanimoto",
+        "status": "complete",
+        "training_rows": 633,
+        "training_valid_rows": 633
+      },
+      "official_cliff_test_rows_with_training_identity": 0,
+      "official_source_counts": {
+        "test": {
+          "n": 161,
+          "n_cliff": 67,
+          "n_cliff_rejected": 0,
+          "n_rejected": 0
+        },
+        "train": {
+          "n": 633,
+          "n_cliff": 263,
+          "n_cliff_rejected": 0,
+          "n_rejected": 0
+        }
+      },
+      "raw_smiles_exact_overlap_test_rows": 0,
+      "repeated_identity_rows": {
+        "test": 0,
+        "train": 0
+      },
+      "scored_predictions_sha256": "1396fe20babd9a9ac4aaa913cb93f0bb7c9788efd0c1918cd1559354195992aa",
+      "unlabeled_predictions_sha256": "390e351ef5dcb51cc53bb12b41b644c01c2ba4a2ef5b280877901702d02edaad"
+    },
+    "CHEMBL2047_EC50": {
+      "cohorts": {
+        "all_scored": {
+          "by_seed": {
+            "42": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6898877493666405,
+                "rmse_cliff": 0.748945794979176
+              },
+              "random_forest": {
+                "rmse": 0.6291189601683467,
+                "rmse_cliff": 0.6849850388066482
+              }
+            },
+            "1701": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6957560511196729,
+                "rmse_cliff": 0.7546150343874524
+              },
+              "random_forest": {
+                "rmse": 0.6086312992725335,
+                "rmse_cliff": 0.6656687104156729
+              }
+            },
+            "2026": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6976195986862954,
+                "rmse_cliff": 0.7526037508200263
+              },
+              "random_forest": {
+                "rmse": 0.6241141904153761,
+                "rmse_cliff": 0.6705635688407003
+              }
+            }
+          },
+          "n": 128,
+          "n_cliff": 50
+        },
+        "identity_unseen": {
+          "by_seed": {
+            "42": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6898877493666405,
+                "rmse_cliff": 0.748945794979176
+              },
+              "random_forest": {
+                "rmse": 0.6291189601683467,
+                "rmse_cliff": 0.6849850388066482
+              }
+            },
+            "1701": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6957560511196729,
+                "rmse_cliff": 0.7546150343874524
+              },
+              "random_forest": {
+                "rmse": 0.6086312992725335,
+                "rmse_cliff": 0.6656687104156729
+              }
+            },
+            "2026": {
+              "dummy": {
+                "rmse": 0.9833920694257378,
+                "rmse_cliff": 0.9097038162475137
+              },
+              "lightgbm": {
+                "rmse": 0.6976195986862954,
+                "rmse_cliff": 0.7526037508200263
+              },
+              "random_forest": {
+                "rmse": 0.6241141904153761,
+                "rmse_cliff": 0.6705635688407003
+              }
+            }
+          },
+          "n": 128,
+          "n_cliff": 50
+        }
+      },
+      "fit_predict_seconds_by_seed": {
+        "42": {
+          "dummy": 0.0,
+          "lightgbm": 0.183,
+          "random_forest": 0.939
+        },
+        "1701": {
+          "dummy": 0.0,
+          "lightgbm": 0.241,
+          "random_forest": 1.002
+        },
+        "2026": {
+          "dummy": 0.0,
+          "lightgbm": 0.255,
+          "random_forest": 0.935
+        }
+      },
+      "identity_audit": {
+        "evaluation_rows": 128,
+        "evaluation_valid_rows": 128,
+        "exact_overlap_count": 0,
+        "identity": "qsaria_standardized_smiles_without_stereochemistry",
+        "near_duplicate_counts": {
+          "0.95": 1,
+          "0.99": 0
+        },
+        "nearest_neighbor_similarity": {
+          "max": 0.972972972972973,
+          "median": 0.8277715980719318
+        },
+        "similarity": "sparse_count_morgan_radius_2_tanimoto",
+        "status": "complete",
+        "training_rows": 503,
+        "training_valid_rows": 503
+      },
+      "official_cliff_test_rows_with_training_identity": 0,
+      "official_source_counts": {
+        "test": {
+          "n": 128,
+          "n_cliff": 50,
+          "n_cliff_rejected": 0,
+          "n_rejected": 0
+        },
+        "train": {
+          "n": 503,
+          "n_cliff": 195,
+          "n_cliff_rejected": 0,
+          "n_rejected": 0
+        }
+      },
+      "raw_smiles_exact_overlap_test_rows": 0,
+      "repeated_identity_rows": {
+        "test": 0,
+        "train": 0
+      },
+      "scored_predictions_sha256": "d2877be10f78807a4ca5098104d2ce0a81d763f721a149ed8a42e3ef2bc6ed9f",
+      "unlabeled_predictions_sha256": "08ace02364fc7aa49b9476e98aa56211d44c6de7062faee1ef90be8b870a3751"
+    }
+  },
+  "manifest": {
+    "config_sha256": "aeb0d298579a9b83c067692dd7c2b65d7ea831247195d5d665665e7623371b9d",
+    "manifest_scope": "Frozen protocol and checksummed data and source inputs",
+    "packages": {
+      "lightgbm": "4.6.0",
+      "numpy": "2.3.5",
+      "pandas": "2.3.3",
+      "rdkit": "2025.9.4",
+      "scikit-learn": "1.8.0",
+      "threadpoolctl": "3.6.0"
+    },
+    "platform": "macOS-27.2.1-arm64-arm-64bit",
+    "protocol": {
+      "bits": 2048,
+      "datasets": {
+        "CHEMBL1862_Ki": {
+          "measurement": "Ki",
+          "sha256": "72a750426976bf5c17ca9129e86dff20962332f92a8ce16028d9fbcf152ca412",
+          "target": "Human tyrosine-protein kinase ABL1"
+        },
+        "CHEMBL2047_EC50": {
+          "measurement": "EC50",
+          "sha256": "ea1bacf43377aac288840f2d2e37df7705a0d2d1f93bb52b0ce85e499e311f6e",
+          "target": "Human farnesoid X receptor"
+        }
+      },
+      "moleculeace": {
+        "chembl_license": "CC BY-SA 3.0",
+        "chembl_license_url": "https://chembl.gitbook.io/chembl-interface-documentation/frequently-asked-questions/general-questions",
+        "code_license": "MIT",
+        "commit": "230e060c35c8abf999e13c3c8122c229950585ce",
+        "data_attribution": "MoleculeACE bioactivity data curated from ChEMBL v29",
+        "original_article": "https://doi.org/10.1021/acs.jcim.2c01073",
+        "release": "v3.0.0",
+        "release_url": "https://github.com/molML/MoleculeACE/releases/tag/v3.0.0",
+        "repository": "https://github.com/molML/MoleculeACE",
+        "split_correction": "https://doi.org/10.1021/acs.jcim.3c01576"
+      },
+      "qsaria_source_revision": "01cd2e824376b0b497d559811f402a34ac347870",
+      "radius": 2,
+      "seeds": [
+        42,
+        1701,
+        2026
+      ],
+      "trees": 80,
+      "workers": 1
+    },
+    "python": "3.12.13",
+    "source_sha256": {
+      "scripts/benchmark_qsaria_v1.py": "e3bcdf32aa79b77302a53a45431a360518e653eeef0e702a19453c6ff0fe074f",
+      "scripts/benchmark_qsaria_v1_moleculeace.py": "5307ed8eca8603704bdb238d5cd26a85973776ea7c827481d01f2d11af6034fe",
+      "src/cs_copilot/tools/chemistry/standardize.py": "c64b6f4a79fc75af6e214e611d639c79e6398262b25dda75542bed91f8e9ca94",
+      "src/cs_copilot/tools/prediction/leakage.py": "439eecb73d1b280c71cc917dd0e654ec6a04a3b90265a8238830c03b34a75ada",
+      "src/cs_copilot/tools/prediction/lightgbm_backend.py": "06139685e249741a098f9266536d32198782af433c39935fa15806de80eedde2",
+      "src/cs_copilot/tools/prediction/qsar_contracts.py": "7cdb1fa9086e4d0097eee1dcefb64c239487aab8e27255ae126dd6cdd545c577",
+      "src/cs_copilot/tools/prediction/qsar_splitters.py": "d79f0df9bc21bfb82f14b46133e4e776b33e50d73a012b57fb55477bfb4dc2b5",
+      "src/cs_copilot/tools/prediction/qsar_training_policy.py": "30d5fbadb6998d2b16a1eb813324872f4f7c4c7db7f5f6130aedb370fe6c533c",
+      "uv.lock": "486bba1c86cb95a144af32c88139ffdc9ed270db0612e61bd16d69db3dfb1529"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+qsaria_source_revision = "01cd2e824376b0b497d559811f402a34ac347870"
+seeds = [42, 1701, 2026]
+trees = 80
+workers = 1
+radius = 2
+bits = 2048
+
+[moleculeace]
+release = "v3.0.0"
+commit = "230e060c35c8abf999e13c3c8122c229950585ce"
+repository = "https://github.com/molML/MoleculeACE"
+release_url = "https://github.com/molML/MoleculeACE/releases/tag/v3.0.0"
+original_article = "https://doi.org/10.1021/acs.jcim.2c01073"
+split_correction = "https://doi.org/10.1021/acs.jcim.3c01576"
+code_license = "MIT"
+data_attribution = "MoleculeACE bioactivity data curated from ChEMBL v29"
+chembl_license = "CC BY-SA 3.0"
+chembl_license_url = "https://chembl.gitbook.io/chembl-interface-documentation/frequently-asked-questions/general-questions"
+
+[datasets.CHEMBL1862_Ki]
+target = "Human tyrosine-protein kinase ABL1"
+measurement = "Ki"
+sha256 = "72a750426976bf5c17ca9129e86dff20962332f92a8ce16028d9fbcf152ca412"
+
+[datasets.CHEMBL2047_EC50]
+target = "Human farnesoid X receptor"
+measurement = "EC50"
+sha256 = "ea1bacf43377aac288840f2d2e37df7705a0d2d1f93bb52b0ce85e499e311f6e"
