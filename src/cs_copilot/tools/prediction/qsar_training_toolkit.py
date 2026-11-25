@@ -55,9 +55,13 @@ from .session_state import (
 from .tabicl_toolkit import TabICLToolkit
 from .tabular_representations import (
     AUTOMATIC_TABULAR_REPRESENTATION_NAMES,
+    DEFAULT_MORGAN_N_BITS,
+    DEFAULT_MORGAN_RADIUS,
+    TabularRepresentationSpec,
     default_tabular_representation_for_protocol,
     describe_tabular_representations,
     get_tabular_representation,
+    representation_unavailable_reason,
 )
 from .training_orchestration import normalize_json_list_argument, write_training_summary
 
@@ -204,7 +208,48 @@ def _feature_step_name(component_name: str) -> str:
         "morgan_count": "morgan_count_fingerprints",
         "rdkit_all": "rdkit_all_descriptors",
         "rdkit_basic": "rdkit_basic_descriptors",
+        "maccs": "maccs_fingerprints",
+        "avalon": "avalon_fingerprints",
+        "atom_pair": "atom_pair_fingerprints",
+        "topological_torsion": "topological_torsion_fingerprints",
     }.get(component_name, component_name)
+
+
+def _inference_rebuild_warning(
+    spec: TabularRepresentationSpec,
+    *,
+    morgan_radius: int,
+    morgan_n_bits: int,
+    morgan_use_features: bool,
+) -> Optional[str]:
+    """Return a warning when inference cannot rebuild this feature matrix, else None.
+
+    ``lightgbm_backend`` and ``applicability_domain`` rebuild prediction-time features from the
+    representation spec using the Morgan/RDKit defaults only. Anything they cannot reproduce is
+    reported here rather than silently scoring a model on a different feature space.
+    """
+    gaps: List[str] = []
+    if spec.fingerprints:
+        gaps.append(f"structural fingerprints ({', '.join(spec.fingerprints)})")
+    uses_morgan = spec.use_morgan_binary or spec.use_morgan_count
+    if uses_morgan and (morgan_radius, morgan_n_bits, morgan_use_features) != (
+        DEFAULT_MORGAN_RADIUS,
+        DEFAULT_MORGAN_N_BITS,
+        False,
+    ):
+        gaps.append(
+            f"non-default Morgan parameters (radius={morgan_radius}, n_bits={morgan_n_bits}, "
+            f"use_features={morgan_use_features})"
+        )
+    if not gaps:
+        return None
+    return (
+        "Prediction-time feature rebuilding does not yet support "
+        + "; ".join(gaps)
+        + ". Score this model only on CSVs that already carry the training feature columns, "
+        "until lightgbm_backend._rebuild_tabular_features and "
+        "applicability_domain.prepare_tabular_features_for_ad honour them."
+    )
 
 
 def _feature_columns_summary(
@@ -982,9 +1027,23 @@ class QSARTrainingToolkit(Toolkit):
         representation_name: str,
         feature_cache_dir: Optional[str] = None,
         feature_n_jobs: Optional[int] = None,
+        morgan_radius: Optional[int] = None,
+        morgan_n_bits: Optional[int] = None,
+        morgan_use_features: Optional[bool] = None,
     ) -> Dict[str, Any]:
         spec = get_tabular_representation(representation_name)
+        unavailable_reason = representation_unavailable_reason(spec.name)
+        if unavailable_reason:
+            raise ValueError(unavailable_reason)
         resolved_feature_n_jobs = _resolve_feature_n_jobs(feature_n_jobs)
+        # Morgan parameters: explicit request value wins, otherwise the registry spec.  These
+        # are part of every Morgan cache key below; omitting them would let a cached matrix
+        # built at a different radius/width be reused silently.
+        resolved_morgan_radius = int(spec.morgan_radius if morgan_radius is None else morgan_radius)
+        resolved_morgan_n_bits = int(spec.morgan_n_bits if morgan_n_bits is None else morgan_n_bits)
+        resolved_morgan_use_features = bool(
+            spec.morgan_use_features if morgan_use_features is None else morgan_use_features
+        )
 
         total_started_at = time.monotonic()
         duration_steps: List[Dict[str, Any]] = []
@@ -1079,7 +1138,12 @@ class QSARTrainingToolkit(Toolkit):
         if spec.use_morgan_binary:
             component = component_from_cache(
                 component_name="morgan_binary",
-                generator_payload={"radius": 2, "n_bits": 2048, "fingerprint_kind": "binary"},
+                generator_payload={
+                    "radius": resolved_morgan_radius,
+                    "n_bits": resolved_morgan_n_bits,
+                    "fingerprint_kind": "binary",
+                    "use_features": resolved_morgan_use_features,
+                },
             )
             if component["cache_status"] == "generated":
                 step_started_at = time.monotonic()
@@ -1087,8 +1151,9 @@ class QSARTrainingToolkit(Toolkit):
                     input_csv=base_csv_for_features,
                     smiles_column=feature_smiles_column,
                     output_csv=component["output_csv"],
-                    radius=2,
-                    n_bits=2048,
+                    radius=resolved_morgan_radius,
+                    n_bits=resolved_morgan_n_bits,
+                    use_features=resolved_morgan_use_features,
                     include_input_columns=True,
                     input_columns_to_keep=[
                         QSAR_ROW_ID_COLUMN,
@@ -1117,8 +1182,9 @@ class QSARTrainingToolkit(Toolkit):
                     "duration_seconds": duration_seconds,
                     "output_csv": component["output_csv"],
                     "num_features": result.get("num_features"),
-                    "radius": result.get("radius", 2),
-                    "n_bits": result.get("n_bits", 2048),
+                    "radius": result.get("radius", resolved_morgan_radius),
+                    "n_bits": result.get("n_bits", resolved_morgan_n_bits),
+                    "use_features": result.get("use_features", resolved_morgan_use_features),
                     "fingerprint_kind": "binary",
                     "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
                 }
@@ -1127,7 +1193,12 @@ class QSARTrainingToolkit(Toolkit):
         if spec.use_morgan_count:
             component = component_from_cache(
                 component_name="morgan_count",
-                generator_payload={"radius": 2, "n_bits": 2048, "fingerprint_kind": "count"},
+                generator_payload={
+                    "radius": resolved_morgan_radius,
+                    "n_bits": resolved_morgan_n_bits,
+                    "fingerprint_kind": "count",
+                    "use_features": resolved_morgan_use_features,
+                },
             )
             if component["cache_status"] == "generated":
                 step_started_at = time.monotonic()
@@ -1135,8 +1206,9 @@ class QSARTrainingToolkit(Toolkit):
                     input_csv=base_csv_for_features,
                     smiles_column=feature_smiles_column,
                     output_csv=component["output_csv"],
-                    radius=2,
-                    n_bits=2048,
+                    radius=resolved_morgan_radius,
+                    n_bits=resolved_morgan_n_bits,
+                    use_features=resolved_morgan_use_features,
                     include_input_columns=True,
                     input_columns_to_keep=[
                         QSAR_ROW_ID_COLUMN,
@@ -1165,9 +1237,55 @@ class QSARTrainingToolkit(Toolkit):
                     "duration_seconds": duration_seconds,
                     "output_csv": component["output_csv"],
                     "num_features": result.get("num_features"),
-                    "radius": result.get("radius", 2),
-                    "n_bits": result.get("n_bits", 2048),
+                    "radius": result.get("radius", resolved_morgan_radius),
+                    "n_bits": result.get("n_bits", resolved_morgan_n_bits),
+                    "use_features": result.get("use_features", resolved_morgan_use_features),
                     "fingerprint_kind": "count",
+                    "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
+                }
+            )
+
+        for fingerprint_name in spec.fingerprints:
+            component = component_from_cache(
+                component_name=fingerprint_name,
+                generator_payload={"fingerprint_name": fingerprint_name},
+            )
+            if component["cache_status"] == "generated":
+                step_started_at = time.monotonic()
+                result = self.molecular_feature_toolkit.smiles_to_structural_fingerprints(
+                    input_csv=base_csv_for_features,
+                    fingerprint_name=fingerprint_name,
+                    smiles_column=feature_smiles_column,
+                    output_csv=component["output_csv"],
+                    include_input_columns=True,
+                    input_columns_to_keep=[
+                        QSAR_ROW_ID_COLUMN,
+                        feature_smiles_column,
+                        *target_columns,
+                    ],
+                    n_jobs=resolved_feature_n_jobs,
+                )
+                persist_component_cache(component, result)
+                duration_seconds = float(
+                    result.get("duration_seconds") or round(time.monotonic() - step_started_at, 3)
+                )
+            else:
+                result = component["result"]
+                duration_seconds = 0.0
+            feature_csvs.append(component["output_csv"])
+            component_records.append(component)
+            duration_steps.append(
+                {
+                    "step": _feature_step_name(fingerprint_name),
+                    "cache_status": component["cache_status"],
+                    "cache_hit": component["cache_status"] == "reused_from_cache",
+                    "cache_key": component["cache_key"],
+                    "duration_seconds": duration_seconds,
+                    "output_csv": component["output_csv"],
+                    "num_features": result.get("num_features"),
+                    "fingerprint_name": fingerprint_name,
+                    "n_bits": result.get("n_bits"),
+                    "feature_prefix": result.get("feature_prefix"),
                     "n_jobs": result.get("n_jobs", resolved_feature_n_jobs),
                 }
             )
@@ -1298,6 +1416,18 @@ class QSARTrainingToolkit(Toolkit):
             "mode": "generated_tabular_features",
             "representation_name": representation_name,
             "representation_display_name": spec.display_name,
+            "representation_parameters": {
+                "morgan_radius": resolved_morgan_radius,
+                "morgan_n_bits": resolved_morgan_n_bits,
+                "morgan_use_features": resolved_morgan_use_features,
+                "fingerprints": list(spec.fingerprints),
+            },
+            "inference_rebuild_warning": _inference_rebuild_warning(
+                spec,
+                morgan_radius=resolved_morgan_radius,
+                morgan_n_bits=resolved_morgan_n_bits,
+                morgan_use_features=resolved_morgan_use_features,
+            ),
             "input_csv": train_csv,
             "base_csv_for_features": base_csv_for_features,
             "prepared_train_csv": tabular["output_csv"],
@@ -1599,8 +1729,14 @@ class QSARTrainingToolkit(Toolkit):
         representation_name: Optional[str]
         normalized_feature_columns: Optional[List[str]]
         normalized_categorical_feature_columns: Optional[List[str]]
+        requested_morgan_radius: Optional[int] = None
+        requested_morgan_n_bits: Optional[int] = None
+        requested_morgan_use_features: Optional[bool] = None
         if isinstance(request.representation, GeneratedRepresentation):
             representation_name = request.representation.name
+            requested_morgan_radius = request.representation.morgan_radius
+            requested_morgan_n_bits = request.representation.morgan_n_bits
+            requested_morgan_use_features = request.representation.morgan_use_features
             normalized_feature_columns = None
             # Generated molecular representations are numeric. The internal
             # LightGBM contract intentionally uses a concrete empty list here;
@@ -1722,6 +1858,9 @@ class QSARTrainingToolkit(Toolkit):
                     feature_cache_dir=requested_resolved_parameters.get("feature_cache_dir"),
                     feature_n_jobs=requested_resolved_parameters.get("feature_n_jobs")
                     or requested_resolved_parameters.get("n_jobs"),
+                    morgan_radius=requested_morgan_radius,
+                    morgan_n_bits=requested_morgan_n_bits,
+                    morgan_use_features=requested_morgan_use_features,
                 )
                 working_train_csv = prepared["train_csv"]
                 normalized_feature_columns = prepared["feature_columns"]
