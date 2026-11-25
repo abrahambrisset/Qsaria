@@ -30,7 +30,24 @@ uv run --no-sync python scripts/benchmark_qsaria_v1.py \
 
 Sur macOS, LightGBM doit pouvoir charger `libomp`. Dans l’environnement testé, PyTorch fournit la bibliothèque, accessible avec `DYLD_FALLBACK_LIBRARY_PATH="$PWD/.venv/lib/python3.12/site-packages/torch/lib"`.
 
-La commande ci-dessus lit seulement `train_val.csv`. Le mode `--phase test` exige une version Git propre des entrées du protocole et un répertoire de sortie neuf. Rejouer la commande avec ce mode et `--output .files/publication/reproduction-test` à partir du commit enregistré dans le manifeste de l’article.
+La commande ci-dessus lit seulement `train_val.csv`. Pour rejouer le test à la révision exacte de l’article, lancer ces commandes depuis la copie qui contient le paquet de soumission. Le worktree et le répertoire de sortie doivent être neufs.
+
+```bash
+qsaria_root="$PWD"
+git worktree add --detach .files/publication/replay-v1 \
+  1179b63d42eea5be044bdc041a0f12c35983019c
+(
+  cd .files/publication/replay-v1 || exit
+  uv sync --locked --python 3.12 --extra prediction --extra mcp || exit
+  if [ "$(uname -s)" = Darwin ]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="$PWD/.venv/lib/python3.12/site-packages/torch/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+  fi
+  uv run --no-sync python scripts/benchmark_qsaria_v1.py \
+    --phase test --config benchmarks/qsaria-v1.toml \
+    --archive "$qsaria_root/.files/publication/datasets/tdc-admet-4426004.zip" \
+    --output "$qsaria_root/.files/publication/reproduction-test"
+)
+```
 
 Avec les scripts de restitution du paquet de soumission, régénérer les tables et la figure à partir des prédictions du test :
 
