@@ -471,6 +471,13 @@ An advanced strategy is requested explicitly and applied to every candidate:
 @qsaria Run a QSAR benchmark for pEC50 with 3-repeat random holdout.
 ```
 
+Each campaign returns a `campaign_id`. Reuse it in the same Qsaria experiment
+or Chainlit session with the same input file and benchmark request to retry
+unfinished candidates. Completed candidates retain their models and split
+seeds. Failed candidates are listed with the stage and reason for the failure.
+Use a new ID for changes to the data or request.
+Resume requires the `campaign_checkpoint.json` written by this version.
+
 ### 7.6 Inference
 
 Predict with a catalog model:

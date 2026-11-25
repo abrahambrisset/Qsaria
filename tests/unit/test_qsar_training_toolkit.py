@@ -74,6 +74,37 @@ def test_train_qsar_model_executes_the_requested_holdout_protocol(
     assert not result.get("hyperparameter_tuning")
 
 
+def test_outlier_refit_keeps_the_holdout_provenance_for_agent_training(tmp_path):
+    fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
+    source = tmp_path / "fixture.csv"
+    data = pd.read_csv(fixture)
+    data["signal"] = range(len(data))
+    data.to_csv(source, index=False)
+    request = {
+        "target_columns": ["clogp"],
+        "task_type": "regression",
+        "representation": {"kind": "precomputed", "feature_columns": ["signal"]},
+        "validation": {"kind": "single_random_holdout", "seed": 42},
+        "compute": {"profile": "local_light"},
+        "backend": {"name": "lightgbm", "n_estimators": 4, "min_child_samples": 2},
+        "applicability_domain": {"methods": ["bounding_box"]},
+    }
+    agent = SimpleNamespace(session_state={})
+
+    result = QSARTrainingToolkit().train_qsar_model(
+        str(source), request, str(tmp_path / "output"), agent=agent
+    )
+
+    assert result["outlier_analysis"]["status"] == "completed"
+    (baseline,) = result["split_results"]
+    assert baseline["strategy_label"] == "random_seed_42"
+    assert Path(baseline["output_dir"]).name == "baseline"
+    assert baseline["leakage"]["validation"]["status"] == "complete"
+    assert (
+        agent.session_state["prediction_models"]["training_runs"][-1]["split_runs"][0]["seed"] == 42
+    )
+
+
 def test_standard_qsar_requires_enough_scaffolds_for_grouped_holdout(tmp_path):
     source_csv = tmp_path / "train.csv"
     pd.DataFrame(

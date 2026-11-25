@@ -6,19 +6,25 @@ Benchmark orchestration for multi-backend QSAR campaigns.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-import time
+import math
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
+from pydantic_core import to_json
 
 from cs_copilot.storage import S3
 
 from .backend_capabilities import get_backend_capabilities
+from .catalog import _read_catalog_payload, _records_from_payload, model_catalog_lock
 from .model_registry_toolkit import ModelRegistryToolkit
 from .qsar_contracts import (
     ChempropConfig,
@@ -48,6 +54,53 @@ from .tabular_representations import (
 )
 
 logger = logging.getLogger(__name__)
+_CAMPAIGN_CHECKPOINT = "campaign_checkpoint.json"
+_CAMPAIGN_SCHEMA_VERSION = 1
+_CANDIDATE_BACKENDS = {
+    "chemprop": ChempropConfig,
+    "lightgbm": LightGBMConfig,
+    "tabicl": TabICLConfig,
+}
+
+
+def _campaign_child(root: Path, name: str) -> Path:
+    path = root / name
+    if Path(name).name != name or name in {"", ".", ".."} or path.is_symlink():
+        raise ValueError(f"Unsafe benchmark campaign path: {path}")
+    return path
+
+
+def _storage_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with S3.open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _campaign_key(campaign_id: str, inputs: Dict[str, Any], seed_policy: Dict[str, Any]) -> str:
+    encoded = json.dumps([campaign_id, inputs, seed_policy], sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _write_atomic(path: Path, payload: bytes) -> None:
+    temporary = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as output:
+            temporary = Path(output.name)
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _write_checkpoint(path: Path, checkpoint: Dict[str, Any]) -> None:
+    _write_atomic(path, to_json(checkpoint, indent=2, inf_nan_mode="null", fallback=str) + b"\n")
 
 
 def _coerce_list(value: Optional[List[str] | str]) -> Optional[List[str]]:
@@ -75,7 +128,8 @@ def _safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     try:
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
     except Exception:
         return None
 
@@ -133,12 +187,14 @@ class BenchmarkToolkit(Toolkit):
         request: QsariaBenchmarkRequest,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        token = f"{time.time_ns():x}"
+        request = QsariaBenchmarkRequest.model_validate(request)
+        campaign_id = request.campaign_id or f"benchmark-{uuid4().hex}"
+        workspace = S3.local_session_root()
         return self.benchmark_qsar_models(
             train_csv=train_csv,
-            request=request,
-            output_dir=S3.path(f"benchmark/{token}"),
-            bundle_dir=S3.path("training_bundles"),
+            request=request.model_copy(update={"campaign_id": campaign_id}),
+            output_dir=str(workspace / "benchmark"),
+            bundle_dir=str(workspace / "training_bundles" / campaign_id),
             agent=agent,
         )
 
@@ -289,11 +345,7 @@ class BenchmarkToolkit(Toolkit):
         tuning_enabled: bool = False,
     ) -> Dict[str, Any]:
         backend_name = candidate["backend_name"]
-        backend = {
-            "chemprop": ChempropConfig(),
-            "lightgbm": LightGBMConfig(),
-            "tabicl": TabICLConfig(),
-        }[backend_name]
+        backend = _CANDIDATE_BACKENDS[backend_name]()
         representation = (
             MolecularGraphRepresentation()
             if backend_name == "chemprop"
@@ -345,9 +397,10 @@ class BenchmarkToolkit(Toolkit):
         target_columns: List[str],
         training_profile: str,
         campaign_seed_policy: Dict[str, Any],
+        campaign_key: str,
         agent: Agent,
     ) -> Dict[str, Any]:
-        temporary_model_id = f"{candidate['candidate_id']}_session"
+        temporary_model_id = f"{candidate['candidate_id']}_{campaign_key[:12]}_session"
         model_path = result.get("best_model_path") or result.get("model_path")
         if not model_path:
             raise ValueError(
@@ -391,6 +444,7 @@ class BenchmarkToolkit(Toolkit):
                 "validation_strategy": validation_strategy,
                 "training_profile": training_profile,
                 "campaign_root": str(campaign_root),
+                "benchmark_campaign_key": campaign_key,
                 "seed_policy": result.get("seed_policy") or campaign_seed_policy,
                 "seed_policy_report": seed_policy_reporting_text(
                     result.get("seed_policy") or campaign_seed_policy
@@ -428,6 +482,34 @@ class BenchmarkToolkit(Toolkit):
             agent=agent,
         )
         return persisted
+
+    def _recover_persisted_candidate(
+        self, candidate_id: str, campaign_key: str, campaign_root: Path
+    ) -> Optional[Dict[str, Any]]:
+        registry = self._get_registry_toolkit()
+        # Internal artifact discovery can also find partially published models.
+        # Only the on-disk catalog proves the registry commit occurred.
+        committed = _records_from_payload(_read_catalog_payload(registry.catalog.source_path))
+        matches = [
+            record
+            for record in committed
+            if record.training_data_summary.get("benchmark_campaign_key") == campaign_key
+            and record.training_data_summary.get("campaign_root") == str(campaign_root)
+            and record.training_data_summary.get("candidate_id") == candidate_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1 or not Path(matches[0].model_path).is_file():
+            raise ValueError(f"Registry evidence is incomplete or ambiguous for {candidate_id}.")
+        record = matches[0]
+        if not record.metadata_path or not Path(record.metadata_path).is_file():
+            raise ValueError(f"Registry evidence is missing model metadata for {candidate_id}.")
+        return {
+            "model_id": record.model_id,
+            "status": record.status,
+            "model_path": record.model_path,
+            "model_root": str(Path(record.metadata_path).parent) if record.metadata_path else None,
+        }
 
     def _candidate_summary_row(
         self,
@@ -508,6 +590,7 @@ class BenchmarkToolkit(Toolkit):
                 (result.get("training_durations") or {}).get("total_duration_seconds")
             ),
             "status": persisted.get("status"),
+            "candidate_status": "completed",
             "internal_model_root": persisted.get("model_root"),
             "best_model_path": persisted.get("model_path"),
             "feature_cache_key": (result.get("feature_preparation") or {}).get("feature_cache_key"),
@@ -551,6 +634,7 @@ class BenchmarkToolkit(Toolkit):
             "backend_name": row.get("backend"),
             "representation_name": row.get("representation"),
             "status": row.get("status"),
+            "candidate_status": row.get("candidate_status"),
             "hardest_split": row.get("hardest_split"),
             "hardest_split_r2": row.get("hardest_split_r2"),
             "hardest_split_balanced_accuracy": row.get("hardest_split_balanced_accuracy"),
@@ -573,7 +657,7 @@ class BenchmarkToolkit(Toolkit):
         }
 
     def _rank_summary_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        def sort_key(row: Dict[str, Any]) -> tuple[float, float, float, float, float]:
+        def sort_key(row: Dict[str, Any]) -> tuple[bool, float, float, float, float, float]:
             classification_row = (
                 row.get("hardest_split_balanced_accuracy") is not None
                 or row.get("random_balanced_accuracy") is not None
@@ -588,6 +672,7 @@ class BenchmarkToolkit(Toolkit):
             tie_breaker = row.get("roc_auc") if classification_row else None
             train_time = row.get("train_time_s")
             return (
+                row.get("candidate_status") == "failed",
                 -(hardest_metric if hardest_metric is not None else float("-inf")),
                 -(tie_breaker if tie_breaker is not None else float("-inf")),
                 -(delta_metric if delta_metric is not None else float("-inf")),
@@ -671,6 +756,11 @@ class BenchmarkToolkit(Toolkit):
                 f"- Effective validation strategy: `{json.dumps(validation_strategy, sort_keys=True)}`"
             )
         lines.append(f"- Candidates compared: `{len(candidate_rows)}`")
+        failures = [row for row in candidate_rows if row["candidate_status"] == "failed"]
+        if failures:
+            lines.append(f"- Failed candidates: `{len(failures)}`")
+            if len(failures) == len(candidate_rows):
+                lines.append("- No candidate completed. Resume with the same campaign ID to retry.")
         lines.append(f"- {seed_policy_reporting_text(campaign_seed_policy)}")
         for key, value in recommendations.items():
             if value:
@@ -706,6 +796,9 @@ class BenchmarkToolkit(Toolkit):
             lines.append(
                 f"- `{row['candidate_id']}` — backend `{row['backend']}`, representation `{row['representation']}`, model `{row['model_id']}`"
             )
+            if row.get("error_stage"):
+                message = str(row["error_message"]).replace("\n", " ")
+                lines.append(f"  - {row['error_stage']} · {row['error_type']} · {message}")
         lines.append("")
         lines.append("## Leaderboard")
         lines.append("")
@@ -830,6 +923,150 @@ class BenchmarkToolkit(Toolkit):
             lines.append("")
         return "\n".join(lines).strip() + "\n"
 
+    @staticmethod
+    def _candidate_model_path(result: Dict[str, Any], candidate_dir: Path) -> Path:
+        value = result.get("best_model_path") or result.get("model_path")
+        if not value:
+            raise ValueError(result.get("error") or "Candidate did not produce a model artifact.")
+        path = Path(value).expanduser().resolve()
+        if not path.is_relative_to(candidate_dir) or not path.is_file():
+            raise ValueError(f"Missing or out-of-scope benchmark model artifact: {path}")
+        return path
+
+    @staticmethod
+    def _record_candidate_failure(
+        entry: Dict[str, Any],
+        candidate: Dict[str, Any],
+        protocol: str,
+        stage: str,
+        error: Exception,
+    ) -> None:
+        logger.exception(
+            "Benchmark candidate %s failed during %s.", candidate["candidate_id"], stage
+        )
+        failure = {
+            "error_stage": stage,
+            "error_type": type(error).__name__,
+            "error_message": str(error) or type(error).__name__,
+        }
+        entry.setdefault("failures", []).append(failure)
+        entry["row"] = {
+            "candidate_id": candidate["candidate_id"],
+            "model_id": None,
+            "backend": candidate["backend_name"],
+            "representation": candidate["representation_name"],
+            "protocol": protocol,
+            "status": "failed",
+            "candidate_status": "failed",
+            "internal_model_root": None,
+            "best_model_path": None,
+            **failure,
+        }
+
+    def _run_campaign_candidate(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        checkpoint: Dict[str, Any],
+        checkpoint_path: Path,
+        train_csv: str,
+        request: QsariaBenchmarkRequest,
+        protocol_policy: Dict[str, Any],
+        training_profile: str,
+        bundle_dir: Optional[str],
+        agent: Agent,
+    ) -> Dict[str, Any]:
+        candidate_id = candidate["candidate_id"]
+        entry = checkpoint["candidate_states"].setdefault(candidate_id, {})
+        completed_model = entry.get("model")
+
+        campaign_root = checkpoint_path.parent
+        protocol = protocol_policy["protocol"]
+        seed_policy = checkpoint["campaign_seed_policy"]
+        campaign_key = checkpoint["campaign_key"]
+        result = entry.get("training_result")
+        replaying_training = result is not None or completed_model is not None
+        if not replaying_training:
+            try:
+                candidate_dir = _campaign_child(campaign_root, candidate_id)
+                candidate_dir.mkdir(exist_ok=True)
+                attempt_dir = candidate_dir / f"{candidate_id}-{uuid4().hex}"
+                attempt_dir.mkdir()
+                result = self._train_candidate(
+                    candidate=candidate,
+                    train_csv=train_csv,
+                    task_type=request.task_type,
+                    smiles_column=request.smiles_column,
+                    target_columns=list(request.target_columns),
+                    candidate_dir=attempt_dir,
+                    campaign_seed_policy=seed_policy,
+                    validation=request.validation,
+                    compute=request.compute,
+                    agent=agent,
+                    bundle_dir=bundle_dir,
+                    tuning_enabled=request.tuning_enabled,
+                )
+                self._candidate_model_path(result, attempt_dir)
+                result.update(candidate_id=candidate_id, backend_name=candidate["backend_name"])
+                entry["training_result"] = result
+            except Exception as error:
+                self._record_candidate_failure(entry, candidate, protocol, "training", error)
+                _write_checkpoint(checkpoint_path, checkpoint)
+                return entry
+            _write_checkpoint(checkpoint_path, checkpoint)
+
+        try:
+            persisted = (
+                self._recover_persisted_candidate(candidate_id, campaign_key, campaign_root)
+                if replaying_training
+                else None
+            )
+            if completed_model:
+                if not persisted or persisted["model_id"] != completed_model["model_id"]:
+                    raise ValueError(
+                        f"Registry evidence no longer matches the completed candidate {candidate_id}."
+                    )
+                if _storage_sha256(persisted["model_path"]) != entry["model_sha256"]:
+                    raise ValueError(f"Saved model checksum changed for {candidate_id}.")
+                if entry["row"]["candidate_status"] == "completed":
+                    return entry
+            if persisted is None:
+                self._candidate_model_path(result, _campaign_child(campaign_root, candidate_id))
+                persisted = self._register_and_persist_candidate(
+                    candidate=candidate,
+                    result=result,
+                    train_csv=train_csv,
+                    benchmark_protocol=protocol,
+                    validation_strategy=protocol_policy.get("validation_strategy"),
+                    campaign_root=campaign_root,
+                    task_type=request.task_type,
+                    smiles_column=request.smiles_column,
+                    target_columns=list(request.target_columns),
+                    training_profile=training_profile,
+                    campaign_seed_policy=seed_policy,
+                    campaign_key=campaign_key,
+                    agent=agent,
+                )
+            if not persisted.get("model_id") or persisted.get("persisted") is False:
+                raise ValueError(persisted.get("error") or "Candidate was not persisted.")
+            entry["model_sha256"] = _storage_sha256(persisted["model_path"])
+            entry["row"] = self._candidate_summary_row(
+                candidate=candidate, result=result, persisted=persisted, benchmark_protocol=protocol
+            )
+            entry["model"] = {
+                "candidate_id": candidate_id,
+                "model_id": persisted["model_id"],
+                "backend_name": candidate["backend_name"],
+                "representation_name": candidate["representation_name"],
+                "internal_model_root": persisted.get("model_root"),
+                "catalog_status": persisted.get("status"),
+                "best_model_path": persisted.get("model_path"),
+            }
+        except Exception as error:
+            self._record_candidate_failure(entry, candidate, protocol, "registry", error)
+        _write_checkpoint(checkpoint_path, checkpoint)
+        return entry
+
     def benchmark_qsar_models(
         self,
         train_csv: str,
@@ -838,17 +1075,11 @@ class BenchmarkToolkit(Toolkit):
         bundle_dir: Optional[str] = None,
         agent: Optional[Agent] = None,
     ) -> Dict[str, Any]:
-        """Run a multi-backend benchmark campaign for a QSAR-ready dataset."""
+        """Run or resume a benchmark for a QSAR-ready dataset under one campaign ID."""
         if isinstance(request, dict):
             request = QsariaBenchmarkRequest.model_validate(request)
         if agent is None:
             raise ValueError("Agent is required when running a benchmark campaign")
-        task_type = request.task_type
-        target_columns = list(request.target_columns)
-        smiles_column = request.smiles_column
-        requested_backends = list(request.backends)
-        requested_tabicl_variants = list(request.tabicl_candidate_variants)
-        include_candidate_variants = request.include_candidate_variants
         validation_strategy = canonical_validation_strategy(request.validation)
 
         compute_payload = self._resolve_compute_profile()
@@ -857,31 +1088,121 @@ class BenchmarkToolkit(Toolkit):
             if request.compute.profile == "auto"
             else request.compute.profile
         )
-        protocol_policy = resolve_validation_strategy(
-            requested_protocol=request.validation.kind if validation_strategy is None else None,
-            validation_strategy=validation_strategy,
-            training_profile=effective_training_profile,
-            seed_policy_mode="generated_per_benchmark_campaign",
-            base_seed=request.validation.seed,
-        )
-        benchmark_protocol = protocol_policy["protocol"]
-        effective_include_candidate_variants = include_candidate_variants
-        campaign_seed_policy = protocol_policy["seed_policy"]
-
         candidates = self._expand_candidates(
-            task_type=task_type,
-            target_columns=target_columns,
-            requested_backends=requested_backends,
-            include_candidate_variants=effective_include_candidate_variants,
-            requested_tabicl_variants=requested_tabicl_variants,
+            task_type=request.task_type,
+            target_columns=list(request.target_columns),
+            requested_backends=list(request.backends),
+            include_candidate_variants=request.include_candidate_variants,
+            requested_tabicl_variants=list(request.tabicl_candidate_variants),
             training_profile=effective_training_profile,
         )
         if not candidates:
             raise ValueError("No compatible benchmark candidates are available.")
+        if len({candidate["candidate_id"] for candidate in candidates}) != len(candidates):
+            raise ValueError("Benchmark candidate identifiers must be unique.")
 
-        campaign_root = Path(output_dir).expanduser().resolve()
-        campaign_root.mkdir(parents=True, exist_ok=True)
+        campaign_id = request.campaign_id or f"benchmark-{uuid4().hex}"
+        campaign_root = _campaign_child(Path(output_dir).expanduser().resolve(), campaign_id)
+        checkpoint_path = _campaign_child(campaign_root, _CAMPAIGN_CHECKPOINT)
+        with model_catalog_lock(checkpoint_path):
+            inputs = {
+                "train_csv": train_csv,
+                "dataset_sha256": _storage_sha256(train_csv),
+                "request": request.model_dump(mode="json", exclude={"campaign_id"}),
+                "candidates": [
+                    {
+                        **candidate,
+                        "backend_config": _CANDIDATE_BACKENDS[
+                            candidate["backend_name"]
+                        ]().model_dump(mode="json"),
+                        "representation_config": (
+                            None
+                            if candidate["backend_name"] == "chemprop"
+                            else get_tabular_representation(
+                                candidate["representation_name"]
+                            ).as_dict()
+                        ),
+                    }
+                    for candidate in candidates
+                ],
+                "training_profile": effective_training_profile,
+            }
+            checkpoint = (
+                json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                if checkpoint_path.exists()
+                else None
+            )
+            if checkpoint is not None:
+                if checkpoint.get("schema_version") != _CAMPAIGN_SCHEMA_VERSION:
+                    raise ValueError("Unsupported benchmark campaign checkpoint schema.")
+                if (
+                    checkpoint.get("inputs") != inputs
+                    or checkpoint.get("campaign_id") != campaign_id
+                ):
+                    raise ValueError(
+                        "Cannot resume: benchmark campaign inputs changed. Use a new campaign ID."
+                    )
+                seed_policy = checkpoint["campaign_seed_policy"]
+                if checkpoint.get("campaign_key") != _campaign_key(
+                    campaign_id, inputs, seed_policy
+                ):
+                    raise ValueError("Benchmark campaign seed policy checkpoint is inconsistent.")
+            else:
+                seed_policy = None
+                if campaign_root.exists() and any(
+                    not child.match(f".{_CAMPAIGN_CHECKPOINT}.*.tmp")
+                    for child in campaign_root.iterdir()
+                ):
+                    raise ValueError("Benchmark campaign directory has no checkpoint.")
 
+            protocol_policy = resolve_validation_strategy(
+                requested_protocol=request.validation.kind if validation_strategy is None else None,
+                validation_strategy=validation_strategy,
+                training_profile=effective_training_profile,
+                seed_policy=seed_policy,
+                seed_policy_mode="generated_per_benchmark_campaign",
+                base_seed=request.validation.seed,
+            )
+            if checkpoint is None:
+                campaign_root.mkdir(parents=True, exist_ok=True)
+                seed_policy = protocol_policy["seed_policy"]
+                checkpoint = {
+                    "schema_version": _CAMPAIGN_SCHEMA_VERSION,
+                    "campaign_id": campaign_id,
+                    "campaign_key": _campaign_key(campaign_id, inputs, seed_policy),
+                    "inputs": inputs,
+                    "campaign_seed_policy": seed_policy,
+                    "candidate_states": {},
+                }
+                _write_checkpoint(checkpoint_path, checkpoint)
+            return self._run_campaign(
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+                compute_payload=compute_payload,
+                protocol_policy=protocol_policy,
+                request=request,
+                bundle_dir=bundle_dir,
+                agent=agent,
+            )
+
+    def _run_campaign(
+        self,
+        *,
+        checkpoint: Dict[str, Any],
+        checkpoint_path: Path,
+        compute_payload: Dict[str, Any],
+        protocol_policy: Dict[str, Any],
+        request: QsariaBenchmarkRequest,
+        bundle_dir: Optional[str],
+        agent: Agent,
+    ) -> Dict[str, Any]:
+        inputs = checkpoint["inputs"]
+        candidates = inputs["candidates"]
+        effective_training_profile = inputs["training_profile"]
+        train_csv = inputs["train_csv"]
+        campaign_root = checkpoint_path.parent
+        campaign_seed_policy = checkpoint["campaign_seed_policy"]
+        benchmark_protocol = protocol_policy["protocol"]
         candidate_rows: List[Dict[str, Any]] = []
         candidate_results: List[Dict[str, Any]] = []
         compact_candidate_results: List[Dict[str, Any]] = []
@@ -889,92 +1210,61 @@ class BenchmarkToolkit(Toolkit):
 
         total_candidates = len(candidates)
         for candidate_index, candidate in enumerate(candidates, start=1):
-            candidate_dir = campaign_root / candidate["candidate_id"]
-            candidate_dir.mkdir(parents=True, exist_ok=True)
             logger.info(
-                "Benchmark progress: candidate %d/%d - %s (backend=%s, representation=%s) starting.",
+                "Benchmark progress: candidate %d/%d - %s.",
                 candidate_index,
                 total_candidates,
                 candidate["candidate_id"],
-                candidate["backend_name"],
-                candidate["representation_name"],
             )
-            try:
-                result = self._train_candidate(
-                    candidate=candidate,
-                    train_csv=train_csv,
-                    task_type=task_type,
-                    smiles_column=smiles_column,
-                    target_columns=target_columns,
-                    candidate_dir=candidate_dir,
-                    campaign_seed_policy=campaign_seed_policy,
-                    validation=request.validation,
-                    compute=request.compute,
-                    agent=agent,
-                    bundle_dir=bundle_dir,
-                    tuning_enabled=request.tuning_enabled,
-                )
-            except Exception:
-                logger.exception(
-                    "Benchmark progress: candidate %d/%d - %s failed.",
-                    candidate_index,
-                    total_candidates,
-                    candidate["candidate_id"],
-                )
-                raise
-            persisted = self._register_and_persist_candidate(
+            entry = self._run_campaign_candidate(
                 candidate=candidate,
-                result=result,
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
                 train_csv=train_csv,
-                benchmark_protocol=benchmark_protocol,
-                validation_strategy=protocol_policy.get("validation_strategy"),
-                campaign_root=campaign_root,
-                task_type=task_type,
-                smiles_column=smiles_column,
-                target_columns=target_columns,
+                request=request,
+                protocol_policy=protocol_policy,
                 training_profile=effective_training_profile,
-                campaign_seed_policy=campaign_seed_policy,
+                bundle_dir=bundle_dir,
                 agent=agent,
             )
-            result["candidate_id"] = candidate["candidate_id"]
-            result["backend_name"] = candidate["backend_name"]
-            result["representation_name"] = candidate["representation_name"]
-            candidate_results.append(result)
-            candidate_row = self._candidate_summary_row(
-                candidate=candidate,
-                result=result,
-                persisted=persisted,
-                benchmark_protocol=benchmark_protocol,
-            )
-            candidate_rows.append(candidate_row)
-            compact_candidate_results.append(
-                self._compact_candidate_result(
-                    result=result,
-                    row=candidate_row,
+            row = entry["row"]
+            candidate_rows.append(row)
+            if row["candidate_status"] == "completed":
+                candidate_results.append(entry["training_result"])
+                persisted_model_mapping.append(entry["model"])
+                compact_candidate_results.append(
+                    self._compact_candidate_result(result=entry["training_result"], row=row)
                 )
-            )
-            logger.info(
-                "Benchmark progress: candidate %d/%d - %s completed (status=%s, hardest_split_r2=%s).",
-                candidate_index,
-                total_candidates,
-                candidate["candidate_id"],
-                persisted.get("status"),
-                candidate_row.get("hardest_split_r2"),
-            )
-            persisted_model_mapping.append(
-                {
-                    "candidate_id": candidate["candidate_id"],
-                    "model_id": persisted.get("model_id"),
-                    "backend_name": candidate["backend_name"],
-                    "representation_name": candidate["representation_name"],
-                    "internal_model_root": persisted.get("model_root"),
-                    "catalog_status": persisted.get("status"),
-                    "best_model_path": persisted.get("model_path"),
-                }
-            )
+            else:
+                compact_candidate_results.append(
+                    {
+                        **row,
+                        "backend_name": row["backend"],
+                        "representation_name": row["representation"],
+                    }
+                )
 
         ranked_rows = self._rank_summary_rows(candidate_rows)
-        recommendations = self._resolve_recommendations(ranked_rows)
+        successful = [row for row in ranked_rows if row["candidate_status"] == "completed"]
+        recommendations = self._resolve_recommendations(successful)
+        failed_count = len(candidate_rows) - len(successful)
+        campaign_status = (
+            "all_candidates_failed"
+            if not successful
+            else "partial" if failed_count else "completed"
+        )
+        campaign_info = {
+            "campaign_id": checkpoint["campaign_id"],
+            "campaign_key": checkpoint["campaign_key"],
+            "campaign_status": campaign_status,
+            "campaign_checkpoint_path": str(checkpoint_path),
+            "failed_candidate_count": failed_count,
+            "status": "retryable_error" if not successful else campaign_status,
+        }
+        if not successful:
+            campaign_info["error"] = (
+                "All benchmark candidates failed. Review the leaderboard and reuse the same campaign ID to retry."
+            )
         feature_cache = {
             "feature_cache_dir": str(campaign_root / "feature_cache"),
             "cache_hits": sum(int(row.get("feature_cache_hits") or 0) for row in candidate_rows),
@@ -983,11 +1273,12 @@ class BenchmarkToolkit(Toolkit):
             ),
         }
 
-        leaderboard_path = campaign_root / "leaderboard.csv"
-        pd.DataFrame(ranked_rows).to_csv(leaderboard_path, index=False)
+        leaderboard_path = _campaign_child(campaign_root, "leaderboard.csv")
+        _write_atomic(leaderboard_path, pd.DataFrame(ranked_rows).to_csv(index=False).encode())
 
-        report_path = campaign_root / "benchmark_report.md"
-        report_path.write_text(
+        report_path = _campaign_child(campaign_root, "benchmark_report.md")
+        _write_atomic(
+            report_path,
             self._render_benchmark_report(
                 benchmark_protocol=benchmark_protocol,
                 validation_strategy=protocol_policy.get("validation_strategy"),
@@ -996,16 +1287,17 @@ class BenchmarkToolkit(Toolkit):
                 candidate_results=candidate_results,
                 recommendations=recommendations,
                 campaign_seed_policy=campaign_seed_policy,
-            )
+            ).encode(),
         )
 
         benchmark_summary = {
+            **campaign_info,
             "workflow_kind": "benchmark",
             "validation_protocol": benchmark_protocol,
             "train_csv": train_csv,
-            "task_type": task_type,
-            "target_columns": target_columns,
-            "smiles_column": smiles_column,
+            "task_type": request.task_type,
+            "target_columns": list(request.target_columns),
+            "smiles_column": request.smiles_column,
             "compute_environment": compute_payload["compute_environment"],
             "training_profile": effective_training_profile,
             "campaign_seed_policy": campaign_seed_policy,
@@ -1031,10 +1323,11 @@ class BenchmarkToolkit(Toolkit):
             "report_path": str(report_path),
             **recommendations,
         }
-        summary_path = campaign_root / "benchmark_summary.json"
-        summary_path.write_text(json.dumps(benchmark_summary, indent=2) + "\n")
+        summary_path = _campaign_child(campaign_root, "benchmark_summary.json")
+        _write_checkpoint(summary_path, benchmark_summary)
 
         return {
+            **campaign_info,
             "workflow_kind": "benchmark",
             "validation_protocol": benchmark_protocol,
             "output_dir": str(campaign_root),

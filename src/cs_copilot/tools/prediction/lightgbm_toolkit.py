@@ -337,9 +337,10 @@ class LightGBMToolkit(Toolkit):
         if baseline_run is None:
             if progress_callback is not None:
                 progress_callback("Training baseline refit", {"detail": "train + validation"})
+            baseline_dir = output_dir / "baseline"
             baseline_run = self._train_backend(
                 train_csv=train_csv,
-                output_dir=str(output_dir / "baseline"),
+                output_dir=str(baseline_dir),
                 task=task,
                 resolved_parameters={
                     **base_args,
@@ -350,6 +351,7 @@ class LightGBMToolkit(Toolkit):
                     "early_stopping_rounds": 0,
                 },
             )
+            baseline_run["output_dir"] = str(baseline_dir)
         baseline_run = dict(baseline_run)
         baseline_run["outlier_variant"] = "baseline"
         baseline_run["outlier_selected_count"] = len(selected_indices)
@@ -376,9 +378,10 @@ class LightGBMToolkit(Toolkit):
                     "Training filtered refit", {"detail": f"{len(selected_indices)} rows removed"}
                 )
             try:
+                filtered_dir = output_dir / "outlier_filtered"
                 filtered_run = self._train_backend(
                     train_csv=train_csv,
-                    output_dir=str(output_dir / "outlier_filtered"),
+                    output_dir=str(filtered_dir),
                     task=task,
                     resolved_parameters={
                         **base_args,
@@ -389,6 +392,7 @@ class LightGBMToolkit(Toolkit):
                         "early_stopping_rounds": 0,
                     },
                 )
+                filtered_run["output_dir"] = str(filtered_dir)
                 filtered_run["outlier_variant"] = "outlier_filtered"
                 filtered_run["outlier_selected_count"] = len(selected_indices)
                 variants.append({"variant_id": "outlier_filtered", "run": filtered_run})
@@ -2696,6 +2700,26 @@ class LightGBMToolkit(Toolkit):
                         f"{safe_slug(str(split_result.get('strategy_label') or 'holdout'))}_"
                         f"{variant.get('variant_id')}"
                     )
+                    run = variant["run"]
+                    run.update(
+                        {
+                            key: split_result.get(key)
+                            for key in (
+                                "strategy",
+                                "strategy_family",
+                                "strategy_label",
+                                "backend_split_type",
+                                "seed",
+                                "repeat_index",
+                                "fold_index",
+                                "n_folds",
+                                "n_repeats",
+                            )
+                        }
+                    )
+                    validation_leakage = (split_result.get("leakage") or {}).get("validation")
+                    if validation_leakage is not None:
+                        run.setdefault("leakage", {})["validation"] = validation_leakage
                     outlier_model_variants.append(variant)
             if outlier_model_variants:
                 outlier_study["status"] = "completed"
@@ -2712,10 +2736,14 @@ class LightGBMToolkit(Toolkit):
                 )
                 if baseline_variant is not None:
                     final_primary_run = baseline_variant["run"]
-                    final_split_results = [
-                        item["run"]
+                    baseline_by_split = {
+                        item["split_label"]: item["run"]
                         for item in outlier_model_variants
-                        if isinstance(item.get("run"), dict)
+                        if item["run"].get("outlier_variant") == "baseline"
+                    }
+                    final_split_results = [
+                        baseline_by_split.get(item["strategy_label"], item)
+                        for item in split_results
                     ]
             elif not outlier_study["studies"]:
                 outlier_study["status"] = "skipped"

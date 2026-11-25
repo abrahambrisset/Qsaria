@@ -11,7 +11,7 @@ import os
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping
 
 from cs_copilot.mcp.context import MCPAgentContext
@@ -118,6 +118,7 @@ class QsariaToolSpec(ToolSpec):
 
     agent_name: str = "qsaria"
     output_paths: Mapping[str, str] = field(default_factory=dict)
+    stable_output_parameters: tuple[str, ...] = ()
     nested_output_paths: Mapping[str, str] = field(default_factory=dict)
     nested_blocked_inputs: tuple[str, ...] = ()
     registered_artifact_inputs: Mapping[
@@ -183,10 +184,18 @@ def _call_annotations(signature: inspect.Signature) -> dict[str, Any]:
 def _forced_output_paths(spec: QsariaToolSpec, run: Any) -> dict[str, str]:
     """Allocate every output parameter beneath the active experiment."""
 
-    return {
-        parameter: run.artifact_path(filename, category=spec.artifact_category)
-        for parameter, filename in spec.output_paths.items()
-    }
+    paths = {}
+    for parameter, filename in spec.output_paths.items():
+        if parameter in spec.stable_output_parameters:
+            relative = PurePosixPath(
+                run.artifact_rel_path(filename, category=spec.artifact_category)
+            )
+            paths[parameter] = run.manager.resolve_artifact_path(
+                run.experiment_id, (relative.parent.parent / relative.name).as_posix()
+            )
+        else:
+            paths[parameter] = run.artifact_path(filename, category=spec.artifact_category)
+    return paths
 
 
 def _without_nested_output_paths(
@@ -465,6 +474,11 @@ def _classify_error(spec: QsariaToolSpec, error: BaseException) -> str:
     if value_errors:
         messages = "\n".join(str(item).lower() for item in value_errors)
         if any(marker in messages for marker in _UNKNOWN_MODEL_ERROR_MARKERS):
+            return "needs_user_input"
+        if (
+            spec.mcp_name == "qsaria_benchmark_benchmark_qsar_models"
+            and "benchmark campaign inputs changed" in messages
+        ):
             return "needs_user_input"
         if spec.mcp_name in _CORRECTABLE_INFERENCE_VALUE_ERROR_TOOLS:
             return "needs_user_input"

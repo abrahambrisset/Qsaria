@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,6 +95,247 @@ def _fake_validation_assessment(
         "aggregated_split_metrics": aggregated,
         "governance": {"recommended_status": "workflow_demo"},
     }
+
+
+@pytest.fixture
+def resumable_benchmark(tmp_path, monkeypatch):
+    import cs_copilot.tools.prediction.model_registry_toolkit as registry_module
+
+    internal_root = tmp_path / "internal"
+    catalog_path = tmp_path / "catalog.json"
+    monkeypatch.setattr(catalog_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    monkeypatch.setattr(registry_module, "DEFAULT_INTERNAL_MODEL_ROOT", internal_root)
+    train_csv = tmp_path / "dataset.csv"
+    train_csv.write_text("smiles,Y\nCCO,1\nCCC,2\n")
+    calls = []
+    failing = set()
+
+    def fake_train(*, request, output_dir, seed_policy, **_kwargs):
+        name = request.representation.name
+        calls.append((name, seed_policy))
+        if name in failing:
+            raise RuntimeError(f"{name} fixture fit failed")
+        path = Path(output_dir) / "model_0" / "best.pkl"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"test model")
+        return {
+            "model_path": str(path),
+            "best_model_path": str(path),
+            "trained_at": "2026-04-27T12:00:00+02:00",
+            "metrics": {"test": {"r2": 0.5}},
+            "validation_assessment": _fake_validation_assessment(
+                "standard_qsar", 0.5, "scaffold", 0.4
+            ),
+        }
+
+    def toolkit():
+        training = QSARTrainingToolkit()
+        monkeypatch.setattr(training.lightgbm_toolkit.backend, "is_available", lambda: True)
+        monkeypatch.setattr(training, "train_qsar_model", fake_train)
+        registry = ModelRegistryToolkit(
+            backends=training.backend_mapping(),
+            catalog=catalog_module.PredictionModelCatalog.load(str(catalog_path)),
+            register_tools=False,
+        )
+        return BenchmarkToolkit(training_toolkit=training, registry_toolkit=registry)
+
+    def run(instance=None, **changes):
+        return (instance or toolkit()).benchmark_qsar_models(
+            train_csv=str(train_csv),
+            request={
+                "campaign_id": "fixture-benchmark",
+                "task_type": "regression",
+                "target_columns": ["Y"],
+                "backends": ["lightgbm"],
+                "compute": {"profile": "local_light"},
+                **changes,
+            },
+            output_dir=str(tmp_path / "benchmark"),
+            agent=_fake_agent(),
+        )
+
+    return SimpleNamespace(
+        run=run,
+        toolkit=toolkit,
+        calls=calls,
+        failing=failing,
+        train_csv=train_csv,
+        catalog_path=catalog_path,
+    )
+
+
+def test_benchmark_retries_failed_candidates_with_original_seeds(resumable_benchmark):
+    fixture = resumable_benchmark
+    fixture.failing.add("rdkit_all")
+    partial = fixture.run()
+
+    assert partial["campaign_status"] == "partial"
+    assert partial["campaign_id"] == "fixture-benchmark"
+    assert len(partial["persisted_model_mapping"]) == 2
+    failed = partial["leaderboard"][-1]
+    assert failed["candidate_id"] == "lightgbm_rdkit_all"
+    assert failed["candidate_status"] == "failed"
+    assert failed["error_stage"] == "training"
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["error_message"] == "rdkit_all fixture fit failed"
+    assert "rdkit_all fixture fit failed" in Path(partial["report_path"]).read_text()
+    assert partial["best_overall_candidate"] != failed["candidate_id"]
+
+    fixture.calls.clear()
+    fixture.failing.clear()
+    resumed = fixture.run()
+
+    assert resumed["campaign_status"] == "completed"
+    assert fixture.calls == [("rdkit_all", partial["campaign_seed_policy"])]
+    assert resumed["campaign_seed_policy"] == partial["campaign_seed_policy"]
+    assert len(resumed["persisted_model_mapping"]) == 3
+    assert {row["model_id"] for row in partial["persisted_model_mapping"]} <= {
+        row["model_id"] for row in resumed["persisted_model_mapping"]
+    }
+    assert (
+        len(catalog_module.PredictionModelCatalog.load(str(fixture.catalog_path)).list_models())
+        == 3
+    )
+
+
+def test_benchmark_reports_all_failed_and_rejects_changed_inputs(resumable_benchmark):
+    fixture = resumable_benchmark
+    fixture.failing.add("rdkit_all")
+    all_failed = fixture.run(include_candidate_variants=False)
+
+    assert all_failed["campaign_status"] == "all_candidates_failed"
+    assert all_failed["status"] == "retryable_error"
+    assert all_failed["best_overall_candidate"] is None
+    assert all_failed["persisted_model_mapping"] == []
+    leaderboard = pd.read_csv(all_failed["leaderboard_path"])
+    assert leaderboard["candidate_status"].tolist() == ["failed"]
+    checkpoint = Path(all_failed["campaign_checkpoint_path"])
+    original = checkpoint.read_bytes()
+
+    with pytest.raises(ValueError, match="benchmark campaign inputs changed"):
+        fixture.run()
+    fixture.train_csv.write_text("smiles,Y\nCCO,3\nCCC,2\n")
+    with pytest.raises(ValueError, match="benchmark campaign inputs changed"):
+        fixture.run(include_candidate_variants=False)
+    assert checkpoint.read_bytes() == original
+    assert len(fixture.calls) == 1
+
+
+@pytest.mark.parametrize("catalog_committed", [False, True])
+def test_benchmark_recovers_durable_training_after_interruption(
+    resumable_benchmark, monkeypatch, catalog_committed
+):
+    fixture = resumable_benchmark
+    instance = fixture.toolkit()
+    registry = instance.registry_toolkit
+    persist = registry.persist_registered_model
+
+    def interrupt_persistence(**kwargs):
+        if catalog_committed:
+            persist(**kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(registry, "persist_registered_model", interrupt_persistence)
+    with pytest.raises(KeyboardInterrupt):
+        fixture.run(instance, include_candidate_variants=False)
+
+    fixture.calls.clear()
+    resumed_instance = fixture.toolkit()
+    if catalog_committed:
+
+        def duplicate_persistence(**_kwargs):
+            pytest.fail("resuming a committed candidate should never persist it a second time")
+
+        monkeypatch.setattr(
+            resumed_instance.registry_toolkit, "persist_registered_model", duplicate_persistence
+        )
+    resumed = fixture.run(resumed_instance, include_candidate_variants=False)
+
+    assert resumed["campaign_status"] == "completed"
+    assert fixture.calls == []
+    assert len(resumed["persisted_model_mapping"]) == 1
+    assert (
+        len(catalog_module.PredictionModelCatalog.load(str(fixture.catalog_path)).list_models())
+        == 1
+    )
+
+
+def test_benchmark_flags_a_completed_candidate_with_a_missing_model(resumable_benchmark):
+    fixture = resumable_benchmark
+    completed = fixture.run(include_candidate_variants=False)
+    model_path = Path(completed["persisted_model_mapping"][0]["best_model_path"])
+    model_bytes = model_path.read_bytes()
+    model_path.unlink()
+    fixture.calls.clear()
+    catalog_before = fixture.catalog_path.read_bytes()
+
+    stale = fixture.run(include_candidate_variants=False)
+
+    assert stale["campaign_status"] == "all_candidates_failed"
+    assert stale["leaderboard"][0]["error_stage"] == "registry"
+    assert "Registry evidence" in stale["leaderboard"][0]["error_message"]
+    assert fixture.catalog_path.read_bytes() == catalog_before
+    assert fixture.calls == []
+
+    model_path.write_bytes(b"x" * len(model_bytes))
+    corrupted = fixture.run(include_candidate_variants=False)
+    assert corrupted["campaign_status"] == "all_candidates_failed"
+    assert "checksum changed" in corrupted["leaderboard"][0]["error_message"]
+    assert fixture.catalog_path.read_bytes() == catalog_before
+    assert fixture.calls == []
+
+    model_path.write_bytes(model_bytes)
+    restored = fixture.run(include_candidate_variants=False)
+    assert restored["persisted_model_mapping"] == completed["persisted_model_mapping"]
+    assert fixture.catalog_path.read_bytes() == catalog_before
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("surface", ["chainlit", "mcp"])
+def test_named_campaign_resumes_from_public_surface(
+    resumable_benchmark, tmp_path, monkeypatch, surface
+):
+    fixture = resumable_benchmark
+    request = QsariaBenchmarkRequest(
+        campaign_id="public-replay",
+        task_type="regression",
+        target_columns=["Y"],
+        backends=["lightgbm"],
+        include_candidate_variants=False,
+        compute=ComputeConfig(profile="local_light"),
+    )
+    if surface == "chainlit":
+        from cs_copilot.storage import S3
+
+        monkeypatch.setattr(S3, "local_session_root", lambda: tmp_path / "chat-session")
+
+        def run():
+            return fixture.toolkit()._agno_benchmark_qsar_models(
+                train_csv=str(fixture.train_csv), request=request, agent=_fake_agent()
+            )
+
+    else:
+        from cs_copilot.mcp.qsaria.adapter import build_qsaria_tool
+        from cs_copilot.mcp.qsaria.experiments import ExperimentManager
+        from cs_copilot.mcp.tool_specs.qsaria import SPECS
+
+        manager = ExperimentManager(local_root=tmp_path)
+        experiment_id = manager.create_experiment("resume benchmark")["experiment_id"]
+        spec = next(item for item in SPECS if item.method == "benchmark_qsar_models")
+
+        def run():
+            tool = build_qsaria_tool(spec, fixture.toolkit(), manager)
+            return asyncio.run(
+                tool(experiment_id=experiment_id, train_csv=str(fixture.train_csv), request=request)
+            )
+
+    first = run()
+    second = run()
+
+    assert first["campaign_id"] == second["campaign_id"] == "public-replay"
+    assert first["campaign_checkpoint_path"] == second["campaign_checkpoint_path"]
+    assert first["persisted_model_mapping"] == second["persisted_model_mapping"]
+    assert len(fixture.calls) == 1
 
 
 def test_benchmark_public_contract_has_no_benchmark_mode():

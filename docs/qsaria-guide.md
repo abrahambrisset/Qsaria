@@ -474,6 +474,13 @@ Une strategie avancee se demande explicitement et s'applique a tous les candidat
 @qsaria Lance un benchmark QSAR pour pEC50 avec un repeated random holdout de 3 repetitions.
 ```
 
+Chaque campagne renvoie un `campaign_id`. Réutilise-le dans la même expérience
+Qsaria ou session Chainlit, avec le même fichier et la même demande, pour
+relancer les candidats inachevés. Les candidats terminés gardent leurs modèles
+et leurs graines. Le rapport indique l’étape et la cause de chaque échec.
+Utilise un nouvel identifiant si les données ou la demande changent.
+La reprise utilise le fichier `campaign_checkpoint.json` créé par cette version.
+
 ### 7.6 Inference
 
 Predire avec un modele catalogue:

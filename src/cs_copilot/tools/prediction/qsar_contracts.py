@@ -653,6 +653,14 @@ class TabICLTrainingRequest(TrainingRequestBase):
 
 class QsariaBenchmarkRequest(StrictContract):
     schema_version: Literal["2.0"] = "2.0"
+    campaign_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_-]{0,63}$",
+        description=(
+            "Optional ID for starting or resuming a campaign in the current experiment. "
+            "Reuse the ID with the same data and request to retry unfinished candidates."
+        ),
+    )
     smiles_column: str = "smiles"
     target_columns: List[str] = Field(min_length=1)
     task_type: TaskType

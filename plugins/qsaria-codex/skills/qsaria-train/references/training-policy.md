@@ -38,6 +38,8 @@ those facts contradict the delegated contract.
 
 Benchmark only after an explicit request for a benchmark, head-to-head comparison, multi-backend evaluation, or representation leaderboard. Build one strict `QsariaBenchmarkRequest`; use `validation={"kind":"standard_qsar"}` by default. When the user requests an advanced strategy, put the same canonical validation object on the whole benchmark. For benchmarks, set `tuning_enabled=true` only when the user asks to tune candidates. Route a standard single-model request to Training.
 
+Preserve the returned `campaign_id` and candidate failure details in the handoff. For a requested retry in the same experiment, pass the same `campaign_id`, dataset and benchmark request so the toolkit can reuse completed candidates and seeds.
+
 Activity Cliff analysis is attached to model evidence. Preserve its exact indexes, split labels, artifacts, applicability-domain context, and warnings. Never invent validation Activity Cliff metrics when prediction artifacts were not exported.
 
 ## Persistence
