@@ -11,6 +11,7 @@ from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.qsar_contracts import (
     ChempropConfig,
+    ComputeConfig,
     CrossValidation,
     GeneratedRepresentation,
     HoldoutValidation,
@@ -440,8 +441,7 @@ def test_agno_standard_lightgbm_surface_builds_the_canonical_request(tmp_path, m
     assert request.validation.kind == "standard_qsar"
     assert request.representation.kind == "generated"
     assert request.representation.name == "rdkit_all"
-    assert request.tuning.enabled is True
-    assert request.tuning.n_trials == 50
+    assert request.tuning.enabled is False
     assert request.outlier_analysis.enabled is True
 
 
@@ -672,6 +672,45 @@ def test_standard_qsar_tabular_training_uses_one_rdkit_representation(tmp_path, 
     inference_profile = result["recommended_registry_payload"]["inference_profile"]
     assert "feature_columns" not in inference_profile
     assert inference_profile["feature_columns_count"] == 64
+
+
+def test_local_light_uses_one_worker_for_generated_features(tmp_path, monkeypatch):
+    toolkit = QSARTrainingToolkit()
+    workers = []
+
+    def prepare(**kwargs):
+        workers.append(kwargs["feature_n_jobs"])
+        return {
+            "train_csv": str(tmp_path / "features.csv"),
+            "feature_columns": ["x"],
+            "feature_preparation": {
+                "representation_name": kwargs["representation_name"],
+                "durations": {"total_duration_seconds": 0.1, "steps": []},
+            },
+        }
+
+    monkeypatch.setattr(toolkit, "_prepare_tabular_training_dataset", prepare)
+    monkeypatch.setattr(
+        "cs_copilot.tools.prediction.qsar_training_toolkit.describe_compute_environment",
+        lambda: {"cpu_count": 8},
+    )
+    monkeypatch.setattr(
+        toolkit.lightgbm_toolkit,
+        "train_lightgbm_model",
+        lambda **kwargs: _fake_train_result(
+            tmp_path,
+            backend_name="lightgbm",
+            representation_name="rdkit_all",
+            validation_protocol=kwargs["validation_protocol"],
+        ),
+    )
+    request = _training_request("lightgbm").model_copy(
+        update={"compute": ComputeConfig(profile="local_light")}
+    )
+
+    toolkit.train_qsar_model(str(tmp_path / "train.csv"), request, str(tmp_path / "out"))
+
+    assert workers == [1]
 
 
 @pytest.mark.parametrize(

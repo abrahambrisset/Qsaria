@@ -349,6 +349,31 @@ def test_ensemble_backend_uses_capabilities_for_tabular_preparation(tmp_path):
     assert "fp_0000" in pd.read_csv(component_input).columns
 
 
+def test_ensemble_prepares_count_fingerprints_for_a_count_model(tmp_path):
+    source = pd.DataFrame({"smiles": ["CCCCCCCC", "CCO"]})
+    input_csv = tmp_path / "input.csv"
+    source.to_csv(input_csv, index=False)
+    backend = EnsembleBackend()
+    record = _record("counts", "lightgbm", tmp_path / "best.pkl")
+    record.inference_profile = {"feature_columns": ["cfp_0000"]}
+
+    prepared = backend._prepare_component_input_csv(
+        backend_name="lightgbm",
+        component={"representation_name": "morgan_count_only"},
+        record=record,
+        source_csv=str(input_csv),
+        source_df=source,
+        work_dir=tmp_path,
+        slug="counts",
+        feature_cache={},
+        prefer_rdkit_all=False,
+    )
+
+    fingerprints = pd.read_csv(prepared).filter(regex=r"^cfp_")
+    assert fingerprints.shape == (2, 2048)
+    assert fingerprints.iloc[0].max() > 1
+
+
 def test_ensemble_backend_rejects_configured_backend_without_capabilities(tmp_path):
     input_csv = tmp_path / "input.csv"
     pd.DataFrame({"smiles": ["CC"], "x": [1.0]}).to_csv(input_csv, index=False)

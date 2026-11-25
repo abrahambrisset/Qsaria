@@ -289,7 +289,9 @@ class MolecularFeatureToolkit(Toolkit):
             df = pd.read_csv(fh)
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        working = standardize_smiles_column(
+            df.copy(), resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
+        )
         if resolved_smiles_column != "smiles":
             working["smiles"] = working[resolved_smiles_column]
             working = working.drop(columns=[resolved_smiles_column])
@@ -374,7 +376,9 @@ class MolecularFeatureToolkit(Toolkit):
             df = pd.read_csv(fh)
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        working = standardize_smiles_column(
+            df.copy(), resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
+        )
         if resolved_smiles_column != "smiles":
             working["smiles"] = working[resolved_smiles_column]
             working = working.drop(columns=[resolved_smiles_column])

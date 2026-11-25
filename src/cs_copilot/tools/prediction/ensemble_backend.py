@@ -30,6 +30,7 @@ from .chemprop_backend import ChempropBackend
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import safe_slug
 from .tabicl_backend import TabICLBackend
+from .tabular_representations import TABULAR_REPRESENTATIONS
 from .training_orchestration import is_classification_task, is_multiclass_task, json_safe_label
 
 
@@ -237,13 +238,21 @@ class EnsembleBackend(PredictionBackend):
             return source_csv
 
         representation = _component_representation(component).strip().lower()
-        needs_morgan = "morgan" in representation or any(
-            column.startswith("fp_") for column in expected_columns
-        )
+        spec = TABULAR_REPRESENTATIONS.get(representation)
+        needs_binary = (
+            spec.use_morgan_binary
+            if spec
+            else "morgan" in representation and "count" not in representation
+        ) or any(column.startswith("fp_") for column in expected_columns)
+        needs_count = (
+            spec.use_morgan_count
+            if spec
+            else "morgan" in representation and "count" in representation
+        ) or any(column.startswith("cfp_") for column in expected_columns)
         needs_rdkit = "rdkit" in representation or any(
             column.startswith("desc_") for column in expected_columns
         )
-        if not needs_morgan and not needs_rdkit:
+        if not (needs_binary or needs_count or needs_rdkit):
             return source_csv
         if "smiles" not in source_df.columns:
             raise InvalidPredictionInputError(
@@ -254,13 +263,20 @@ class EnsembleBackend(PredictionBackend):
         feature_dir.mkdir(parents=True, exist_ok=True)
         feature_csvs: list[str] = []
 
-        if needs_morgan:
-            cache_key = "morgan_radius2_2048"
+        for needed, kind, prefix in (
+            (needs_binary, "binary", "fp_"),
+            (needs_count, "count", "cfp_"),
+        ):
+            if not needed:
+                continue
+            cache_key = f"morgan_radius2_2048_{kind}"
             if cache_key not in feature_cache:
                 result = self.feature_toolkit.smiles_to_morgan_fingerprints(
                     input_csv=source_csv,
                     smiles_column="smiles",
-                    output_csv=str(feature_dir / "morgan_radius2_2048_fp.csv"),
+                    output_csv=str(feature_dir / f"{cache_key}.csv"),
+                    fingerprint_kind=kind,
+                    feature_prefix=prefix,
                     input_columns_to_keep=["smiles"],
                 )
                 feature_cache[cache_key] = str(result["output_csv"])

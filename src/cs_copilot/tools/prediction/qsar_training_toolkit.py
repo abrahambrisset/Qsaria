@@ -1654,7 +1654,9 @@ class QSARTrainingToolkit(Toolkit):
         requested_resolved_parameters["feature_cache_dir"] = str(
             (Path(output_dir).expanduser().resolve() / "feature_cache")
         )
-        requested_resolved_parameters["feature_n_jobs"] = _resolve_feature_n_jobs()
+        requested_resolved_parameters["feature_n_jobs"] = _resolve_feature_n_jobs(
+            1 if compute_profile == "local_light" else None
+        )
         requested_resolved_parameters["validation_protocol"] = validation_protocol
         if (
             isinstance(request.validation, StandardQsarValidation)
