@@ -32,6 +32,16 @@ Sur macOS, LightGBM doit pouvoir charger `libomp`. Dans l’environnement testé
 
 La commande ci-dessus lit seulement `train_val.csv`. Le mode `--phase test` exige une version Git propre des entrées du protocole et un répertoire de sortie neuf. Rejouer la commande avec ce mode et `--output .files/publication/reproduction-test` à partir du commit enregistré dans le manifeste de l’article.
 
+Avec les scripts de restitution du paquet de soumission, régénérer les tables et la figure à partir des prédictions du test :
+
+```bash
+uv run --no-sync python scripts/report_qsaria_v1_benchmark.py \
+  --run .files/publication/reproduction-test \
+  --output .files/publication/reproduction-report
+```
+
+Le script de restitution recalcule les scores et les écarts ponctuels depuis les prédictions. Le tableau et la figure utilisent aussi les bornes bootstrap enregistrées par le benchmark. [Manuscrit de relecture](qsaria-v1-manuscript.md) · [Résultats agrégés](results/qsaria-v1/scores.csv)
+
 ## Lecture des résultats
 
 - La validation de développement maintient ensemble les lignes de même identité standardisée. Le mode test réutilise les partitions publiées et calcule aussi les scores sur les identités absentes de l’entraînement lorsqu’il existe un chevauchement.
@@ -39,3 +49,21 @@ La commande ci-dessus lit seulement `train_val.csv`. Le mode `--phase test` exig
 - Les budgets sont définis avant le test. LightGBM et Random Forest utilisent chacun 80 arbres par graine, sur un cœur, avec leurs autres réglages fixes. Les performances des modèles sont rapportées par graine. L’intervalle à 95 % estime l’écart LightGBM moins Random Forest pour la première graine par bootstrap apparié des identités chimiques. Un écart négatif favorise LightGBM pour la MAE et un écart positif pour l’AUROC.
 - Le domaine d’applicabilité est la boîte à bornes strictes de Qsaria ajustée aux seules empreintes d’entraînement. Rapporter les effectifs avec les scores de chaque classe de domaine. Une AUROC est calculable si les deux classes sont présentes.
 - `manifest.json` donne le commit, les empreintes de l’archive, de `uv.lock` et de la configuration, ainsi que les versions des bibliothèques. Les fichiers `predictions.csv` et `summary.json` fournissent l’évidence ligne par ligne et les métriques recalculées correspondantes.
+
+## Vérification des parcours
+
+La [fixture synthétique](fixtures/qsaria-v1-synthetic.csv) contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les jeux du groupe ADMET. [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)
+
+Le pont de validation lance le vrai serveur MCP en stdio et journalise ses réponses complètes dans `.files/publication/agentic/tool_calls/`. Il s’utilise depuis un environnement local isolé. Les essais Terra ont appelé ce pont quand les outils Qsaria étaient absents du sélecteur natif du chat.
+
+```bash
+uv run --no-sync python scripts/call_qsaria_v1_mcp.py qsaria_bootstrap \
+  --select status,profile,llm_policy
+
+USE_S3=false CS_COPILOT_STORAGE_ROOT="$PWD/.files/publication/chainlit-check-data" \
+  uv run --no-sync python -m scripts.check_qsaria_v1_chainlit
+```
+
+La seconde commande vérifie la délégation réelle dans l’équipe construite par Chainlit avec un transport de modèle simulé en local. Elle produit des prédictions LightGBM et vérifie le résultat renvoyé par le rapport.
+
+[Essais Terra](results/qsaria-v1/agentic.json) · [Essai Chainlit](results/qsaria-v1/chainlit.json) · [Empreintes du rejeu](results/qsaria-v1/reproduction.json)

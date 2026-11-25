@@ -5,10 +5,10 @@ Plan de référence : [Publication de Qsaria V1](2026-11-25-qsaria-v1-publicat
 ## État des étapes
 
 - [x] Établir la référence V1 et auditer la PR #5. [Audit](qsaria-v1-audit-pr5.md)
-- [ ] Définir le protocole et exécuter le pilote V1.
-- [ ] Corriger les défauts V1 confirmés.
-- [ ] Figer le protocole et exécuter les évaluations finales.
-- [ ] Préparer le paquet de soumission.
+- [x] Définir le protocole et exécuter le pilote V1.
+- [x] Corriger les défauts V1 reproduits qui bloquent les parcours évalués.
+- [ ] Figer le protocole et exécuter les évaluations finales. Les résultats scientifiques et les parcours stdio et Chainlit sont vérifiés. L’exposition directe du MCP dans un chat Codex Desktop reste à contrôler.
+- [x] Préparer le paquet de soumission pour relecture. [Manuscrit](../../../benchmarks/qsaria-v1-manuscript.md)
 
 ## 25 novembre 2026
 
@@ -23,3 +23,8 @@ Plan de référence : [Publication de Qsaria V1](2026-11-25-qsaria-v1-publicat
 - `6a8fb11` corrige la sélection des backends du benchmark de classification. Les douze tests du module passent. L’audit de la PR a reproduit deux échecs de provenance Codex sur le commit de la PR. L’essai de curation et d’entraînement LightGBM sur une fixture de 40 molécules a abouti sur les deux révisions.
 - Le test MCP stdio sur la même taille de fixture a créé une expérience et produit des prédictions avec 12 arbres et une demande d’optimisation omise. Le second chat Terra, ouvert après la relance, ne voit toujours pas le MCP. Il reste à établir une connexion au client Codex.
 - Le pilote exploratoire sur `train_val.csv` a utilisé une partition groupée par identité, Morgan binaire, une référence naïve et Random Forest. AqSolDB contient 742 lignes d’identité répétée et une ligne non featurisable sur 7 985. BBB_Martins contient 75 lignes d’identité répétée sur 1 624. Sur la validation, LightGBM donne une MAE de 1,006 pour AqSolDB et une AUROC de 0,916 pour BBB_Martins. Les sorties de Random Forest sont 1,002 et 0,916. Le pilote CPU a pris environ 81 s et 18 s. Les scores sont exploratoires et les fichiers `test.csv` restent réservés à l’exécution figée.
+- `7755308` vérifie le parent ChEMBL avant de retirer les mélanges organiques. `9e44c64` borne les calculs de descripteurs à un travailleur avec `local_light` et reconstitue les empreintes Morgan de comptage des ensembles. Le test de la frontière d’identité confirme que deux tautomères peuvent conserver des clés distinctes après curation et se rejoindre à la standardisation des descripteurs. Le protocole de l’article regroupe les identités standardisées en développement et rapporte un contrôle sur les identités inédites dans le test officiel.
+- Le test final a été figé à `1179b63d42eea5be044bdc041a0f12c35983019c`. Le rejeu avec `uv sync --offline --locked` dans un second clone local reproduit les CSV de prédictions et d’exclusions octet pour octet. Les métriques, intervalles et effectifs sont identiques. LightGBM obtient une MAE de 1,279 sur AqSolDB et une AUROC de 0,865 sur BBB_Martins. Les références Random Forest sont 1,378 et 0,856. L’intervalle à la graine de référence pour l’écart d’AUROC contient zéro.
+- Deux chats GPT-6.1 Terra en réflexion élevée ont achevé les scénarios reformulés via le MCP stdio local. Le serveur a rejeté les premiers appels d’entraînement qui omettaient le handoff de curation. Les appels corrigés ont produit chacun quatre prédictions. Les MAE recalculées retrouvent les chiffres annoncés par les deux chats. Le deuxième chat a créé une expérience supplémentaire et les graines effectives diffèrent.
+- L’équipe construite par Chainlit a enchaîné curation, entraînement et compte rendu via Agno avec un modèle simulé localement. Le rapport et le CSV de quatre prédictions concordent. La suite unitaire sur un clone propre après `d8ea232`, qui actualise une assertion de test pour Optuna sans modifier le code scientifique figé, compte 1 269 réussites, 2 tests ignorés et 1 désélectionné.
+- Le contrôle d’intégration directe à Codex Desktop attend l’ouverture du dossier interne `Qsaria/Qsaria` comme projet et l’activation du plugin dans l’application. Le contrôle natif après relance n’a pas trouvé `qsaria_bootstrap`. Le test d’installation isolée et les parcours scientifiques stdio ont abouti.

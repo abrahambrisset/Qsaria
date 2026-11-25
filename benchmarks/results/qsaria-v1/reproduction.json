@@ -1,0 +1,16 @@
+{
+  "revision": "1179b63d42eea5be044bdc041a0f12c35983019c",
+  "verification": "independent local clone, fresh uv sync --offline --locked, identical predictions and non-timing summaries",
+  "sha256": {
+    "solubility_aqsoldb": {
+      "predictions.csv": "229249c5b15aece92003a444acfb3792493b0cd64f3e67064be96d8d3e949d18",
+      "rejected_development.csv": "5ae284ee35024d6fd380383cbee032562016b1c0fba9cf1144b04b148b9af95c",
+      "rejected_test.csv": "d6af0bc18c1c20f3d362ff37d9cf987aba9376149c440c5567f8a8afda8cc4d8"
+    },
+    "bbb_martins": {
+      "predictions.csv": "468f361ed9e0e7af81817e277acfd46b16eed1d56f0d76d24df1f808808f7832",
+      "rejected_development.csv": "fa57cc8562c68be683aaa1bd24f1f7199ee29e1a0a933215e976b59b5deff414",
+      "rejected_test.csv": "fa57cc8562c68be683aaa1bd24f1f7199ee29e1a0a933215e976b59b5deff414"
+    }
+  }
+}

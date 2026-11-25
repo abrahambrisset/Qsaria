@@ -1,0 +1,45 @@
+{
+  "model": "gpt-6.1-terra",
+  "reasoning": "high",
+  "fixture": "40 synthetic regression structures with computed cLogP",
+  "cases": [
+    {
+      "case": "A",
+      "chat": "01a212bd-b5af-7b30-8239-b1c7bade3893",
+      "experiment": "exp_20261125T124732Z_316af79769",
+      "transport": "stdio_bridge",
+      "curated_rows": 40,
+      "test_rows": 4,
+      "seed": 1782123798,
+      "test_mae_recomputed": 0.434,
+      "handoff_recorded": true,
+      "tool_calls": [
+        "qsaria_curation_curate_qsar_dataset",
+        "qsaria_training_train_lightgbm_model",
+        "qsaria_record_handoff",
+        "qsaria_training_train_lightgbm_model"
+      ],
+      "training_log": ".files/publication/agentic/tool_calls/72326275b9014683923c87fbf20836b5.json",
+      "predictions_sha256": "b7e995f47714cc160012fdbaceaf86014106b49839216a7ddde267ea6dab3f35"
+    },
+    {
+      "case": "B",
+      "chat": "01a212bf-89e5-7fd3-818a-94c971d60e45",
+      "experiment": "exp_20261125T125100Z_ad9b3d5ed4",
+      "transport": "stdio_bridge",
+      "curated_rows": 40,
+      "test_rows": 4,
+      "seed": 42,
+      "test_mae_recomputed": 1.0935000000000001,
+      "handoff_recorded": true,
+      "tool_calls": [
+        "qsaria_curation_curate_qsar_dataset",
+        "qsaria_record_handoff",
+        "qsaria_training_train_lightgbm_model",
+        "qsaria_record_handoff"
+      ],
+      "training_log": ".files/publication/agentic/tool_calls/495c25d2b40a408fadbbb9cbd6d5071d.json",
+      "predictions_sha256": "d0228dfec48e7ee25a255c9bf7a0bb5111acbca53dff575370f310861bc8fe04"
+    }
+  ]
+}

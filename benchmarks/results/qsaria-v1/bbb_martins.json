@@ -1,0 +1,94 @@
+{
+  "dataset": "bbb_martins",
+  "metric": "auroc",
+  "partition": "test",
+  "development_source_rows": 1624,
+  "development_rejected_rows": 0,
+  "development_repeated_identity_rows": 75,
+  "fit_rows": 1624,
+  "evaluation_source_rows": 406,
+  "evaluated_rows": 406,
+  "evaluation_seen_identity_rows": 3,
+  "cohorts": {
+    "all_scored": {
+      "n": 406,
+      "scores_by_model_seed": {
+        "42": {
+          "lightgbm": 0.8609677923702314,
+          "dummy": 0.5,
+          "random_forest": 0.872557066916823
+        },
+        "1701": {
+          "lightgbm": 0.8688242651657285,
+          "dummy": 0.5,
+          "random_forest": 0.843046435272045
+        },
+        "2026": {
+          "lightgbm": 0.8654627892432771,
+          "dummy": 0.5,
+          "random_forest": 0.8511374296435272
+        }
+      },
+      "lightgbm_minus_random_forest_first_seed": {
+        "delta": -0.011589274546591644,
+        "lower_95": -0.04135836548969046,
+        "upper_95": 0.015717804305877478,
+        "valid": 1000
+      }
+    },
+    "identity_unseen": {
+      "n": 403,
+      "scores_by_model_seed": {
+        "42": {
+          "lightgbm": 0.8558943089430894,
+          "dummy": 0.5,
+          "random_forest": 0.8678658536585366
+        },
+        "1701": {
+          "lightgbm": 0.8640650406504063,
+          "dummy": 0.5,
+          "random_forest": 0.8369918699186992
+        },
+        "2026": {
+          "lightgbm": 0.8605284552845528,
+          "dummy": 0.5,
+          "random_forest": 0.8452845528455283
+        }
+      },
+      "lightgbm_minus_random_forest_first_seed": {
+        "delta": -0.011971544715447258,
+        "lower_95": -0.04353253022611565,
+        "upper_95": 0.017912682980059554,
+        "valid": 1000
+      }
+    }
+  },
+  "bounding_box_by_status": {
+    "in_domain": {
+      "n": 397,
+      "lightgbm_first_seed": 0.8635679022675926
+    },
+    "out_of_domain": {
+      "n": 9,
+      "lightgbm_first_seed": 0.85
+    }
+  },
+  "seconds_by_model_seed": {
+    "42": {
+      "lightgbm": 2.212,
+      "dummy": 0.001,
+      "random_forest": 1.206
+    },
+    "1701": {
+      "lightgbm": 1.257,
+      "dummy": 0.001,
+      "random_forest": 1.424
+    },
+    "2026": {
+      "lightgbm": 1.627,
+      "dummy": 0.001,
+      "random_forest": 1.654
+    }
+  },
+  "elapsed_seconds": 40.75
+}

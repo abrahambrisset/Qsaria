@@ -1,0 +1,20 @@
+{
+  "team": "QSAR Team",
+  "tools": [
+    "delegate_task_to_member",
+    "curate_qsar_dataset",
+    "delegate_task_to_member",
+    "train_lightgbm_model",
+    "delegate_task_to_member"
+  ],
+  "curation": 40,
+  "training": {
+    "mae": 0.8847442291286389,
+    "predictions": ".files/publication/chainlit-roundtrip-data/sessions/20261125-125738-edc557/training/lightgbm_18eb4b1d0da36730/model_0/test_predictions.csv",
+    "tuning": false,
+    "predictions_sha256": "3fc40c0b70e5920b9f9efaac5534c9f769248f4b3b1184fce8095f357cbfcc0d",
+    "rows": 4
+  },
+  "report": "40 molecules retained. Test MAE 0.884744.",
+  "transport": "scripted local model via HTTP mock transport"
+}

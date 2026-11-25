@@ -1,0 +1,90 @@
+{
+  "dataset": "solubility_aqsoldb",
+  "metric": "mae",
+  "partition": "test",
+  "development_source_rows": 7985,
+  "development_rejected_rows": 1,
+  "development_repeated_identity_rows": 742,
+  "fit_rows": 7984,
+  "evaluation_source_rows": 1997,
+  "evaluated_rows": 1993,
+  "evaluation_seen_identity_rows": 27,
+  "cohorts": {
+    "all_scored": {
+      "n": 1993,
+      "scores_by_model_seed": {
+        "42": {
+          "lightgbm": 1.2766561364387587,
+          "dummy": 1.8530178335959115,
+          "random_forest": 1.3752593737327414
+        },
+        "1701": {
+          "lightgbm": 1.2781291534578088,
+          "dummy": 1.8530178335959115,
+          "random_forest": 1.3841627577399502
+        },
+        "2026": {
+          "lightgbm": 1.281955129142785,
+          "dummy": 1.8530178335959115,
+          "random_forest": 1.375360857014633
+        }
+      },
+      "lightgbm_minus_random_forest_first_seed": {
+        "delta": -0.09860323729398268,
+        "lower_95": -0.12336271444487139,
+        "upper_95": -0.07261738702393472,
+        "valid": 1000
+      }
+    },
+    "identity_unseen": {
+      "n": 1966,
+      "scores_by_model_seed": {
+        "42": {
+          "lightgbm": 1.2775222161183437,
+          "dummy": 1.8478367703480807,
+          "random_forest": 1.3841681647798905
+        },
+        "1701": {
+          "lightgbm": 1.2795508259122297,
+          "dummy": 1.8478367703480807,
+          "random_forest": 1.393200985412008
+        },
+        "2026": {
+          "lightgbm": 1.2829784955635157,
+          "dummy": 1.8478367703480807,
+          "random_forest": 1.3843606796873278
+        }
+      },
+      "lightgbm_minus_random_forest_first_seed": {
+        "delta": -0.10664594866154675,
+        "lower_95": -0.13234520514786347,
+        "upper_95": -0.08149381754000141,
+        "valid": 1000
+      }
+    }
+  },
+  "bounding_box_by_status": {
+    "in_domain": {
+      "n": 1993,
+      "lightgbm_first_seed": 1.2766561364387587
+    }
+  },
+  "seconds_by_model_seed": {
+    "42": {
+      "lightgbm": 1.484,
+      "dummy": 0.0,
+      "random_forest": 46.487
+    },
+    "1701": {
+      "lightgbm": 1.438,
+      "dummy": 0.0,
+      "random_forest": 47.662
+    },
+    "2026": {
+      "lightgbm": 1.298,
+      "dummy": 0.001,
+      "random_forest": 54.559
+    }
+  },
+  "elapsed_seconds": 213.623
+}

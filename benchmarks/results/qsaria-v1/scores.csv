@@ -1,0 +1,13 @@
+dataset,metric,cohort,n,model,mean,sd,seeds
+AqSolDB,mae,all_scored,1993,Qsaria LightGBM,1.2789134730131175,0.00273517801851377,3
+AqSolDB,mae,all_scored,1993,Naïve,1.8530178335959115,0.0,3
+AqSolDB,mae,all_scored,1993,Random Forest,1.3782609961624415,0.005111327322960671,3
+AqSolDB,mae,identity_unseen,1966,Qsaria LightGBM,1.2800171791980297,0.002757872438372382,3
+AqSolDB,mae,identity_unseen,1966,Naïve,1.8478367703480807,0.0,3
+AqSolDB,mae,identity_unseen,1966,Random Forest,1.3872432766264087,0.005160424980357837,3
+BBB_Martins,auroc,all_scored,406,Qsaria LightGBM,0.8650849489264122,0.003941841406675711,3
+BBB_Martins,auroc,all_scored,406,Naïve,0.5,0.0,3
+BBB_Martins,auroc,all_scored,406,Random Forest,0.8555803106107985,0.015248729077711626,3
+BBB_Martins,auroc,identity_unseen,403,Qsaria LightGBM,0.8601626016260161,0.004097633564978351,3
+BBB_Martins,auroc,identity_unseen,403,Naïve,0.5,0.0,3
+BBB_Martins,auroc,identity_unseen,403,Random Forest,0.8500474254742548,0.015978561723448068,3
