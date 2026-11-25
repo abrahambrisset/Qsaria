@@ -198,10 +198,10 @@ def test_standard_lightgbm_contract_and_registry_routing_are_explicit() -> None:
     for text in (training_policy, coordinator_routing):
         assert 'representation_name="rdkit_all"' in text or "representation `rdkit_all`" in text
         assert 'validation_protocol="standard_qsar"' in text or "protocol `standard_qsar`" in text
-        assert "50 requested trials" in text
         assert "outlier analysis" in text
-        assert "simple prompt" in text
-    assert "`baseline` or `simplified`, never `standard`" in training_policy
+        assert "when the user requests" in text
+    assert "`tuning.enabled=true` only when the user requests optimization" in training_policy
+    assert "hyperparameter tuning disabled by default" in coordinator_routing
     assert "`candidate_manifest_path`" in registry_policy
     assert "`recommended_registry_payload`" in registry_policy
     assert "Never call the batch persistence tool" in registry_policy
