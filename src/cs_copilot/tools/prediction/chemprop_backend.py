@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import importlib.metadata
 import importlib.util
+import json
 import logging
 import os
 import queue
@@ -41,6 +42,8 @@ from .backend import (
 from .backend_capabilities import enrich_backend_environment
 from .chemprop_adapter import normalize_chemprop_classification_predictions
 from .qsar_contracts import ChempropHpoptWorkerJob, ChempropRunRequest
+from .qsar_splitters import build_qsar_split_payload
+from .qsar_training_policy import DEFAULT_QSAR_SPLIT_SIZES
 from .training_orchestration import is_classification_task, normalize_task_type
 
 logger = logging.getLogger(__name__)
@@ -746,6 +749,42 @@ class ChempropBackend(PredictionBackend):
         if sanitized_resolved_parameters.get("splits_file"):
             for conflicting in ("split_type", "split", "split_sizes", "data_seed"):
                 sanitized_resolved_parameters.pop(conflicting, None)
+        elif (
+            is_classification_task(task.task_type)
+            and task.target_columns
+            and not request.final_refit
+        ):
+            split_type = (
+                sanitized_resolved_parameters.get("split")
+                or sanitized_resolved_parameters.get("split_type")
+                or "random"
+            )
+            split_sizes = (
+                sanitized_resolved_parameters.get("split_sizes") or DEFAULT_QSAR_SPLIT_SIZES
+            )
+            if split_type.lower() == "random" and sum(split_sizes[1:]) > 0:
+                df = pd.read_csv(input_path)
+                seed = sanitized_resolved_parameters.get("data_seed", 0)
+                replicates = sanitized_resolved_parameters.get("num_replicates", 1)
+                validation_only = len(split_sizes) == 3 and split_sizes[-1] == 0
+                native_splits = []
+                for replicate in range(replicates):
+                    split = build_qsar_split_payload(
+                        df=df,
+                        split_type="random",
+                        split_sizes=split_sizes[:2] if validation_only else split_sizes,
+                        random_state=seed + replicate,
+                        task=task,
+                    )[0]
+                    split.pop("metadata")
+                    if validation_only:
+                        split["val"] = split.pop("test")
+                    native_splits.append(split)
+                splits_path = output_path / "stratified_splits.json"
+                splits_path.write_text(json.dumps(native_splits) + "\n")
+                sanitized_resolved_parameters["splits_file"] = str(splits_path)
+                for conflicting in ("split_type", "split", "split_sizes"):
+                    sanitized_resolved_parameters.pop(conflicting, None)
 
         for key, value in sanitized_resolved_parameters.items():
             flag = f"--{key.replace('_', '-')}"

@@ -323,6 +323,37 @@ def test_chemprop_multiclass_predictions_use_canonical_probability_columns():
     assert "positive_probability" not in normalized.columns
 
 
+def test_direct_chemprop_classification_supplies_stratified_replicate_splits(monkeypatch, tmp_path):
+    train_csv = tmp_path / "train.csv"
+    frame = pd.DataFrame({"smiles": ["CCO"] * 30, "activity": [0] * 27 + [1] * 3})
+    frame.to_csv(train_csv, index=False)
+    backend = ChempropBackend()
+
+    def fake_run_cli(args, **_kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_cli", fake_run_cli)
+    result = backend.train_model(
+        build_backend_run_request(
+            backend="chemprop",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "out"),
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["activity"],
+            resolved_parameters={"data_seed": 8, "num_replicates": 2, "split": "RANDOM"},
+        )
+    )
+
+    command = result["command"]
+    path = Path(command[command.index("--splits-file") + 1])
+    splits = json.loads(path.read_text())
+    assert len(splits) == 2 and splits[0] != splits[1]
+    for split in splits:
+        assert set(split) == {"train", "val", "test"}
+        assert all(set(frame.iloc[indices]["activity"]) == {0, 1} for indices in split.values())
+
+
 def test_chemprop_backend_prefers_native_splits_file(monkeypatch, tmp_path):
     train_csv = tmp_path / "chemprop_training_input.csv"
     train_csv.write_text("smiles,pEC50\nCCO,5.0\nCCC,6.0\nCCN,4.0\n")
@@ -475,7 +506,7 @@ def test_chemprop_hpopt_custom_space_uses_strict_internal_worker(monkeypatch, tm
 
 def test_chemprop_backend_uses_native_multiclass_cli(monkeypatch, tmp_path):
     train_csv = tmp_path / "multiclass.csv"
-    train_csv.write_text("smiles,profile\nCCO,0\nCCC,1\nCCN,2\n")
+    train_csv.write_text("smiles,profile\n" + "CCO,0\nCCC,1\nCCN,2\n" * 10)
     captured = {}
     backend = ChempropBackend()
     monkeypatch.setattr(backend, "is_available", lambda: True)

@@ -487,6 +487,7 @@ class TabICLBackend(PredictionBackend):
                 random_state=random_state,
                 smiles_column="smiles" if "smiles" in working.columns else None,
                 feature_columns=feature_columns,
+                task=task,
             )
         if (
             not isinstance(split_payload, list)

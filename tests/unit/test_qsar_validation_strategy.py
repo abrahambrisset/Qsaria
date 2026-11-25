@@ -3,7 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from cs_copilot.tools.prediction.qsar_splitters import build_repeated_kfold_split_payloads
+from cs_copilot.tools.prediction.backend import InvalidPredictionInputError, PredictionTaskSpec
+from cs_copilot.tools.prediction.qsar_splitters import (
+    build_qsar_split_payload,
+    build_repeated_kfold_split_payloads,
+)
 from cs_copilot.tools.prediction.qsar_training_policy import assess_protocol_results
 from cs_copilot.tools.prediction.qsar_validation_strategy import resolve_validation_strategy
 
@@ -301,6 +305,123 @@ def test_cross_validation_outer_test_is_fixed_and_absent_from_inner_train_valida
     assert all(fold["test"] == outer_test for fold in folds)
     assert all(set(outer_test).isdisjoint(fold["train"]) for fold in folds)
     assert all(set(outer_test).isdisjoint(fold["val"]) for fold in folds)
+
+
+def test_random_classification_holdout_stratifies_imbalanced_multiclass():
+    df = pd.DataFrame({"activity": ["inactive"] * 90 + ["active"] * 5 + ["partial"] * 5})
+    task = PredictionTaskSpec(task_type="multiclass_classification", target_columns=["activity"])
+    kwargs = {
+        "df": df,
+        "split_type": "random",
+        "split_sizes": [0.8, 0.1, 0.1],
+        "random_state": 7,
+        "task": task,
+    }
+
+    split = build_qsar_split_payload(**kwargs)[0]
+
+    assert split == build_qsar_split_payload(**kwargs)[0]
+    assert split["metadata"]["stratified"] is True
+    assert df.iloc[split["train"]]["activity"].value_counts().to_dict() == {
+        "inactive": 74,
+        "active": 3,
+        "partial": 3,
+    }
+    for name in ("val", "test"):
+        assert df.iloc[split[name]]["activity"].value_counts().to_dict() == {
+            "inactive": 8,
+            "active": 1,
+            "partial": 1,
+        }
+    assert sorted(split["train"] + split["val"] + split["test"]) == list(range(100))
+
+
+def test_random_classification_holdout_reserves_rare_classes_in_training():
+    df = pd.DataFrame({"activity": [0] * 17 + [1, 1, 2]})
+    task = PredictionTaskSpec(task_type="multiclass_classification", target_columns=["activity"])
+
+    split = build_qsar_split_payload(
+        df=df, split_type="random", split_sizes=[0.8, 0.1, 0.1], random_state=3, task=task
+    )[0]
+
+    assert set(df.iloc[split["train"]]["activity"]) == {0, 1, 2}
+    assert set(df.iloc[split["test"]]["activity"]) == {0, 1}
+    assert set(df.iloc[split["val"]]["activity"]) == {0}
+
+
+def test_impossible_random_classification_training_size_is_a_clear_error():
+    df = pd.DataFrame({"activity": [0] * 17 + [1, 1, 2]})
+    task = PredictionTaskSpec(task_type="multiclass_classification", target_columns=["activity"])
+
+    with pytest.raises(InvalidPredictionInputError, match="training.*2.*3 classes"):
+        build_qsar_split_payload(
+            df=df, split_type="random", split_sizes=[0.1, 0.9], random_state=3, task=task
+        )
+
+
+def test_small_classification_holdout_uses_a_feasible_partition():
+    df = pd.DataFrame({"activity": [0, 0, 0, 0, 1, 1]})
+    task = PredictionTaskSpec(task_type="classification", target_columns=["activity"])
+
+    split = build_qsar_split_payload(
+        df=df, split_type="random", split_sizes=[0.8, 0.2], random_state=3, task=task
+    )[0]
+
+    assert len(split["train"]) == 5
+    assert set(df.iloc[split["train"]]["activity"]) == {0, 1}
+    assert len(split["test"]) == 1
+
+
+def test_repeated_stratified_cv_retains_rare_training_classes_after_outer_test():
+    df = pd.DataFrame({"activity": [0] * 30 + [1] * 8 + [2] * 2})
+    task = PredictionTaskSpec(task_type="multiclass_classification", target_columns=["activity"])
+    kwargs = {
+        "df": df,
+        "n_splits": 5,
+        "n_repeats": 2,
+        "random_state": 7,
+        "outer_test_size": 0.2,
+        "task": task,
+    }
+
+    folds = build_repeated_kfold_split_payloads(**kwargs)
+
+    assert folds == build_repeated_kfold_split_payloads(**kwargs)
+    outer_test = next(iter(folds.values()))[0]["test"]
+    assert set(df.iloc[outer_test]["activity"]) == {0, 1}
+    development = set(range(40)) - set(outer_test)
+    for repeat in (1, 2):
+        validation_indices = []
+        for fold in range(1, 6):
+            split = folds[f"cv_repeat_{repeat}_fold_{fold}"][0]
+            assert split["metadata"]["stratified"] is True
+            assert split["test"] == outer_test
+            assert set(df.iloc[split["train"]]["activity"]) == {0, 1, 2}
+            assert set(split["train"]).isdisjoint(split["val"])
+            validation_indices.extend(split["val"])
+        assert sorted(validation_indices) == sorted(development)
+
+
+def test_stratified_cv_can_have_more_folds_than_examples_per_class():
+    df = pd.DataFrame({"activity": [0, 1, 2, 0, 1, 2]})
+    task = PredictionTaskSpec(task_type="multiclass_classification", target_columns=["activity"])
+
+    folds = build_repeated_kfold_split_payloads(
+        df=df, n_splits=4, n_repeats=1, random_state=11, task=task
+    )
+
+    assert sorted(len(split[0]["val"]) for split in folds.values()) == [1, 1, 2, 2]
+    assert all(set(df.iloc[split[0]["train"]]["activity"]) == {0, 1, 2} for split in folds.values())
+
+
+def test_stratified_cv_rejects_singleton_class_with_actionable_error():
+    df = pd.DataFrame({"activity": [0] * 19 + [1]})
+    task = PredictionTaskSpec(task_type="classification", target_columns=["activity"])
+
+    with pytest.raises(InvalidPredictionInputError, match="at least 2.*class.*activity"):
+        build_repeated_kfold_split_payloads(
+            df=df, n_splits=5, n_repeats=1, random_state=11, task=task
+        )
 
 
 @pytest.mark.parametrize("alias", ["test_size", "test_fold", "test_fraction"])

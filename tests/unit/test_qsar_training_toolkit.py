@@ -128,6 +128,46 @@ def test_standard_qsar_checks_grouped_training_class_coverage_before_fitting(tmp
     assert not list(output_dir.rglob("best.pkl"))
 
 
+@pytest.mark.parametrize(
+    "validation",
+    [
+        {"kind": "single_random_holdout", "seed": 123},
+        {"kind": "holdout", "split_family": "random", "seed": 123},
+        {"kind": "repeated_holdout", "split_family": "random", "n_repeats": 2, "seed": 123},
+        {"kind": "cross_validation", "n_folds": 3, "seed": 123, "final_refit": False},
+    ],
+)
+def test_lightgbm_classification_training_stratifies_explicit_random_validation(
+    tmp_path, validation
+):
+    fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
+    source_csv = tmp_path / "train.csv"
+    dataset = pd.read_csv(fixture).head(40)
+    dataset["activity"] = [0] * 37 + [1] * 3
+    dataset.to_csv(source_csv, index=False)
+    request = QsariaTrainingRequest.model_validate(
+        {
+            "target_columns": ["activity"],
+            "task_type": "classification",
+            "representation": {"kind": "precomputed", "feature_columns": ["clogp"]},
+            "validation": validation,
+            "outlier_analysis": {"enabled": False},
+            "applicability_domain": {"methods": ["bounding_box"]},
+            "compute": {"profile": "local_light"},
+            "backend": {"name": "lightgbm", "n_estimators": 4, "min_child_samples": 2},
+        }
+    )
+
+    result = QSARTrainingToolkit().train_qsar_model(str(source_csv), request, str(tmp_path / "out"))
+
+    for run in result["split_results"]:
+        split = json.loads(Path(run["splits_path"]).read_text())[0]
+        assert split["metadata"]["stratified"] is True
+        for partition in ("train", "val", "test"):
+            if partition in split:
+                assert set(dataset.iloc[split[partition]]["activity"]) == {0, 1}
+
+
 def test_explicit_standard_qsar_tuning_compares_all_holdout_families(tmp_path, monkeypatch):
     fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
     toolkit = LightGBMToolkit()

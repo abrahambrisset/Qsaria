@@ -681,6 +681,7 @@ class LightGBMBackend(PredictionBackend):
                 random_state=random_state,
                 smiles_column=task.smiles_columns[0] if task.smiles_columns else None,
                 feature_columns=feature_columns,
+                task=task,
             )
 
         if not split_payload or "train" not in split_payload[0]:

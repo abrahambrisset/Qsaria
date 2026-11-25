@@ -1310,6 +1310,7 @@ class LightGBMToolkit(Toolkit):
             random_state=int(split_run["seed"]),
             smiles_column=task.smiles_columns[0],
             feature_columns=effective_feature_columns,
+            task=task,
         )
         split_indices = split_payload[0]
         train_indices = [int(item) for item in split_indices.get("train") or []]
@@ -2044,6 +2045,7 @@ class LightGBMToolkit(Toolkit):
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
                 outer_test_size=cv_strategy.get("outer_test_size"),
+                task=task,
             )
         single_holdout = (
             len(split_runs) == 1
@@ -2101,6 +2103,7 @@ class LightGBMToolkit(Toolkit):
                                 random_state=int(split_run["seed"]),
                                 smiles_column=smiles_column,
                                 feature_columns=list(normalized_feature_columns or []),
+                                task=task,
                             )
                         split_label = str(split_run.get("label") or f"split_{run_index}")
                         publish_active_progress(
@@ -2342,6 +2345,7 @@ class LightGBMToolkit(Toolkit):
                             random_state=int(split_run["seed"]),
                             smiles_column=smiles_column,
                             feature_columns=normalized_feature_columns,
+                            task=task,
                         )
                 run_args = {
                     **{

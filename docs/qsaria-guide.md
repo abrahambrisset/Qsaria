@@ -406,6 +406,10 @@ Prompts:
 Pour une demande générale d’entraînement, QSARIA utilise `standard_qsar`.
 Les autres ratios, les découpages répétés et la validation croisée utilisent
 une stratégie explicite.
+En classification, les découpages aléatoires et la validation croisée répétée
+sont stratifiés sur la cible. Les classes très rares sont conservées en priorité
+dans l’entraînement. Vérifie leur présence en validation et en test avant
+d’interpréter les métriques sur un petit jeu de données.
 
 ### 7.3 Holdout personnalise
 

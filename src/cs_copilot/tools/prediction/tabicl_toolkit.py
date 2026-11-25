@@ -743,6 +743,7 @@ class TabICLToolkit(Toolkit):
                     cv_strategy.get("seed") or protocol_policy["seed_policy"].get("model_seed") or 0
                 ),
                 outer_test_size=cv_strategy.get("outer_test_size"),
+                task=task,
             )
 
         marker_path = active_marker_path or (root_output_path / ".training_in_progress")
@@ -791,6 +792,7 @@ class TabICLToolkit(Toolkit):
                             random_state=int(split_run["seed"]),
                             smiles_column=smiles_column,
                             feature_columns=feature_columns,
+                            task=task,
                         )
                 run_args = {
                     **{

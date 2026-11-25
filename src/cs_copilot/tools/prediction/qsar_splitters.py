@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,12 @@ from sklearn.model_selection import RepeatedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from .backend import InvalidPredictionInputError, PredictionTaskSpec
-from .training_orchestration import is_classification_task, label_key, resolve_class_labels
+from .training_orchestration import (
+    encode_classification_labels,
+    is_classification_task,
+    label_key,
+    resolve_class_labels,
+)
 
 
 def _murcko_scaffold_smiles(smiles: str) -> str:
@@ -72,6 +77,130 @@ def _target_counts(n_rows: int, split_sizes: List[float]) -> Dict[str, int]:
             "split_sizes produced an empty split; adjust split sizes or provide more rows."
         )
     return {"train": train_n, "val": val_n, "test": test_n}
+
+
+def _classification_targets(
+    df: pd.DataFrame, task: Optional[PredictionTaskSpec]
+) -> Dict[str, np.ndarray]:
+    if task is None or not is_classification_task(task.task_type):
+        return {}
+    targets = {}
+    for column in task.target_columns:
+        if column not in df.columns:
+            raise InvalidPredictionInputError(f"Missing classification target column: {column}")
+        labels = resolve_class_labels(df[column])
+        if len(labels) < 2:
+            raise InvalidPredictionInputError(
+                f"Classification target `{column}` requires at least two classes."
+            )
+        encoded, _ = encode_classification_labels(df[column], labels)
+        if encoded.isna().any():
+            raise InvalidPredictionInputError(
+                f"Cannot stratify classification target `{column}` with missing class labels."
+            )
+        targets[column] = encoded.to_numpy(dtype=int)
+    return targets
+
+
+def _classification_strata(
+    targets: Dict[str, np.ndarray], train_size: int, min_train_per_class: int
+) -> tuple[np.ndarray, List[str]]:
+    """Use joint label patterns when they can be represented in development."""
+    if len(targets) > 1:
+        _, joint, counts = np.unique(
+            np.column_stack(list(targets.values())), axis=0, return_inverse=True, return_counts=True
+        )
+        if counts.min() >= min_train_per_class and len(counts) * min_train_per_class <= train_size:
+            return joint.ravel(), list(targets)
+    first = next(iter(targets))
+    return targets[first], [first]
+
+
+def _stratified_holdout(
+    codes: np.ndarray, counts: Dict[str, int], random_state: int, min_train_per_class: int = 1
+) -> Dict[str, List[int]]:
+    support = np.bincount(codes)
+    minimum_train = len(support) * min_train_per_class
+    if counts["train"] < minimum_train:
+        raise InvalidPredictionInputError(
+            f"The requested training size is {counts['train']} rows for {len(support)} classes. "
+            f"Stratification needs at least {minimum_train} training rows. "
+            "Increase the training proportion or provide more examples."
+        )
+
+    quotas = {name: np.zeros_like(support) for name in counts}
+    quotas["train"].fill(min_train_per_class)
+    available = support - quotas["train"]
+    # Preserve training coverage first. If a class has one extra example,
+    # prefer an independent test observation to a validation observation.
+    holdout_names = [name for name in ("test", "val") if name in counts]
+    rare_first = np.argsort(support, kind="stable")
+    for name in holdout_names:
+        eligible = rare_first[available[rare_first] > 0][: counts[name]]
+        quotas[name][eligible] = 1
+        available[eligible] -= 1
+
+    for name in holdout_names:
+        ideal = counts[name] * support / len(codes)
+        minimum = quotas[name]
+        maximum = minimum + available
+        allocation = np.clip(np.floor(ideal).astype(int), minimum, maximum)
+        difference = counts[name] - int(allocation.sum())
+        while difference > 0:
+            eligible = np.flatnonzero(allocation < maximum)
+            chosen = eligible[np.argmax(ideal[eligible] - allocation[eligible])]
+            allocation[chosen] += 1
+            difference -= 1
+        while difference < 0:
+            eligible = np.flatnonzero(allocation > minimum)
+            chosen = eligible[np.argmax(allocation[eligible] - ideal[eligible])]
+            allocation[chosen] -= 1
+            difference += 1
+        available -= allocation - minimum
+        quotas[name] = allocation
+    quotas["train"] += available
+
+    rng = np.random.default_rng(random_state)
+    assigned: Dict[str, List[int]] = {name: [] for name in counts}
+    rows_by_class = np.split(np.argsort(codes, kind="stable"), np.cumsum(support)[:-1])
+    for class_index, rows in enumerate(rows_by_class):
+        rows = rng.permutation(rows)
+        offset = 0
+        for name, quota in quotas.items():
+            end = offset + quota[class_index]
+            assigned[name].extend(rows[offset:end].tolist())
+            offset = end
+    return assigned
+
+
+def _check_class_coverage(
+    targets: Dict[str, np.ndarray], indices: np.ndarray | List[int], minimum: int, context: str
+) -> None:
+    for column, codes in targets.items():
+        support = np.bincount(codes[indices], minlength=int(codes.max()) + 1)
+        if support.min() < minimum:
+            raise InvalidPredictionInputError(
+                f"{context} requires at least {minimum} example(s) per class in `{column}`. "
+                f"The rarest class has {support.min()} in that partition. "
+                "Provide more labeled rows or choose a different validation strategy."
+            )
+
+
+def _repeated_stratified_folds(
+    codes: np.ndarray, n_splits: int, n_repeats: int, random_state: int
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    rng = np.random.default_rng(random_state)
+    sorted_indices = np.argsort(codes, kind="stable")
+    class_rows = np.split(sorted_indices, np.flatnonzero(np.diff(codes[sorted_indices])) + 1)
+    for _ in range(n_repeats):
+        # Round-robin contiguous, shuffled class blocks across the folds.
+        # This balances fold sizes even when every class has fewer than n_splits examples.
+        ranked = np.concatenate([rng.permutation(rows) for rows in class_rows])
+        for fold in range(n_splits):
+            validation = ranked[fold::n_splits]
+            mask = np.ones(len(codes), dtype=bool)
+            mask[validation] = False
+            yield np.flatnonzero(mask), validation
 
 
 def _finalize_split(
@@ -280,6 +409,7 @@ def materialize_standard_split_runs(
                 smiles_column=smiles_column,
                 feature_columns=feature_columns,
                 preserve_groups=True,
+                task=task,
             )
         for column, labels in expected_classes.items():
             training_rows = df[column].iloc[run["split_payload"][0]["train"]]
@@ -303,15 +433,29 @@ def build_qsar_split_payload(
     smiles_column: Optional[str] = None,
     feature_columns: Optional[List[str]] = None,
     preserve_groups: bool = False,
+    task: Optional[PredictionTaskSpec] = None,
 ) -> List[Dict[str, Any]]:
+    """Build a holdout, stratifying random classification tasks with known targets."""
     n_rows = len(df)
-    if n_rows < 10:
+    targets = _classification_targets(df, task) if split_type == "random" else {}
+    if n_rows < 10 and not targets:
         raise InvalidPredictionInputError("Split generation requires at least 10 rows.")
 
     counts = _target_counts(n_rows, split_sizes)
     indices = np.arange(n_rows)
 
     if split_type == "random":
+        if targets:
+            codes, stratification_targets = _classification_strata(targets, counts["train"], 1)
+            assigned = _stratified_holdout(codes, counts, random_state)
+            _check_class_coverage(targets, assigned["train"], 1, "Stratified holdout training")
+            payload = _finalize_split(
+                assigned, split_type=split_type, split_sizes=split_sizes, random_state=random_state
+            )
+            payload[0]["metadata"].update(
+                {"stratified": True, "stratification_targets": stratification_targets}
+            )
+            return payload
         train_val_idx, test_idx = train_test_split(
             indices,
             test_size=counts["test"],
@@ -383,14 +527,13 @@ def build_repeated_kfold_split_payloads(
     n_repeats: int,
     random_state: int,
     outer_test_size: Optional[float] = None,
+    task: Optional[PredictionTaskSpec] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Build CV folds with a validation split and an optional fixed outer test.
 
     ``test`` has a strict meaning here: it is an outer external test shared by
-    every fold.  The fold held out by :class:`RepeatedKFold` is therefore
-    materialized as ``val``.  Earlier Qsaria versions called that inner fold
-    ``test``; retaining that wording would make HPO/outlier selection appear to
-    touch an external test set.
+    every fold. Each inner fold is materialized as ``val``. Classification
+    tasks with known targets stratify both the inner folds and the outer test.
     """
     n_rows = len(df)
     if n_rows < n_splits:
@@ -401,8 +544,11 @@ def build_repeated_kfold_split_payloads(
         raise InvalidPredictionInputError("Cross-validation requires n_repeats >= 1.")
 
     all_indices = np.arange(n_rows, dtype=int)
+    targets = _classification_targets(df, task)
+    _check_class_coverage(targets, all_indices, 2, "Stratified cross-validation")
     outer_indices: np.ndarray = np.array([], dtype=int)
     development_indices = all_indices
+    outer_count = 0
     if outer_test_size not in (None, 0, 0.0):
         try:
             outer_fraction = float(outer_test_size)
@@ -417,6 +563,16 @@ def build_repeated_kfold_split_payloads(
             raise InvalidPredictionInputError(
                 "outer_test_size produced an empty development or external test split."
             )
+    if targets:
+        codes, stratification_targets = _classification_strata(targets, n_rows - outer_count, 2)
+        if outer_count:
+            assigned = _stratified_holdout(
+                codes, {"train": n_rows - outer_count, "test": outer_count}, random_state, 2
+            )
+            development_indices = np.array(sorted(assigned["train"]), dtype=int)
+            outer_indices = np.array(sorted(assigned["test"]), dtype=int)
+            _check_class_coverage(targets, development_indices, 2, "Cross-validation development")
+    elif outer_count:
         rng = np.random.default_rng(int(random_state))
         outer_indices = np.sort(rng.choice(all_indices, size=outer_count, replace=False)).astype(
             int
@@ -428,17 +584,21 @@ def build_repeated_kfold_split_payloads(
         )
 
     payloads: Dict[str, List[Dict[str, Any]]] = {}
-    splitter = RepeatedKFold(
-        n_splits=int(n_splits),
-        n_repeats=int(n_repeats),
-        random_state=int(random_state),
-    )
-    for run_index, (train_idx, validation_idx) in enumerate(
-        splitter.split(np.arange(len(development_indices))), start=1
-    ):
+    if targets:
+        folds = _repeated_stratified_folds(
+            codes[development_indices], n_splits, n_repeats, random_state
+        )
+    else:
+        folds = RepeatedKFold(
+            n_splits=n_splits, n_repeats=n_repeats, random_state=random_state
+        ).split(development_indices)
+    for run_index, (train_idx, validation_idx) in enumerate(folds, start=1):
         repeat_index = ((run_index - 1) // n_splits) + 1
         fold_index = ((run_index - 1) % n_splits) + 1
         label = f"cv_repeat_{repeat_index}_fold_{fold_index}"
+        _check_class_coverage(
+            targets, development_indices[train_idx], 1, f"Cross-validation {label} training"
+        )
         assigned = {
             "train": [int(development_indices[idx]) for idx in train_idx.tolist()],
             "val": [int(development_indices[idx]) for idx in validation_idx.tolist()],
@@ -467,6 +627,10 @@ def build_repeated_kfold_split_payloads(
                 "has_outer_test": bool(len(outer_indices)),
             }
         )
+        if targets:
+            payload[0]["metadata"].update(
+                {"stratified": True, "stratification_targets": stratification_targets}
+            )
         payloads[label] = payload
     return payloads
 

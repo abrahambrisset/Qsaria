@@ -402,6 +402,10 @@ Prompts:
 
 For a general training request, QSARIA uses `standard_qsar`. Specify an
 explicit strategy for other ratios, repeated holdouts or cross-validation.
+For classification, random holdouts and repeated cross-validation are
+stratified by target. When a class has too few examples, the holdout preserves
+it in training first. Check the reported class coverage before interpreting
+test or validation metrics on small datasets.
 
 ### 7.3 Custom Holdout
 

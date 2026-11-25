@@ -77,6 +77,9 @@ or candidate.
   of 80/10/10. Each grouped holdout needs at least three groups and keeps each
   group intact. Every classification fit must retain all classes. Use
   `single_random_holdout` for one explicit random 80/10/10 split.
+- Random classification holdouts and repeated cross-validation use the labels
+  for stratification. Very small classes are prioritized in training. A test
+  or validation set can still lack a rare class when the counts are too low.
 - For LightGBM, the standard contract uses `rdkit_all` and eligible post-selection
   outlier analysis. Set `tuning.enabled=true` to request Optuna/TPE and optionally
   set `tuning.n_trials` to choose the trial budget.
