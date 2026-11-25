@@ -36,13 +36,10 @@ contract to Training:
 - representation `rdkit_all`;
 - protocol `standard_qsar`;
 - validation object `{"kind":"standard_qsar"}`;
-- toolkit-default hyperparameter tuning, currently 50 requested trials;
+- hyperparameter tuning disabled by default;
 - toolkit-default outlier analysis when scientifically eligible.
 
-Do not translate `simple`, `simple prompt`, or concise-output wording into a
-scientific downgrade. Only an explicit user request may disable tuning or
-outlier analysis, and the mission must then call the workflow `baseline` or
-`simplified`, not `standard`.
+Pass tuning and outlier-analysis overrides only when the user requests them. Preserve the requested trial budget for an explicit optimization mission.
 
 ## Agent mission packet
 

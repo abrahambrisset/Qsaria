@@ -74,8 +74,9 @@ or candidate.
 ## Training Contracts
 
 - `standard_qsar` is the only named protocol: one random 80/10/10 split.
-- For LightGBM, the standard contract uses `rdkit_all`, Optuna/TPE with 50
-  trials by default, and eligible post-selection outlier analysis.
+- For LightGBM, the standard contract uses `rdkit_all` and eligible post-selection
+  outlier analysis. Set `tuning.enabled=true` to request Optuna/TPE and optionally
+  set `tuning.n_trials` to choose the trial budget.
 - Advanced validation uses explicit `validation_strategy` objects for holdout,
   repeated holdout, cross-validation, full-train, scaffold, and cluster flows.
 - `local_light`, `local_standard`, `heavy_validation`, and `benchmark` are

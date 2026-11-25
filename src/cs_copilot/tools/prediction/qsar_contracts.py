@@ -313,7 +313,7 @@ def validate_tuning_objective_compatibility(
 
 
 class TuningConfig(StrictContract):
-    enabled: bool = True
+    enabled: bool = False
     engine: Optional[
         Literal["optuna_tpe", "optuna_tpe_multivariate", "chemprop_hpopt_hyperopt"]
     ] = None
@@ -540,16 +540,6 @@ class QsariaTrainingRequest(TrainingRequestBase):
             raise ValueError(f"Unsupported {backend_name} tuning parameters: " + ", ".join(unknown))
         if backend_name == "tabicl" and self.tuning.enabled:
             raise ValueError("TabICL does not support hyperparameter tuning.")
-        if (
-            backend_name == "lightgbm"
-            and isinstance(self.validation, StandardQsarValidation)
-            and not self.tuning.enabled
-        ):
-            raise ValueError(
-                "LightGBM standard_qsar includes the canonical 50-trial Optuna/TPE "
-                "tuning stage. Use an explicit holdout validation contract when "
-                "requesting LightGBM without tuning."
-            )
         if self.tuning.search_space is not None:
             if self.tuning.search_space.backend != backend_name:
                 raise ValueError("The tuning search space must match backend.name.")
@@ -647,7 +637,6 @@ class TabICLTrainingRequest(TrainingRequestBase):
     representation: Union[GeneratedRepresentation, PrecomputedRepresentation] = Field(
         default_factory=GeneratedRepresentation, discriminator="kind"
     )
-    tuning: TuningConfig = Field(default_factory=lambda: TuningConfig(enabled=False))
     backend: TabICLConfig = Field(default_factory=TabICLConfig)
 
     @model_validator(mode="after")
@@ -668,6 +657,7 @@ class QsariaBenchmarkRequest(StrictContract):
     tabicl_candidate_variants: List[RepresentationName] = Field(default_factory=list)
     validation: ValidationConfig = Field(default_factory=StandardQsarValidation)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
+    tuning_enabled: bool = False
     benchmark_requested: Literal[True] = True
 
     @field_validator("backends")

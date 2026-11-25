@@ -376,8 +376,9 @@ Prompt exemple:
 ### 7.2 Entrainement standard
 
 `standard_qsar` est l'unique protocole nomme. Il applique un split random
-80/10/10. Chemprop utilise son graphe moleculaire, LightGBM utilise `rdkit_all`
-avec 50 essais Optuna/TPE par defaut, et TabICL utilise `rdkit_all`. L'analyse
+80/10/10. Chemprop utilise son graphe moléculaire. LightGBM et TabICL utilisent
+`rdkit_all`. Activez l’optimisation des hyperparamètres sur demande explicite avec
+`tuning.enabled=true`. L'analyse
 post-selection des outliers est executee lorsqu'elle est applicable.
 
 Prompts:

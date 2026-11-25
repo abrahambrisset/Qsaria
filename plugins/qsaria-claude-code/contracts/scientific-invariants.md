@@ -12,7 +12,7 @@ These invariants apply to the Claude Code coordinator and all five specialists.
 - A toolkit `handoff`, `reporting_handoff`, or similarly named object is source material, not the public envelope. Build a fresh envelope with every field required by `handoff.schema.json` before calling `qsaria_record_handoff`.
 - Never start a different scientific role until the preceding role's handoff exists and has been verified.
 - Publishable Training evidence defaults to durable Registry persistence. Report cannot start while `persistence.status=pending`, unless the experiment explicitly uses `persistence_policy=session_only`.
-- Standard LightGBM preserves `rdkit_all`, `standard_qsar`, toolkit-default tuning, and eligible outlier analysis. Words such as `simple` do not disable scientific stages.
+- Standard LightGBM uses `rdkit_all`, `standard_qsar`, and eligible outlier analysis. Hyperparameter tuning requires an explicit request.
 - Retry `retryable_error` at most once with the same scientific intent. Never retry Report.
 - Never bypass a terminal scientific failure by changing data, backend, split, method, seed, or user constraints.
 - `blocked_failed_external_evaluation` is terminal and is preserved in a common `status=terminal_failure` handoff.

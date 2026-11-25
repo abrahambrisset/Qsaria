@@ -41,7 +41,7 @@ An unqualified standard LightGBM workflow means:
 
 - representation `{"kind":"generated","name":"rdkit_all"}`;
 - validation `{"kind":"standard_qsar"}`, the toolkit's fixed random 80/10/10 split;
-- toolkit-default hyperparameter tuning with 50 requested trials when eligible;
+- hyperparameter tuning disabled by default. Use `tuning.enabled=true` when explicitly requested;
 - eligible outlier analysis;
 - baseline and retained outlier-filtered evidence kept distinct.
 

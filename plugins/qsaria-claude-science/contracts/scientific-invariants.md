@@ -9,7 +9,7 @@
 - Each specialist records and submits exactly one fresh public handoff. Toolkit handoff-like payloads are evidence, not the public envelope.
 - Long writes use one role-scoped start tool and non-blocking state/result polling. A timeout never authorizes duplicate work.
 - Publishable Training evidence defaults to Registry persistence below `data/model_assets/internal`.
-- Standard LightGBM preserves `rdkit_all`, `standard_qsar`, 50 eligible tuning trials, and eligible outlier analysis.
+- Standard LightGBM uses `rdkit_all`, `standard_qsar`, and eligible outlier analysis. Hyperparameter tuning requires an explicit request.
 - Retry one explicit technical `retryable_error` at most once, without changing scientific intent. Never retry Report.
 - Never bypass terminal scientific failure by changing data, backend, representation, split, method, seed, or user constraints.
 - `blocked_failed_external_evaluation` remains terminal and is preserved in structured facts.

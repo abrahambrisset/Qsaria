@@ -21,9 +21,8 @@ metrics, incompatible backend/task combinations, and every optimization metric
 placed under `request.validation`.
 
 An unqualified standard LightGBM workflow means generated `rdkit_all`,
-`standard_qsar`, toolkit-default tuning with 50 requested trials when eligible,
-and eligible outlier analysis. Presentation words such as “simple” never
-disable those stages.
+`standard_qsar`, and eligible outlier analysis. Set `tuning.enabled=true`
+when the user explicitly requests optimization.
 
 Use synchronous describe tools for short reads. Launch training, benchmark,
 or Activity Cliff writes through `qsaria_training_start_operation` with the

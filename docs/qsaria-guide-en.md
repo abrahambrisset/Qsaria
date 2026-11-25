@@ -374,7 +374,7 @@ Prompt example:
 
 `standard_qsar` is the only named protocol. It applies one random 80/10/10
 split. Chemprop uses its molecular graph, LightGBM uses `rdkit_all` with 50
-Optuna/TPE trials by default, and TabICL uses `rdkit_all`. Post-selection
+Optuna/TPE trials when explicitly requested, and TabICL uses `rdkit_all`. Post-selection
 outlier analysis runs whenever it is applicable.
 
 Prompts:

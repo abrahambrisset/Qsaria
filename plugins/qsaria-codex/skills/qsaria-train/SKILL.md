@@ -32,13 +32,13 @@ For an ordinary standard LightGBM mission, the essential request shape is:
   "task_type": "regression",
   "representation": {"kind": "generated", "name": "rdkit_all"},
   "validation": {"kind": "standard_qsar"},
-  "tuning": {"enabled": true, "n_trials": 50},
+  "tuning": {"enabled": false},
   "outlier_analysis": {"enabled": true},
   "backend": {"name": "lightgbm"}
 }
 ```
 
-Omitted nested sections use the published typed defaults. Never send `workflow`, split payloads, feature-cache paths, checkpoint paths, heartbeat controls, persistence controls, or any free-form argument map.
+Omitted nested sections use the published typed defaults. Set `tuning.enabled=true` only for an explicit training optimization request. For a benchmark, use `tuning_enabled=true` only when the user asks to tune the candidates. Never send `workflow`, split payloads, feature-cache paths, checkpoint paths, heartbeat controls, persistence controls, or any free-form argument map.
 
 Custom tuning intervals belong only in `request.tuning.search_space`, using the
 declared typed integer or float distribution for an officially tunable field.

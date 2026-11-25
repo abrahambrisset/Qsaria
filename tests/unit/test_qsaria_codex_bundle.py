@@ -243,9 +243,7 @@ def test_standard_lightgbm_contract_matches_current_qsaria_defaults() -> None:
     )
 
     assert default_tabular_representation_for_protocol("standard_qsar") == "rdkit_all"
-    assert tuning is not None
-    assert tuning.enabled is True
-    assert tuning.n_trials == 50
+    assert tuning is None
     assert outliers.enabled is True
     assert skip_reason is None
 

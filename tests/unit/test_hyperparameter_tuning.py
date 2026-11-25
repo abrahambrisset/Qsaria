@@ -139,9 +139,20 @@ def test_lightgbm_direct_value_is_excluded_from_the_search():
     assert config.objective.subset == "in_domain"
 
 
+@pytest.mark.parametrize("backend_name", ["lightgbm", "chemprop"])
+@pytest.mark.parametrize("raw", [None, {}, {"enabled": False}])
+def test_tuning_requires_an_explicit_request(backend_name, raw):
+    assert (
+        normalize_tuning_config(
+            raw, backend_name=backend_name, task_type="regression", eligible=True
+        )
+        is None
+    )
+
+
 def test_multivariate_tpe_is_lightgbm_only_and_standard_tpe_remains_default():
     default = normalize_tuning_config(
-        {},
+        {"enabled": True},
         backend_name="lightgbm",
         task_type="regression",
         eligible=True,

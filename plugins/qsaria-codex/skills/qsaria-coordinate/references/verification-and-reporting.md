@@ -12,9 +12,9 @@ For completed or partial work:
 4. Route only from verified facts.
 
 For a standard LightGBM mission, also compare the structured result with the
-delegated workflow contract. Require `rdkit_all`, `standard_qsar`, the current
-default requested tuning-trial count, and enabled outlier analysis when the
-task is eligible. Do not use `training_profile=local_standard` as a substitute
+delegated workflow contract. Require `rdkit_all`, `standard_qsar`, the delegated
+tuning status and trial count when applicable, and enabled outlier analysis when
+the task is eligible. Do not use `training_profile=local_standard` as a substitute
 for those facts. If the effective workflow differs, stop before Registry and
 present the integration mismatch explicitly.
 

@@ -652,25 +652,19 @@ def normalize_tuning_config(
     fixed_parameters: Iterable[str] = (),
 ) -> Optional[TuningConfig]:
     """Normalize a validated request into the shared runtime tuning contract."""
-    catalog = describe_backend_hyperparameters(backend_name)
     raw_config = dict(raw or {})
-    explicitly_requested = raw is not None
-    enabled = bool(raw_config.get("enabled", True))
-    if not enabled:
+    if not raw_config or not raw_config.get("enabled", True):
         return None
+    catalog = describe_backend_hyperparameters(backend_name)
     if not catalog["supports_hyperparameter_tuning"]:
-        if explicitly_requested:
-            raise HyperparameterTuningError(
-                f"{backend_name} does not support automatic hyperparameter tuning."
-            )
-        return None
+        raise HyperparameterTuningError(
+            f"{backend_name} does not support automatic hyperparameter tuning."
+        )
     if not eligible:
-        if explicitly_requested:
-            raise HyperparameterTuningError(
-                "Hyperparameter tuning requires a single holdout or cross-validation fold "
-                "with a real validation split. Full-train and test-only holdouts do not provide one."
-            )
-        return None
+        raise HyperparameterTuningError(
+            "Hyperparameter tuning requires a single holdout or cross-validation fold "
+            "with a real validation split. Full-train and test-only holdouts do not provide one."
+        )
 
     engine = str(raw_config.get("engine") or catalog["default_engine"])
     if engine not in catalog["supported_engines"]:

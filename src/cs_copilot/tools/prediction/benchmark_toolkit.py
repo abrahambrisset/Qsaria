@@ -287,6 +287,7 @@ class BenchmarkToolkit(Toolkit):
         compute: ComputeConfig,
         agent: Agent,
         bundle_dir: Optional[str] = None,
+        tuning_enabled: bool = False,
     ) -> Dict[str, Any]:
         backend_name = candidate["backend_name"]
         backend = {
@@ -309,7 +310,7 @@ class BenchmarkToolkit(Toolkit):
             task_type=task_type,
             representation=representation,
             validation=candidate_validation,
-            tuning=TuningConfig(enabled=backend_name != "tabicl"),
+            tuning=TuningConfig(enabled=tuning_enabled and backend_name != "tabicl"),
             compute=compute,
             backend=backend,
         )
@@ -913,6 +914,7 @@ class BenchmarkToolkit(Toolkit):
                     compute=request.compute,
                     agent=agent,
                     bundle_dir=bundle_dir,
+                    tuning_enabled=request.tuning_enabled,
                 )
             except Exception:
                 logger.exception(

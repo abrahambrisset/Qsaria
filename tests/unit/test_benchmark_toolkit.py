@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from cs_copilot.tools.prediction import catalog as catalog_module
 from cs_copilot.tools.prediction.benchmark_toolkit import BenchmarkToolkit, _coerce_list
@@ -113,7 +114,8 @@ def test_benchmark_public_contract_has_no_benchmark_mode():
     assert "extra_args" not in serialized
 
 
-def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path):
+@pytest.mark.parametrize("tuning_enabled", [False, True])
+def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path, tuning_enabled):
     calls = []
 
     class _TrainingFacade:
@@ -127,6 +129,7 @@ def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path)
     for backend_name, representation_name in (
         ("chemprop", "molecular_graph"),
         ("lightgbm", "rdkit_all"),
+        ("tabicl", "rdkit_all"),
     ):
         toolkit._train_candidate(
             candidate={
@@ -143,11 +146,18 @@ def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path)
             validation=validation,
             compute=ComputeConfig(profile="heavy_validation", allow_heavy_compute=True),
             agent=_fake_agent(),
+            **({"tuning_enabled": True} if tuning_enabled else {}),
         )
 
     assert [canonical_validation_strategy(call["request"].validation) for call in calls] == [
         canonical_validation_strategy(validation),
         canonical_validation_strategy(validation),
+        canonical_validation_strategy(validation),
+    ]
+    assert [call["request"].tuning.enabled for call in calls] == [
+        tuning_enabled,
+        tuning_enabled,
+        False,
     ]
 
 

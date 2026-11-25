@@ -24,29 +24,19 @@ scientific contract:
 - use `representation={"kind":"generated","name":"rdkit_all"}`;
 - use protocol `standard_qsar`;
 - use `validation={"kind":"standard_qsar"}`;
-- preserve the toolkit's default hyperparameter tuning, currently 50 requested trials;
+- use the default disabled hyperparameter tuning;
 - preserve the toolkit's default outlier analysis whenever the task is eligible.
 
 `standard_qsar` names only the fixed random 80/10/10 validation protocol. The
 standard LightGBM workflow is the complete contract above. `training_profile`
 describes compute policy and does not prove that tuning or outlier analysis ran.
 
-Words about presentation or interaction such as `simple`, `simple prompt`, or
-`quick explanation` never disable scientific stages. Pass
-`tuning.enabled=false` or `outlier_analysis.enabled=false` only
-when the user explicitly requests that scientific change. Label such a run
-`baseline` or `simplified`, never `standard`.
-
-The typed defaults preserve the standard workflow; an explicit request may also
-state `tuning={"enabled":true,"n_trials":50}` and
-`outlier_analysis={"enabled":true}`. After execution, verify the
-effective representation, validation protocol, requested tuning trials, and
-outlier-analysis status from structured results. Stop before persistence when
+Use `tuning.enabled=true` only when the user requests optimization. Preserve an explicit trial count in `tuning.n_trials`. Keep eligible outlier analysis by default. After execution, verify the effective representation, validation protocol, tuning status and outlier-analysis status from structured results. Stop before persistence when
 those facts contradict the delegated contract.
 
 ## Benchmark and activity cliffs
 
-Benchmark only after an explicit request for a benchmark, head-to-head comparison, multi-backend evaluation, or representation leaderboard. Build one strict `QsariaBenchmarkRequest`; use `validation={"kind":"standard_qsar"}` by default. When the user requests an advanced strategy, put the same canonical validation object on the whole benchmark. A normal standard single-model request is not a benchmark.
+Benchmark only after an explicit request for a benchmark, head-to-head comparison, multi-backend evaluation, or representation leaderboard. Build one strict `QsariaBenchmarkRequest`; use `validation={"kind":"standard_qsar"}` by default. When the user requests an advanced strategy, put the same canonical validation object on the whole benchmark. For benchmarks, set `tuning_enabled=true` only when the user asks to tune candidates. Route a standard single-model request to Training.
 
 Activity Cliff analysis is attached to model evidence. Preserve its exact indexes, split labels, artifacts, applicability-domain context, and warnings. Never invent validation Activity Cliff metrics when prediction artifacts were not exported.
 
