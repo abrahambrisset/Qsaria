@@ -681,7 +681,17 @@ class DatasetCurationToolkit(Toolkit):
         flags = raw_smiles.apply(
             lambda s: _structure_flags(s) if isinstance(s, str) else _structure_flags("")
         )
-        flags_df = pd.DataFrame(list(flags))
+        flags_df = pd.DataFrame(list(flags), index=working.index)
+
+        backend_result = standardize_with_chembl_structure_v1(raw_smiles)
+        standardization_map = backend_result["standardization_map"].set_index(
+            "row_index", drop=False
+        )
+        parent = standardization_map["standardized_smiles"].reindex(working.index).astype("string")
+        single_parent = parent.notna() & ~parent.str.contains(".", regex=False, na=True)
+        organic_salts = flags_df["is_mixture"] & ~flags_df["is_organometallic"] & single_parent
+        flags_df.loc[organic_salts, "is_mixture"] = False
+        flags_df.loc[organic_salts, "has_salt_or_counterion_pattern"] = True
 
         inorganic_rows_removed = int(flags_df["is_inorganic"].sum())
         organometallic_rows_removed = int(flags_df["is_organometallic"].sum())
@@ -721,10 +731,8 @@ class DatasetCurationToolkit(Toolkit):
         else:
             actions.append("check inorganic / organometallic / mixture structures")
 
-        original_smiles = working["smiles"].copy()
-        backend_result = standardize_with_chembl_structure_v1(original_smiles)
-        standardization_map = backend_result["standardization_map"].copy()
-        standardization_map = standardization_map.set_index("row_index", drop=False)
+        original_smiles = raw_smiles.reindex(working.index)
+        standardization_map = standardization_map.reindex(working.index)
         working["raw_smiles"] = standardization_map.reindex(working.index)["raw_smiles"].values
         if "chembl_input_smiles" in standardization_map.columns:
             working["chembl_input_smiles"] = standardization_map.reindex(working.index)[

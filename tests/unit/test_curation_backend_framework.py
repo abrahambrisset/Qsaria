@@ -97,6 +97,32 @@ def test_curation_initialization_requires_chembl_dependency(monkeypatch) -> None
         DatasetCurationToolkit()
 
 
+def test_curation_retains_parent_of_organic_salt_and_rejects_organic_mixture(tmp_path):
+    pytest.importorskip("chembl_structure_pipeline")
+    _, dataset_curation_toolkit = _load_curation_toolkit()
+    source = tmp_path / "organic_components.csv"
+    output = tmp_path / "organic_components_curated.csv"
+    parent_smiles = "CN1CCC(COC(c2ccccc2)c2ccccc2)CC1"
+    pd.DataFrame(
+        {
+            "smiles": [parent_smiles + ".CS(=O)(=O)O", "c1ccccc1.C1CCCCC1", "CCF"],
+            "pEC50": [4.0, 5.0, 6.0],
+        }
+    ).to_csv(source, index=False)
+
+    result = dataset_curation_toolkit().curate_qsar_dataset(
+        dataset_path=str(source),
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["pEC50"],
+        output_csv=str(output),
+    )
+
+    assert set(pd.read_csv(output)["smiles"]) == {parent_smiles, "CCF"}
+    assert result["mixture_rows_removed"] == 1
+    assert result["salt_or_counterion_rows_processed"] == 1
+
+
 def test_one_chembl_row_failure_preserves_partial_dataset(tmp_path, monkeypatch) -> None:
     curation_module, DatasetCurationToolkit = _load_curation_toolkit()
     monkeypatch.setattr(
