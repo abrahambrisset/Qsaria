@@ -3,11 +3,11 @@
   "plugin_version": "0.3.1+codex.20260722160248",
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "38d70bfeca86cf5afd0979ab6b6121f54cd0ffab",
-    "tree": "d91389ea0ad1b2168a4239f421dee5d4decd6bfd",
+    "commit": "4b476e50073aad7ac1a9fbc19f98cd48f982741f",
+    "tree": "87502f30e7ce91bedaa91bca3878f85a76e4c2ba",
     "signed_tree": "sha256:58fdfb664cde72d5aa1e9c91d3012e745dfa3c75f3ab4f98eafc96db585f19cc",
-    "describe": "v0.9.0-qsaria-applicability-domain-34-g38d70bf",
-    "dirty": true
+    "describe": "v1.0.0-alpha-4-g4b476e5",
+    "dirty": false
   },
   "contracts": {
     "experiment": "1.0",

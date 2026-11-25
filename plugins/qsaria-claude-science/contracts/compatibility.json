@@ -11,11 +11,11 @@
   "minimum_claude_science_version": "0.1.21",
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "e31b8a77f45650ac613fb32cebaabdbd8883fc33",
-    "tree": "c41283da3d04dcd53f0278be76c5c9265a737214",
-    "describe": "v0.9.0-qsaria-applicability-domain-28-ge31b8a7",
+    "commit": "4b476e50073aad7ac1a9fbc19f98cd48f982741f",
+    "tree": "87502f30e7ce91bedaa91bca3878f85a76e4c2ba",
+    "describe": "v1.0.0-alpha-4-g4b476e5",
     "signed_tree": "sha256:e0dad07c155d6251539580c6a6ae2982e92bac8434c10636fe247f2224949bbc",
-    "dirty": true
+    "dirty": false
   },
   "contracts": {
     "experiment": "1.0",
