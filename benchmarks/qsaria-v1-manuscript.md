@@ -2,7 +2,7 @@
 
 ## Abstract
 
-Qsaria V1 provides a workflow for curating molecular data, training and evaluating QSAR models, and recording evidence for scientific reports. We describe its architecture and evaluate its LightGBM backend against Random Forest and naïve references on two public partitions from the Therapeutics Data Commons ADMET benchmark. For AqSolDB, the mean absolute error across three seeds was 1.279 log mol/L for LightGBM and 1.378 for Random Forest on 1,993 eligible test rows. On BBB_Martins, the mean area under the ROC curve was 0.865 for LightGBM and 0.856 for Random Forest on 406 test rows. The paired interval for the BBB_Martins difference at the prespecified reference seed included zero. Random Forest had lower RMSE than LightGBM on both activity-cliff subsets in a two-endpoint MoleculeACE follow-up. The evaluation records standardized molecular identity overlap, data exclusions, and the provenance of the data, configuration, and predictions.
+Qsaria V1 provides a workflow for curating molecular data, training and evaluating QSAR models, and recording evidence for scientific reports. We describe its architecture and evaluate its LightGBM backend against Random Forest and naïve references on two public partitions from the Therapeutics Data Commons ADMET benchmark. For AqSolDB, the mean absolute error across three seeds was 1.279 log mol/L for LightGBM and 1.378 for Random Forest on 1,993 eligible test rows. On BBB_Martins, the mean area under the ROC curve was 0.865 for LightGBM and 0.856 for Random Forest on 406 test rows. The paired interval for the BBB_Martins difference at the prespecified reference seed included zero. Random Forest had lower RMSE than LightGBM on both activity-cliff subsets in a two-endpoint MoleculeACE follow-up. Chemprop reduced AqSolDB MAE to 0.923 in a full-training comparison. TabICL reduced AqSolDB MAE from 1.547 to 1.480 against a LightGBM fit using the same 800 training rows and fingerprints. The evaluation records standardized molecular identity overlap, data exclusions, and the provenance of the data, configuration, and predictions.
 
 ## Software and scope
 
@@ -63,6 +63,32 @@ We evaluated two MoleculeACE regression datasets, ABL1 binding affinity (CHEMBL1
 
 Table 3. Mean RMSE across three model seeds. All official test rows could be scored. Random Forest had the lowest mean error for both endpoints on the full tests and on their cliff subsets. No standardized identity crossed the training and test partitions. Four ABL1 test rows and one FXR test row had a nonidentical training neighbour with count-Morgan Tanimoto similarity of at least 0.95. [Protocol and replay](qsaria-v1-moleculeace.md) · [Results and identity audit](results/qsaria-v1/moleculeace.json)
 
+### Comparison across model families
+
+We extended the benchmark to Chemprop v2 and TabICL v2, keeping the four official test partitions and the original scoring cohorts. Chemprop used standardized molecular graphs and trained a directed message-passing neural network on the full usable training partition. We fixed training at 18 epochs, depth three, a hidden dimension of 64 and no hyperparameter search. To bound TabICL's CPU workload, we ran a second comparison in which TabICL and LightGBM both used binary Morgan fingerprints of radius two and 128 bits with a fixed sample of at most 800 official training rows. Sampling was stratified for BBB_Martins. TabICL used one ensemble member with the official pretrained weights, and the matched LightGBM fit used 80 trees. Both comparisons used the same three seeds as the original benchmark. [Chemprop v2](https://doi.org/10.1021/acs.jcim.5c02332) · [TabICL v2](https://arxiv.org/abs/2602.11139) · [Protocol and replay](qsaria-v1-backends.md)
+
+| Dataset and cohort | Test rows | Metric | Chemprop | Qsaria LightGBM | Random Forest |
+| --- | ---: | --- | ---: | ---: | ---: |
+| AqSolDB, all | 1,993 | MAE | 0.923 | 1.279 | 1.378 |
+| BBB_Martins, all | 406 | AUROC | 0.681 | 0.865 | 0.856 |
+| ABL1, all | 161 | RMSE | 1.236 | 0.851 | 0.768 |
+| ABL1, activity-cliff subset | 67 | RMSE | 1.083 | 0.811 | 0.678 |
+| FXR, all | 128 | RMSE | 0.905 | 0.694 | 0.621 |
+| FXR, activity-cliff subset | 50 | RMSE | 0.850 | 0.752 | 0.674 |
+
+Table 4. Mean test scores across three seeds with the full eligible training partitions. Chemprop had the lowest MAE on AqSolDB in this comparison. The two tree models achieved higher AUROC on BBB_Martins and lower RMSE on both MoleculeACE datasets. [Chemprop results](results/qsaria-v1/chemprop.json) · [Original LightGBM and Random Forest results](README.md)
+
+| Dataset and cohort | Training rows | Test rows | Metric | TabICL | Matched LightGBM |
+| --- | ---: | ---: | --- | ---: | ---: |
+| AqSolDB, all | 800 | 1,993 | MAE | 1.480 | 1.547 |
+| BBB_Martins, all | 800 | 406 | AUROC | 0.8273 | 0.8262 |
+| ABL1, all | 633 | 161 | RMSE | 0.782 | 0.831 |
+| ABL1, activity-cliff subset | 633 | 67 | RMSE | 0.794 | 0.796 |
+| FXR, all | 503 | 128 | RMSE | 0.634 | 0.712 |
+| FXR, activity-cliff subset | 503 | 50 | RMSE | 0.722 | 0.735 |
+
+Table 5. Mean test scores across three seeds with the shared training context and 128-bit fingerprints. TabICL reduced mean error on the three regression tests. The BBB_Martins AUROCs differed by 0.0011. The range of TabICL scores across the three fixed-context runs was zero at the precision reported. [TabICL and matched LightGBM results](results/qsaria-v1/tabicl.json)
+
 ## Workflow verification
 
 An installation check in an isolated Codex configuration verified plugin registration. An MCP stdio client initialized the Qsaria profile and listed 53 tools. A local functional check created an experiment and trained the V1 LightGBM backend with 40 synthetic structures, 12 trees and the optimization field omitted. The run produced prediction artifacts. This fixture uses a computed cLogP target and supplies functional evidence about the tool path.
@@ -77,7 +103,7 @@ The CI reference checks run the Chainlit scenario and two scripted coordinator w
 
 ## Limitations
 
-The predictive evaluation covers two TDC endpoints, two MoleculeACE endpoints and one Qsaria learner. Its conclusions apply to these representations, comparator configurations, and partitions. The AutoML follow-up reuses test partitions already used in the fixed-model comparison. It evaluates finite searches over two tree-based model families and the Qsaria LightGBM settings. Restricting evaluation to unseen standardized identities controls exact overlap under this definition. It allows closely related structures to occur on both sides. The applicability-domain result concerns a strict bounding box on binary fingerprints. It supplies a coverage diagnostic and the observed subgroup scores. Using three seeds on fixed test memberships leaves the effect of alternative dataset partitions unmeasured. The MoleculeACE follow-up measures regression error by the supplied cliff annotations. It leaves the pair-discovery performance of Qsaria's SALI tool unmeasured.
+The predictive evaluation covers two TDC endpoints, two MoleculeACE endpoints and three model families available in Qsaria. Its conclusions apply to these representations, comparator configurations, and partitions. The AutoML follow-up reuses test partitions already used in the fixed-model comparison. It evaluates finite searches over two tree-based model families and the Qsaria LightGBM settings. Restricting evaluation to unseen standardized identities controls exact overlap under this definition. It allows closely related structures to occur on both sides. The applicability-domain result concerns a strict bounding box on binary fingerprints. It supplies a coverage diagnostic and the observed subgroup scores. Using three seeds on fixed test memberships leaves the effect of alternative dataset partitions unmeasured. The MoleculeACE follow-up measures regression error by the supplied cliff annotations. It leaves the pair-discovery performance of Qsaria's SALI tool unmeasured. The graph and tabular extensions use fixed settings. TabICL's context and feature caps limit inference about its performance with more training rows, wider fingerprints or larger ensembles.
 
 The workflow trials use one small synthetic fixture. The reference checks exercise software contracts and known trajectories with deterministic inputs. Prompt robustness and open-ended Chainlit interaction with an external model provider remain unmeasured in these checks.
 

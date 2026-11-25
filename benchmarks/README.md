@@ -104,6 +104,10 @@ Ce complément utilise deux jeux de régression de MoleculeACE 3.0.0, ABL1 (CHEM
 
 Le protocole indique les sources, les mesures et les commandes de rejeu. Les résultats agrégés conservent les effectifs, les résultats par graine, l’audit de similarité et les empreintes des prédictions. [Protocole et reproduction](qsaria-v1-moleculeace.md) · [Rapport MoleculeACE](results/qsaria-v1/moleculeace.json)
 
+## Comparaison avec Chemprop et TabICL
+
+Chemprop v2 utilise les graphes moléculaires standardisés et toutes les lignes d’entraînement exploitables des quatre jeux. La comparaison TabICL–LightGBM réutilise les mêmes tests avec un contexte d’entraînement et une empreinte Morgan de 128 bits partagés. Les deux essais utilisent trois graines et des réglages fixes sur CPU. [Protocole et reproduction](qsaria-v1-backends.md) · [Scores Chemprop](results/qsaria-v1/chemprop.json) · [Scores TabICL et LightGBM](results/qsaria-v1/tabicl.json)
+
 ## Vérification des parcours
 
 La fixture synthétique contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les partitions officielles TDC ADMET et MoleculeACE. [Fixture synthétique](fixtures/qsaria-v1-synthetic.csv) · [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)

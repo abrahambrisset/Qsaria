@@ -1,0 +1,202 @@
+{
+  "datasets": {
+    "CHEMBL1862_Ki": {
+      "fit_rows": 633,
+      "fit_rows_sha256": "aa5aceab5d3adc8b3afca6ca298bad280a53366bb69939f2f2da6c9344c9f52a",
+      "identity_overlap_rows": 0,
+      "metric": "rmse",
+      "metrics": {
+        "activity_cliff": {
+          "n": 67,
+          "scores": {
+            "chemprop_1701": 1.1117588545533683,
+            "chemprop_2026": 1.0665067659728127,
+            "chemprop_42": 1.0710068361924423
+          }
+        },
+        "all_scored": {
+          "n": 161,
+          "scores": {
+            "chemprop_1701": 1.2368865185208706,
+            "chemprop_2026": 1.2367506604751115,
+            "chemprop_42": 1.235040951060181
+          }
+        }
+      },
+      "official_test_rows": 161,
+      "official_train_rows": 633,
+      "predictions_sha256": "4caf47f34ece0ea94f73cbb397c843e244a61dbc59b87101c51cb92556eaed82",
+      "seconds_by_seed": {
+        "42": 21.856,
+        "1701": 19.106,
+        "2026": 20.866
+      },
+      "task": "regression",
+      "test_rows": 161
+    },
+    "CHEMBL2047_EC50": {
+      "fit_rows": 503,
+      "fit_rows_sha256": "71522a13ff865dc07d3e353f8d1005bf23e7638bf6a50c39baa078f47464b492",
+      "identity_overlap_rows": 0,
+      "metric": "rmse",
+      "metrics": {
+        "activity_cliff": {
+          "n": 50,
+          "scores": {
+            "chemprop_1701": 0.8532270214665685,
+            "chemprop_2026": 0.8480764842987795,
+            "chemprop_42": 0.8491403375710965
+          }
+        },
+        "all_scored": {
+          "n": 128,
+          "scores": {
+            "chemprop_1701": 0.9076978980432203,
+            "chemprop_2026": 0.9046993920841003,
+            "chemprop_42": 0.9030132453379419
+          }
+        }
+      },
+      "official_test_rows": 128,
+      "official_train_rows": 503,
+      "predictions_sha256": "9f2ef4d04d40f504cec10afde274e18bc8d91f4ec0e3f21f87940d894a6bb11f",
+      "seconds_by_seed": {
+        "42": 19.497,
+        "1701": 23.036,
+        "2026": 18.645
+      },
+      "task": "regression",
+      "test_rows": 128
+    },
+    "bbb_martins": {
+      "fit_rows": 1624,
+      "fit_rows_sha256": "4922816e15d75172208dc6dae86f380ace239b72ff0fd9ff88a6963038712573",
+      "identity_overlap_rows": 3,
+      "metric": "auroc",
+      "metrics": {
+        "all_scored": {
+          "n": 406,
+          "scores": {
+            "chemprop_1701": 0.6862883051907442,
+            "chemprop_2026": 0.672373358348968,
+            "chemprop_42": 0.6849984365228268
+          }
+        },
+        "identity_unseen": {
+          "n": 403,
+          "scores": {
+            "chemprop_1701": 0.6776829268292683,
+            "chemprop_2026": 0.6631707317073171,
+            "chemprop_42": 0.6764634146341464
+          }
+        }
+      },
+      "official_test_rows": 406,
+      "official_train_rows": 1624,
+      "predictions_sha256": "822b98bff48d44f1181f08e38da3f1bc26d611e93e1fb7c71c7e42ad76101ae6",
+      "seconds_by_seed": {
+        "1701": 21.061,
+        "2026": 19.151,
+        "42": 21.295
+      },
+      "task": "classification",
+      "test_rows": 406
+    },
+    "solubility_aqsoldb": {
+      "fit_rows": 7984,
+      "fit_rows_sha256": "df1253b9183b724fd8e745d1ec3538529a6163c868ee2cf54d200c82974403d5",
+      "identity_overlap_rows": 27,
+      "metric": "mae",
+      "metrics": {
+        "all_scored": {
+          "n": 1993,
+          "scores": {
+            "chemprop_1701": 0.9280445989426492,
+            "chemprop_2026": 0.94240674708856,
+            "chemprop_42": 0.8974144027259909
+          }
+        },
+        "identity_unseen": {
+          "n": 1966,
+          "scores": {
+            "chemprop_1701": 0.9264854499102237,
+            "chemprop_2026": 0.9406902681324009,
+            "chemprop_42": 0.8960307499801119
+          }
+        }
+      },
+      "official_test_rows": 1997,
+      "official_train_rows": 7985,
+      "predictions_sha256": "8ea53951738db6f8a3c35eaaf3f6dab8de38e7e10dd1de61e6ba60184bc3ae29",
+      "seconds_by_seed": {
+        "1701": 31.757,
+        "2026": 32.372,
+        "42": 33.679
+      },
+      "task": "regression",
+      "test_rows": 1993
+    }
+  },
+  "manifest": {
+    "backend": "chemprop",
+    "optimization": false,
+    "packages": {
+      "chemprop": "2.2.3",
+      "lightgbm": "4.6.0",
+      "pandas": "2.3.3",
+      "rdkit": "2025.9.4",
+      "scikit-learn": "1.8.0",
+      "tabicl": "2.1.1",
+      "torch": "2.10.0"
+    },
+    "platform": "macOS-27.2.1-arm64-arm-64bit",
+    "python": "3.12.13",
+    "settings": {
+      "chemprop": {
+        "batch_size": 64,
+        "depth": 3,
+        "epochs": 18,
+        "ffn_hidden_dim": 64,
+        "message_hidden_dim": 64,
+        "warmup_epochs": 2
+      },
+      "seeds": [
+        42,
+        1701,
+        2026
+      ],
+      "tabicl": {
+        "bits": 128,
+        "checkpoints": {
+          "classification": {
+            "file": "tabicl-classifier-v2-20260212.ckpt",
+            "sha256": "bdc7dbd5e4ff21f8f0456fcf90c6b7cdf72dbea960f2d05b19bec19f9b3d4ed0"
+          },
+          "regression": {
+            "file": "tabicl-regressor-v2-20260212.ckpt",
+            "sha256": "0db9cb538f114e79026bf08f45f41ad8dd7ad2de2aaca9a5ca8cd3bd9748ae7a"
+          }
+        },
+        "context_rows": 800,
+        "context_seed": 42,
+        "lightgbm_trees": 80,
+        "n_estimators": 1,
+        "radius": 2
+      }
+    },
+    "sha256": {
+      "CHEMBL1862_Ki": "72a750426976bf5c17ca9129e86dff20962332f92a8ce16028d9fbcf152ca412",
+      "CHEMBL2047_EC50": "ea1bacf43377aac288840f2d2e37df7705a0d2d1f93bb52b0ce85e499e311f6e",
+      "TDC ADMET": "bd0005246cb6f1672333c28ad202112a8bf071ab65d847848715030308faf1f1"
+    },
+    "source_sha256": {
+      "benchmarks/qsaria-v1-backends.toml": "122bf69d9f605e3b205a3ecd06174bd2d0448b40b2fb0dd9181b17c8edc50740",
+      "benchmarks/qsaria-v1-moleculeace.toml": "aeb0d298579a9b83c067692dd7c2b65d7ea831247195d5d665665e7623371b9d",
+      "benchmarks/qsaria-v1.toml": "7bcb8d2fff577b067ea0026176af6c54c961d98001d31a3333ddf9ce9d2f438a",
+      "scripts/benchmark_qsaria_v1.py": "e3bcdf32aa79b77302a53a45431a360518e653eeef0e702a19453c6ff0fe074f",
+      "scripts/benchmark_qsaria_v1_backends.py": "84df95a09c2702ee910f9fa37d1e0f82227adeb047999b12d87a83409f5b8143",
+      "scripts/benchmark_qsaria_v1_moleculeace.py": "5307ed8eca8603704bdb238d5cd26a85973776ea7c827481d01f2d11af6034fe",
+      "uv.lock": "486bba1c86cb95a144af32c88139ffdc9ed270db0612e61bd16d69db3dfb1529"
+    }
+  }
+}
