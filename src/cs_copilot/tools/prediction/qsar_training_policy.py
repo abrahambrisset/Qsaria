@@ -509,6 +509,18 @@ def aggregate_split_families(split_results: List[Dict[str, Any]]) -> Dict[str, A
         "recall_macro",
         "f1_macro",
         "roc_auc",
+        # Extended metrics from `metrics_ext`. Scalars only: `golbraikh_tropsha` is a
+        # nested dict and is deliberately not aggregated here.
+        "ccc",
+        "q2_f1",
+        "q2_f2",
+        "q2_f3",
+        "mcc",
+        "cohen_kappa",
+        "specificity",
+        "average_precision",
+        "brier_score",
+        "expected_calibration_error",
     )
     for family, items in families.items():
         entry: Dict[str, Any] = {

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from agno.tools.toolkit import Toolkit
 from rdkit import Chem
-from rdkit.Chem import Descriptors, rdFingerprintGenerator
+from rdkit.Chem import Descriptors, MACCSkeys, rdFingerprintGenerator
 
 from cs_copilot.storage import S3
 from cs_copilot.tools.chemistry.standardize import (
@@ -23,7 +23,55 @@ from cs_copilot.tools.chemistry.standardize import (
     standardize_smiles_column,
 )
 
+try:  # pragma: no cover - depends on how RDKit was built
+    from rdkit.Avalon import pyAvalonTools
+except ImportError:  # pragma: no cover - exercised only on Avalon-less builds
+    pyAvalonTools = None
+
 logger = logging.getLogger(__name__)
+
+AVALON_UNAVAILABLE_MESSAGE = (
+    "Avalon fingerprints are unavailable: this RDKit build does not provide "
+    "rdkit.Avalon.pyAvalonTools. Install an RDKit build with Avalon support or pick another "
+    "fingerprint."
+)
+
+DEFAULT_MORGAN_RADIUS = 2
+DEFAULT_MORGAN_N_BITS = 2048
+SUPPORTED_MORGAN_RADII: tuple[int, ...] = (1, 2, 3)
+#: Widths offered through the agent-facing training contract.  This helper itself accepts any
+#: positive width so tests and ad-hoc exports can use small fingerprints.
+SUPPORTED_FINGERPRINT_N_BITS: tuple[int, ...] = (1024, 2048, 4096)
+MACCS_N_BITS = 167
+
+#: Fixed-rule descriptions of the non-Morgan structural fingerprints.  ``resizable`` is False
+#: for key-based fingerprints whose bit count is defined by the key set itself.
+STRUCTURAL_FINGERPRINTS: Dict[str, Dict[str, Any]] = {
+    "maccs": {
+        "feature_prefix": "mk_",
+        "default_n_bits": MACCS_N_BITS,
+        "resizable": False,
+        "description": "166 MACCS structural keys returned as a 167-bit vector (bit 0 unused).",
+    },
+    "avalon": {
+        "feature_prefix": "av_",
+        "default_n_bits": 1024,
+        "resizable": True,
+        "description": "Avalon substructure fingerprint (rdkit.Avalon.pyAvalonTools).",
+    },
+    "atom_pair": {
+        "feature_prefix": "ap_",
+        "default_n_bits": 2048,
+        "resizable": True,
+        "description": "Hashed atom-pair fingerprint (topological distance between atom types).",
+    },
+    "topological_torsion": {
+        "feature_prefix": "tt_",
+        "default_n_bits": 2048,
+        "resizable": True,
+        "description": "Hashed topological-torsion fingerprint over four-atom paths.",
+    },
+}
 
 
 def _resolve_output_csv(output_csv: Optional[str], input_csv: str, suffix: str) -> str:
@@ -104,17 +152,97 @@ def _map_rows(worker, worker_args: list[tuple], n_jobs: int) -> list:
         return [worker(args) for args in worker_args]
 
 
-def _morgan_row_worker(args: tuple[str, int, int, str]) -> List[int]:
-    smiles, radius, n_bits, fingerprint_kind = args
+def _validate_morgan_parameters(radius: int, n_bits: int) -> tuple[int, int]:
+    """Validate Morgan radius/size and return the coerced ``(radius, n_bits)`` pair."""
+    if radius not in SUPPORTED_MORGAN_RADII:
+        raise ValueError(
+            f"Unsupported Morgan radius={radius!r}. Supported radii are "
+            f"{list(SUPPORTED_MORGAN_RADII)}."
+        )
+    return int(radius), _validate_n_bits(n_bits)
+
+
+def _validate_n_bits(n_bits: int) -> int:
+    """Validate a folded fingerprint width and return it as an int."""
+    if not isinstance(n_bits, int) or isinstance(n_bits, bool) or n_bits <= 0:
+        raise ValueError("n_bits must be a positive integer.")
+    return int(n_bits)
+
+
+def resolve_structural_fingerprint(
+    fingerprint_name: str, n_bits: Optional[int] = None
+) -> Dict[str, Any]:
+    """Return the resolved spec (``name``/``feature_prefix``/``n_bits``) for a structural FP.
+
+    Raises ``ValueError`` for an unknown fingerprint, for a size override on a key-based
+    fingerprint whose width is fixed, and for an unsupported size on a hashed fingerprint.
+    """
+    normalized = str(fingerprint_name or "").strip().lower()
+    entry = STRUCTURAL_FINGERPRINTS.get(normalized)
+    if entry is None:
+        raise ValueError(
+            f"Unsupported fingerprint_name={fingerprint_name!r}. Supported values are "
+            f"{sorted(STRUCTURAL_FINGERPRINTS)}."
+        )
+    if not entry["resizable"]:
+        resolved_n_bits = int(entry["default_n_bits"])
+        if n_bits is not None and int(n_bits) != resolved_n_bits:
+            raise ValueError(
+                f"{normalized} has a fixed width of {resolved_n_bits} bits and cannot be resized "
+                f"to {int(n_bits)}."
+            )
+    else:
+        resolved_n_bits = _validate_n_bits(
+            int(entry["default_n_bits"]) if n_bits is None else n_bits
+        )
+    if normalized == "avalon" and pyAvalonTools is None:
+        raise ValueError(AVALON_UNAVAILABLE_MESSAGE)
+    return {
+        "name": normalized,
+        "feature_prefix": str(entry["feature_prefix"]),
+        "n_bits": resolved_n_bits,
+        "description": str(entry["description"]),
+    }
+
+
+def _morgan_row_worker(args: tuple[str, int, int, str, bool]) -> List[int]:
+    smiles, radius, n_bits, fingerprint_kind, use_features = args
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Could not compute Morgan fingerprint for standardized SMILES: {smiles}")
-    fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    invariants_generator = (
+        rdFingerprintGenerator.GetMorganFeatureAtomInvGen() if use_features else None
+    )
+    fp_generator = rdFingerprintGenerator.GetMorganGenerator(
+        radius=radius, fpSize=n_bits, atomInvariantsGenerator=invariants_generator
+    )
     if fingerprint_kind == "count":
         fingerprint = fp_generator.GetCountFingerprintAsNumPy(mol)
     else:
         fingerprint = fp_generator.GetFingerprintAsNumPy(mol)
     return fingerprint.astype(int).tolist()
+
+
+def _structural_fp_row_worker(args: tuple[str, str, int]) -> List[int]:
+    smiles, fingerprint_name, n_bits = args
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(
+            f"Could not compute {fingerprint_name} fingerprint for standardized SMILES: {smiles}"
+        )
+    if fingerprint_name == "maccs":
+        return [int(bit) for bit in MACCSkeys.GenMACCSKeys(mol)]
+    if fingerprint_name == "avalon":
+        if pyAvalonTools is None:
+            raise ValueError(AVALON_UNAVAILABLE_MESSAGE)
+        return [int(bit) for bit in pyAvalonTools.GetAvalonFP(mol, nBits=n_bits)]
+    if fingerprint_name == "atom_pair":
+        generator = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
+    elif fingerprint_name == "topological_torsion":
+        generator = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
+    else:  # pragma: no cover - guarded by resolve_structural_fingerprint
+        raise ValueError(f"Unsupported fingerprint_name={fingerprint_name!r}.")
+    return generator.GetFingerprintAsNumPy(mol).astype(int).tolist()
 
 
 def _rdkit_descriptor_row_worker(args: tuple[str, str]) -> List[float]:
@@ -239,6 +367,7 @@ class MolecularFeatureToolkit(Toolkit):
         super().__init__("molecular_features")
         self.block_direct_qsar_training = block_direct_qsar_training
         self.register(self.smiles_to_morgan_fingerprints)
+        self.register(self.smiles_to_structural_fingerprints)
         self.register(self.smiles_to_rdkit_descriptors)
         self.register(self.build_tabular_qsar_dataset)
 
@@ -257,16 +386,28 @@ class MolecularFeatureToolkit(Toolkit):
         input_csv: str,
         smiles_column: str = "smiles",
         output_csv: Optional[str] = None,
-        radius: int = 2,
-        n_bits: int = 2048,
+        radius: int = DEFAULT_MORGAN_RADIUS,
+        n_bits: int = DEFAULT_MORGAN_N_BITS,
         include_input_columns: bool = False,
         input_columns_to_keep: Optional[List[str]] = None,
         feature_prefix: str = "fp_",
         fingerprint_kind: str = "binary",
         n_jobs: Optional[int] = None,
+        use_features: bool = False,
     ) -> Dict[str, Any]:
         """
         Transform a SMILES column into a tabular CSV of Morgan fingerprints.
+
+        Parameters
+        ----------
+        radius:
+            Morgan neighbourhood radius, one of ``(1, 2, 3)``. Defaults to 2 (ECFP4-like).
+        n_bits:
+            Folded fingerprint width, any positive integer. Defaults to 2048; the training
+            contract restricts agent-chosen widths to ``SUPPORTED_FINGERPRINT_N_BITS``.
+        use_features:
+            When True use feature-invariant atom types (FCFP-style) instead of the default
+            connectivity invariants (ECFP-style). Defaults to False.
 
         This tool is intentionally explicit and testable on its own so future
         tabular backends (for example TabICL or tree models) can reuse the same
@@ -276,12 +417,8 @@ class MolecularFeatureToolkit(Toolkit):
         started_at = time.monotonic()
         normalized_fingerprint_kind = _normalize_fingerprint_kind(fingerprint_kind)
         resolved_n_jobs = _coerce_n_jobs(n_jobs)
-        if radius != 2:
-            raise ValueError(
-                "The current Morgan helper supports radius=2 only in this V1 implementation."
-            )
-        if n_bits <= 0:
-            raise ValueError("n_bits must be a positive integer.")
+        radius, n_bits = _validate_morgan_parameters(radius, n_bits)
+        use_features = bool(use_features)
         if not feature_prefix:
             raise ValueError("feature_prefix cannot be empty.")
 
@@ -308,7 +445,7 @@ class MolecularFeatureToolkit(Toolkit):
 
         feature_columns = _feature_column_names(feature_prefix, n_bits)
         worker_args = [
-            (smiles, radius, n_bits, normalized_fingerprint_kind)
+            (smiles, radius, n_bits, normalized_fingerprint_kind, use_features)
             for smiles in working["smiles"].tolist()
         ]
         fingerprint_rows = _map_rows(_morgan_row_worker, worker_args, resolved_n_jobs)
@@ -340,11 +477,110 @@ class MolecularFeatureToolkit(Toolkit):
             "radius": radius,
             "n_bits": n_bits,
             "fingerprint_kind": normalized_fingerprint_kind,
+            "use_features": use_features,
             "n_jobs": resolved_n_jobs,
             "num_features": len(feature_columns),
             "feature_prefix": feature_prefix,
             "feature_columns_sample": feature_columns[:5],
             "input_columns_kept": kept_columns,
+            "duration_seconds": round(time.monotonic() - started_at, 3),
+        }
+
+    def smiles_to_structural_fingerprints(
+        self,
+        input_csv: str,
+        fingerprint_name: str,
+        smiles_column: str = "smiles",
+        output_csv: Optional[str] = None,
+        n_bits: Optional[int] = None,
+        include_input_columns: bool = False,
+        input_columns_to_keep: Optional[List[str]] = None,
+        feature_prefix: Optional[str] = None,
+        n_jobs: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Transform a SMILES column into a tabular CSV of non-Morgan structural fingerprints.
+
+        Parameters
+        ----------
+        fingerprint_name:
+            One of ``maccs`` (167 fixed keys), ``avalon``, ``atom_pair`` or
+            ``topological_torsion``. The hashed fingerprints accept any positive ``n_bits``;
+            ``maccs`` has a fixed width and rejects any override.
+        feature_prefix:
+            Column prefix. Defaults to the fingerprint's registered prefix (``mk_``, ``av_``,
+            ``ap_``, ``tt_``) so applicability-domain feature-kind mapping stays stable.
+
+        All fingerprints here are produced as binary bit vectors.
+        """
+        self._guard_direct_qsar_training("smiles_to_structural_fingerprints")
+        started_at = time.monotonic()
+        resolved_n_jobs = _coerce_n_jobs(n_jobs)
+        fingerprint = resolve_structural_fingerprint(fingerprint_name, n_bits)
+        resolved_prefix = feature_prefix or fingerprint["feature_prefix"]
+        if not resolved_prefix:
+            raise ValueError("feature_prefix cannot be empty.")
+
+        with S3.open(input_csv, "r") as fh:
+            df = pd.read_csv(fh)
+
+        resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
+        working = standardize_smiles_column(df.copy(), resolved_smiles_column)
+        if resolved_smiles_column != "smiles":
+            working["smiles"] = working[resolved_smiles_column]
+            working = working.drop(columns=[resolved_smiles_column])
+        normalized_columns_to_keep = _normalize_input_columns_to_keep(
+            input_columns_to_keep,
+            requested_smiles_column=smiles_column,
+            resolved_smiles_column=resolved_smiles_column,
+        )
+
+        invalid_mask = working["smiles"].isna()
+        if invalid_mask.any():
+            invalid_rows = int(invalid_mask.sum())
+            raise ValueError(
+                f"Cannot generate {fingerprint['name']} fingerprints: {invalid_rows} row(s) have "
+                "invalid or missing standardized SMILES."
+            )
+
+        feature_columns = _feature_column_names(resolved_prefix, fingerprint["n_bits"])
+        worker_args = [
+            (smiles, fingerprint["name"], fingerprint["n_bits"])
+            for smiles in working["smiles"].tolist()
+        ]
+        fingerprint_rows = _map_rows(_structural_fp_row_worker, worker_args, resolved_n_jobs)
+        feature_df = pd.DataFrame(fingerprint_rows, columns=feature_columns)
+
+        base_df = _build_base_output_dataframe(
+            working,
+            include_input_columns=include_input_columns,
+            input_columns_to_keep=normalized_columns_to_keep,
+            required_columns=["smiles"],
+        )
+        output_df = pd.concat(
+            [base_df.reset_index(drop=True), feature_df.reset_index(drop=True)], axis=1
+        )
+
+        resolved_output_csv = _resolve_output_csv(
+            output_csv, input_csv, f"_{fingerprint['name']}_fp.csv"
+        )
+        with S3.open(resolved_output_csv, "w") as fh:
+            output_df.to_csv(fh, index=False)
+
+        return {
+            "output_csv": resolved_output_csv,
+            "rows_in": int(len(df)),
+            "rows_out": int(len(output_df)),
+            "smiles_column": "smiles",
+            "source_smiles_column": resolved_smiles_column,
+            "fingerprint_name": fingerprint["name"],
+            "n_bits": fingerprint["n_bits"],
+            "fingerprint_kind": "binary",
+            "n_jobs": resolved_n_jobs,
+            "num_features": len(feature_columns),
+            "feature_prefix": resolved_prefix,
+            "feature_columns_sample": feature_columns[:5],
+            "input_columns_kept": list(base_df.columns),
             "duration_seconds": round(time.monotonic() - started_at, 3),
         }
 

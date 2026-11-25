@@ -22,7 +22,13 @@ RepresentationName = Literal[
     "morgan_count_only",
     "morgan_binary_count_rdkit_all",
     "morgan_rdkit_all",
+    "maccs",
+    "avalon",
+    "atom_pair",
+    "topological_torsion",
 ]
+MorganRadius = Literal[1, 2, 3]
+FingerprintSize = Literal[1024, 2048, 4096]
 SplitFamily = Literal["random", "scaffold", "cluster"]
 ComputeProfileName = Literal["auto", "local_light", "local_standard", "heavy_validation"]
 TabICLNormMethod = Literal["none", "power", "quantile", "quantile_rtdl", "robust"]
@@ -114,8 +120,17 @@ class MolecularGraphRepresentation(StrictContract):
 
 
 class GeneratedRepresentation(StrictContract):
+    """A named representation from the tabular registry.
+
+    ``morgan_*`` fields only affect representations that build a Morgan fingerprint; the
+    defaults reproduce the historical hardcoded ECFP4/2048 behaviour exactly.
+    """
+
     kind: Literal["generated"] = "generated"
     name: RepresentationName = "rdkit_all"
+    morgan_radius: MorganRadius = 2
+    morgan_n_bits: FingerprintSize = 2048
+    morgan_use_features: bool = False
 
 
 class PrecomputedRepresentation(StrictContract):

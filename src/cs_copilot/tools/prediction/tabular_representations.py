@@ -4,8 +4,15 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import importlib.util
+from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
+
+#: Morgan defaults shared by every representation that does not override them.  They are the
+#: historical hardcoded values, so leaving them alone keeps existing models reproducible.
+DEFAULT_MORGAN_RADIUS = 2
+DEFAULT_MORGAN_N_BITS = 2048
 
 
 @dataclass(frozen=True)
@@ -20,9 +27,22 @@ class TabularRepresentationSpec:
     descriptor_set: Optional[str] = None
     automatic: bool = False
     description: str = ""
+    morgan_radius: int = DEFAULT_MORGAN_RADIUS
+    morgan_n_bits: int = DEFAULT_MORGAN_N_BITS
+    morgan_use_features: bool = False
+    #: Non-Morgan structural fingerprints built by
+    #: ``MolecularFeatureToolkit.smiles_to_structural_fingerprints``.
+    fingerprints: Tuple[str, ...] = field(default_factory=tuple)
+    #: Optional import path this representation needs; used to report availability without
+    #: importing the module.
+    requires_module: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["fingerprints"] = list(self.fingerprints)
+        payload["available"] = representation_unavailable_reason(self.name) is None
+        payload["unavailable_reason"] = representation_unavailable_reason(self.name)
+        return payload
 
 
 TABULAR_REPRESENTATIONS: Dict[str, TabularRepresentationSpec] = {
@@ -67,12 +87,63 @@ TABULAR_REPRESENTATIONS: Dict[str, TabularRepresentationSpec] = {
         automatic=False,
         description="Historical high-validation combined representation retained for compatibility and explicit use.",
     ),
+    "maccs": TabularRepresentationSpec(
+        name="maccs",
+        display_name="MACCS structural keys",
+        fingerprints=("maccs",),
+        automatic=False,
+        description="166 MACCS keys as a 167-bit vector; small, interpretable substructure keys.",
+    ),
+    "avalon": TabularRepresentationSpec(
+        name="avalon",
+        display_name="Avalon fingerprint",
+        fingerprints=("avalon",),
+        automatic=False,
+        description="Avalon substructure fingerprint (1024 bits).",
+        requires_module="rdkit.Avalon.pyAvalonTools",
+    ),
+    "atom_pair": TabularRepresentationSpec(
+        name="atom_pair",
+        display_name="Atom-pair fingerprint",
+        fingerprints=("atom_pair",),
+        automatic=False,
+        description="Hashed atom-pair fingerprint (2048 bits); encodes topological distances.",
+    ),
+    "topological_torsion": TabularRepresentationSpec(
+        name="topological_torsion",
+        display_name="Topological-torsion fingerprint",
+        fingerprints=("topological_torsion",),
+        automatic=False,
+        description="Hashed topological-torsion fingerprint (2048 bits) over four-atom paths.",
+    ),
 }
 
 AUTOMATIC_TABULAR_REPRESENTATION_NAMES: Tuple[str, ...] = tuple(
     name for name, spec in TABULAR_REPRESENTATIONS.items() if spec.automatic
 )
 SUPPORTED_TABULAR_REPRESENTATION_NAMES: Tuple[str, ...] = tuple(TABULAR_REPRESENTATIONS)
+
+
+@lru_cache(maxsize=None)
+def representation_unavailable_reason(name: str) -> Optional[str]:
+    """Return why a representation cannot be built here, or None when it is usable.
+
+    Availability is decided from ``requires_module`` with ``importlib.util.find_spec`` so an
+    optional RDKit component (for example Avalon) never turns into an import-time crash.
+    """
+    spec = TABULAR_REPRESENTATIONS.get(str(name or "").strip().lower())
+    if spec is None or not spec.requires_module:
+        return None
+    try:
+        found = importlib.util.find_spec(spec.requires_module) is not None
+    except (ImportError, ValueError):
+        found = False
+    if found:
+        return None
+    return (
+        f"Representation {spec.name!r} needs {spec.requires_module!r}, which this build does not "
+        "provide. Install an RDKit build that includes it or pick another representation."
+    )
 
 
 def get_tabular_representation(name: str) -> TabularRepresentationSpec:

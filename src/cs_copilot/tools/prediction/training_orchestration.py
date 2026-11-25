@@ -29,6 +29,7 @@ from .applicability_domain import (
     score_modern_applicability_domain,
 )
 from .backend import PredictionTaskSpec
+from .metrics_ext import extended_classification_metrics, extended_regression_metrics
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 
@@ -361,7 +362,15 @@ def compute_regression_metrics(
     *,
     target_column: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compute the standard QSAR regression metrics on aligned values."""
+    """Compute the standard QSAR regression metrics on aligned values.
+
+    The extended statistics computable from the external set alone (``ccc``, ``q2_f2``)
+    are merged in. ``q2_f1``/``q2_f3``/``golbraikh_tropsha`` are deliberately absent:
+    they need the training responses and the internal cross-validated q2, which this
+    function never receives. Callers that hold them should call
+    :func:`cs_copilot.tools.prediction.metrics_ext.extended_regression_metrics`
+    directly with ``y_train=``/``q2=`` and merge the result.
+    """
     actual_values = pd.to_numeric(y_true, errors="coerce")
     predicted_values = pd.to_numeric(y_pred, errors="coerce")
     valid_mask = actual_values.notna() & predicted_values.notna()
@@ -390,6 +399,8 @@ def compute_regression_metrics(
         kendall = float(kendall_stat.statistic) if kendall_stat.statistic is not None else None
     except Exception:
         pass
+    extended = extended_regression_metrics(actual.to_numpy(), predicted.to_numpy())
+    extended.pop("n", None)  # `n` below already reports the same count; keep its semantics.
     return {
         "mse": mse,
         "mae": mae,
@@ -399,6 +410,7 @@ def compute_regression_metrics(
         "spearman": spearman,
         "kendall": kendall,
         "n": int(valid_mask.sum()),
+        **extended,
         **({"target_column": target_column} if target_column else {}),
     }
 
@@ -424,7 +436,15 @@ def compute_classification_metrics(
     positive_scores: Optional[pd.Series] = None,
     target_column: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compute standard QSAR classification metrics for binary or multiclass labels."""
+    """Compute standard QSAR classification metrics for binary or multiclass labels.
+
+    ``mcc`` and ``cohen_kappa`` are merged in for every label count, ``specificity``
+    for binary labels. The probability-based ``average_precision``, ``brier_score`` and
+    ``expected_calibration_error`` are added only when ``positive_scores`` aligns row
+    for row with the scored rows and holds calibrated probabilities inside ``[0, 1]``;
+    a raw decision score is ranked for ``roc_auc`` as before but is not reported as a
+    probability.
+    """
     truth = y_true.map(normalize_classification_label)
     pred = y_pred.map(normalize_classification_label)
     mask = truth.notna() & pred.notna()
@@ -488,6 +508,7 @@ def compute_classification_metrics(
         "per_class": rows,
         **({"target_column": target_column} if target_column else {}),
     }
+    probabilities: Optional[pd.Series] = None
     if len(labels) == 2:
         pos_label = labels[1]
         binary_row = rows[1]
@@ -506,9 +527,23 @@ def compute_classification_metrics(
                 scores = scores[mask.to_numpy()].reset_index(drop=True)
             if len(scores) == len(valid):
                 scores = scores[valid.to_numpy()].reset_index(drop=True)
-            auc = _binary_roc_auc(true_codes, pd.to_numeric(scores, errors="coerce"))
+            numeric_scores = pd.to_numeric(scores, errors="coerce")
+            auc = _binary_roc_auc(true_codes, numeric_scores)
             if auc is not None:
                 metrics["roc_auc"] = auc
+            finite_scores = numeric_scores[numeric_scores.notna()]
+            if len(numeric_scores) == len(true_codes) and bool(
+                finite_scores.between(0.0, 1.0).all()
+            ):
+                probabilities = numeric_scores
+
+    extended = extended_classification_metrics(
+        true_codes.to_numpy(),
+        pred_codes.to_numpy(),
+        y_prob=None if probabilities is None else probabilities.to_numpy(dtype=float),
+    )
+    extended.pop("n", None)  # `n` above already reports the same count; keep its semantics.
+    metrics.update(extended)
     return metrics
 
 
