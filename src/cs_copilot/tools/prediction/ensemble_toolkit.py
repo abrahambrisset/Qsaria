@@ -14,11 +14,14 @@ import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
+from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
+
 from .backend import PredictionModelRecord, PredictionTaskSpec
 from .backend_capabilities import backend_supports_component_orchestration
 from .catalog import DEFAULT_INTERNAL_MODEL_ROOT, PredictionModelCatalog
 from .chemprop_backend import ChempropBackend
 from .ensemble_backend import EnsembleBackend
+from .leakage import overlap_markdown
 from .lightgbm_backend import LightGBMBackend
 from .qsar_response_compaction import (
     compact_applicability_domain_for_response,
@@ -853,6 +856,10 @@ class EnsembleToolkit(Toolkit):
         predictions = pd.read_csv(preds_path)
         if target_column not in source.columns:
             raise ValueError(f"Target column `{target_column}` is missing from evaluation dataset.")
+        audit_column = resolve_smiles_column_name(source, smiles_column)
+        leakage = self.ensemble_backend.audit_evaluation_overlap(
+            record, source[audit_column].tolist()
+        )
         comparison = pd.concat(
             [source.reset_index(drop=True), predictions.reset_index(drop=True)], axis=1
         )
@@ -951,6 +958,7 @@ class EnsembleToolkit(Toolkit):
             "created_at": now.isoformat(),
             "n": int(len(source)),
             "ensemble_metrics": ensemble_metrics,
+            "leakage": leakage,
             "component_metrics": metrics_rows[:-1],
             "artifacts": {
                 "evaluation_summary": "evaluation_summary.json",
@@ -994,6 +1002,7 @@ class EnsembleToolkit(Toolkit):
             "evaluation_id": evaluation_id,
             "evaluation_kind": evaluation_kind,
             "ensemble_metrics": ensemble_metrics,
+            "leakage": leakage,
             "metrics_by_component_path": str(metrics_path.resolve()),
             "ensemble_predictions_path": str(preds_path.resolve()),
             "evaluation_summary_path": str(summary_path.resolve()),
@@ -1037,6 +1046,10 @@ class EnsembleToolkit(Toolkit):
                 )
         lines.extend(
             [
+                "",
+                "## Molecular overlap audit",
+                "",
+                overlap_markdown(summary["leakage"]),
                 "",
                 "Les metriques de l'ensemble sont propres a ce dataset d'evaluation. "
                 "Les performances historiques des composants ne sont pas substituees a cette evaluation.",

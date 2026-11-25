@@ -19,8 +19,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 import pandas as pd
 from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
-from rdkit import Chem
-from rdkit.Chem import Descriptors, Lipinski
 
 from cs_copilot.storage.client import S3
 from cs_copilot.tools.activity_cliffs import (
@@ -41,6 +39,7 @@ from .hyperparameter_tuning import (
     normalize_tuning_config,
     tuning_metadata_for_catalog,
 )
+from .leakage import audit_training_split
 from .outlier_analysis import (
     attach_activity_cliff_annotations,
     attach_ad_annotations,
@@ -56,6 +55,8 @@ from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
+    materialize_standard_split_runs,
+    molecular_cluster_features,
 )
 from .qsar_training_policy import (
     assess_protocol_results,
@@ -75,6 +76,7 @@ from .session_state import (
 )
 from .training_orchestration import (
     apply_training_profile,
+    audit_selection_validation,
     build_applicability_domain_for_training,
     build_classification_prediction_frame,
     build_cross_validation_artifacts,
@@ -1020,6 +1022,14 @@ class ChempropToolkit(Toolkit):
             backend_kwargs["progress_callback"] = progress_callback
         result = self._train_backend(**backend_kwargs)
         result.update(
+            audit_training_split(
+                pd.read_csv(chemprop_input["chemprop_training_input_csv"]),
+                (task.smiles_columns or ["smiles"])[0],
+                split_payload[0],
+                run_output_dir,
+            )
+        )
+        result.update(
             self._compute_training_metrics(
                 train_csv=chemprop_input["chemprop_training_input_csv"],
                 output_dir=output_dir,
@@ -1119,29 +1129,9 @@ class ChempropToolkit(Toolkit):
             if smiles_column not in dataset.columns:
                 raise ValueError("Chemprop cluster holdout requires a valid SMILES column.")
 
-            def _cluster_descriptors(smiles: Any) -> List[float]:
-                molecule = Chem.MolFromSmiles(str(smiles)) if pd.notna(smiles) else None
-                if molecule is None:
-                    return [0.0] * 8
-                return [
-                    float(Descriptors.MolWt(molecule)),
-                    float(Descriptors.MolLogP(molecule)),
-                    float(Descriptors.TPSA(molecule)),
-                    float(Lipinski.NumHDonors(molecule)),
-                    float(Lipinski.NumHAcceptors(molecule)),
-                    float(Lipinski.RingCount(molecule)),
-                    float(Lipinski.NumRotatableBonds(molecule)),
-                    float(Descriptors.FractionCSP3(molecule)),
-                ]
-
-            cluster_columns = [f"__qsaria_cluster_descriptor_{index}" for index in range(8)]
-            descriptor_frame = pd.DataFrame(
-                [_cluster_descriptors(value) for value in dataset[smiles_column]],
-                columns=cluster_columns,
-                index=dataset.index,
-            )
+            descriptor_frame = molecular_cluster_features(dataset[smiles_column])
             dataset = pd.concat([dataset, descriptor_frame], axis=1)
-            feature_columns = cluster_columns
+            feature_columns = list(descriptor_frame.columns)
         return build_qsar_split_payload(
             df=dataset,
             split_type=split_type,
@@ -2225,6 +2215,14 @@ class ChempropToolkit(Toolkit):
                 {"detail": detail, "epoch": epoch, "total_epochs": total_epochs},
             )
 
+        with S3.open(source_train_csv, "r") as fh:
+            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        split_runs = materialize_standard_split_runs(
+            protocol_policy=protocol_policy,
+            df=split_source_df,
+            task=task,
+        )
+
         if agent is not None:
             prediction_state = get_prediction_state(agent)
             prediction_state["active_training_run"] = dict(active_run_record)
@@ -2236,9 +2234,7 @@ class ChempropToolkit(Toolkit):
         primary_output_dir: Optional[Path] = None
         total_started_at = project_now()
 
-        multi_run_protocol = len(protocol_policy["split_runs"]) > 1
-        with S3.open(source_train_csv, "r") as fh:
-            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        multi_run_protocol = len(split_runs) > 1
         is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
         if is_cv_protocol:
@@ -2273,10 +2269,8 @@ class ChempropToolkit(Toolkit):
             eligible=hpo_eligible,
             fixed_parameters=direct_architecture_parameters,
         )
-        tuning_summary: Optional[Dict[str, Any]] = None
-
         try:
-            for split_run in protocol_policy["split_runs"]:
+            for split_run in split_runs:
                 label = split_run["label"]
                 run_output_dir = (
                     root_output_path / f"{safe_slug(label)}_split"
@@ -2294,7 +2288,9 @@ class ChempropToolkit(Toolkit):
                     or training_policy["resolved_parameters"].get("split_sizes"),
                     "data_seed": split_run["seed"],
                 }
-                if label in cv_split_payloads:
+                if split_run.get("split_payload") is not None:
+                    split_payload = split_run["split_payload"]
+                elif label in cv_split_payloads:
                     split_payload = cv_split_payloads[label]
                 elif split_run["backend_split_type"] == "final_refit":
                     split_payload = build_full_train_split_payload(df=split_source_df)
@@ -2312,30 +2308,32 @@ class ChempropToolkit(Toolkit):
                 selection_split_payload = split_payload
                 selected_parameters: Dict[str, Any] = {}
                 selection_train_args = dict(run_args)
+                tune_summary: Optional[Dict[str, Any]] = None
+                fit_label = label
                 if tuning_config is not None:
                     if tuning_config.parameters:
                         publish_active_progress(
                             "Native hyperparameter optimization",
                             {"detail": f"{tuning_config.n_trials} candidates requested"},
                         )
-                        tuning_summary = self._run_chemprop_hpopt(
+                        tune_summary = self._run_chemprop_hpopt(
                             source_df=split_source_df,
                             task=task,
                             split_payload=split_payload,
                             config=tuning_config,
                             fixed_parameters=direct_architecture_parameters,
                             train_args=run_args,
-                            output_dir=root_output_path,
+                            output_dir=run_output_dir,
                             seed=int(tuning_config.seed or split_run["seed"]),
                             compute_environment=training_policy["compute_environment"],
                             progress_callback=publish_chemprop_progress,
                         )
                         selected_parameters = dict(
-                            (tuning_summary.get("best_trial") or {}).get("params") or {}
+                            (tune_summary.get("best_trial") or {}).get("params") or {}
                         )
                         selection_train_args.update(selected_parameters)
                     else:
-                        tuning_summary = {
+                        tune_summary = {
                             "contract_version": HYPERPARAMETER_CONTRACT_VERSION,
                             "backend_name": "chemprop",
                             "engine": "chemprop_hpopt_hyperopt",
@@ -2351,10 +2349,10 @@ class ChempropToolkit(Toolkit):
                                 "test_rows_provided_to_hpopt": 0,
                             },
                         }
-                        summary_path = root_output_path / "hyperparameter_tuning_summary.json"
-                        tuning_summary["summary_path"] = str(summary_path)
-                        summary_path.write_text(json.dumps(tuning_summary, indent=2) + "\n")
-                        selected_parameters = {}
+                        summary_path = run_output_dir / "hyperparameter_tuning_summary.json"
+                        summary_path.parent.mkdir(parents=True, exist_ok=True)
+                        tune_summary["summary_path"] = str(summary_path)
+                        summary_path.write_text(json.dumps(tune_summary, indent=2) + "\n")
 
                     base_split = split_payload[0]
                     split_payload = [
@@ -2374,20 +2372,13 @@ class ChempropToolkit(Toolkit):
                     run_args.update(selected_parameters)
                     run_args["split_sizes"] = [0.9, 0.1]
                     run_args["final_refit"] = True
-                    label = "hyperparameter_final_refit"
+                    if not multi_run_protocol:
+                        fit_label = "hyperparameter_final_refit"
 
-                active_run_record["current_split_label"] = label
+                active_run_record["current_split_label"] = fit_label
                 publish_active_progress(
-                    (
-                        "Refitting final model"
-                        if label == "hyperparameter_final_refit"
-                        else "Training model"
-                    ),
-                    {
-                        "detail": (
-                            "train + validation" if label == "hyperparameter_final_refit" else label
-                        )
-                    },
+                    "Refitting final model" if tuning_config is not None else "Training model",
+                    {"detail": "train + validation" if tuning_config is not None else label},
                 )
 
                 single_result = self._train_single_run(
@@ -2396,10 +2387,16 @@ class ChempropToolkit(Toolkit):
                     output_dir=str(run_output_dir),
                     train_args=run_args,
                     split_payload=split_payload,
-                    split_label=label,
+                    split_label=fit_label,
                     seed=split_run["seed"],
                     progress_callback=publish_chemprop_progress,
                 )
+                if tuning_config is not None:
+                    single_result.setdefault("leakage", {})["validation"] = (
+                        audit_selection_validation(
+                            split_source_df, task.smiles_columns[0], selection_split_payload[0]
+                        )
+                    )
                 publish_active_progress("Evaluating final test set", {})
                 if label.startswith("cv_repeat_"):
                     strategy_name = label
@@ -2421,7 +2418,7 @@ class ChempropToolkit(Toolkit):
                     strategy_family = "random"
                 single_result["strategy"] = strategy_name
                 single_result["strategy_family"] = strategy_family
-                single_result["strategy_label"] = label
+                single_result["strategy_label"] = fit_label
                 single_result["backend_split_type"] = split_run["backend_split_type"]
                 single_result["seed"] = split_run["seed"]
                 single_result["repeat_index"] = split_run.get("repeat_index")
@@ -2434,6 +2431,14 @@ class ChempropToolkit(Toolkit):
                 single_result["selection_split_payload"] = selection_split_payload
                 single_result["selected_hyperparameters"] = selected_parameters
                 single_result["selection_train_args"] = selection_train_args
+                if tune_summary is not None:
+                    single_result["hyperparameter_tuning"] = tune_summary
+                    single_result["hyperparameter_tuning_metadata"] = tuning_metadata_for_catalog(
+                        tune_summary
+                    )
+                    single_result["hyperparameter_tuning_summary_path"] = tune_summary[
+                        "summary_path"
+                    ]
                 split_results.append(single_result)
 
                 if split_run.get("primary") or primary_run is None:
@@ -2541,6 +2546,12 @@ class ChempropToolkit(Toolkit):
                     for variant in study["variants"]:
                         run = variant.get("run")
                         if isinstance(run, dict):
+                            if tuning_config is not None:
+                                for key in (
+                                    "hyperparameter_tuning_metadata",
+                                    "hyperparameter_tuning_summary_path",
+                                ):
+                                    run[key] = split_result[key]
                             run_output_dir = Path(str(run.get("output_dir") or root_output_path))
                             run["applicability_domain"] = self._build_applicability_domain(
                                 train_csv=local_train_csv,
@@ -2782,11 +2793,13 @@ class ChempropToolkit(Toolkit):
                 total_completed_at=total_completed_at,
             )
             result["applicability_domain"] = ad_summary
+            tuning_summary = primary_run.get("hyperparameter_tuning")
             if tuning_summary is not None:
                 result["hyperparameter_tuning"] = tuning_summary
-                result["hyperparameter_tuning_metadata"] = tuning_metadata_for_catalog(
-                    tuning_summary
-                )
+                result["hyperparameter_tuning_summary_path"] = tuning_summary["summary_path"]
+                result["hyperparameter_tuning_metadata"] = primary_run[
+                    "hyperparameter_tuning_metadata"
+                ]
                 result["selection_validation"] = {
                     "label": "best Chemprop native hpopt trial",
                     "objective": tuning_summary.get("objective"),

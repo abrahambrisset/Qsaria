@@ -20,6 +20,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 import pandas as pd
 from scipy.stats import kendalltau, spearmanr
 
+from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
+
 from .applicability_domain import (
     QSAR_ROW_ID_COLUMN,
     append_ad_scores_to_csv,
@@ -29,6 +31,7 @@ from .applicability_domain import (
     score_modern_applicability_domain,
 )
 from .backend import PredictionTaskSpec
+from .leakage import audit_molecular_overlap
 from .qsar_plots import build_qsar_training_plots
 from .qsar_training_policy import describe_compute_environment, resolve_training_profile, safe_slug
 
@@ -39,6 +42,19 @@ CLASSIFICATION_TASK_TYPES = {
     "multiclass_classification",
 }
 MULTICLASS_TASK_TYPES = {"multiclass", "multiclass_classification"}
+
+
+def audit_selection_validation(
+    frame: pd.DataFrame, smiles_column: str, split: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Audit the validation partition used to select hyperparameters before refitting."""
+    try:
+        structures = frame[resolve_smiles_column_name(frame, smiles_column)]
+    except KeyError:
+        structures = pd.Series([None] * len(frame), dtype=object)
+    training = structures.iloc[list(split.get("train") or [])]
+    validation = structures.iloc[list(split.get("val") or split.get("validation") or [])]
+    return audit_molecular_overlap(training, validation)
 
 
 def strip_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:

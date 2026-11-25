@@ -27,9 +27,9 @@ scientific contract:
 - use the default disabled hyperparameter tuning;
 - preserve the toolkit's default outlier analysis whenever the task is eligible.
 
-`standard_qsar` names only the fixed random 80/10/10 validation protocol. The
-standard LightGBM workflow is the complete contract above. `training_profile`
-describes compute policy and does not prove that tuning or outlier analysis ran.
+`standard_qsar` runs random, scaffold and cluster holdouts with a target ratio of
+80/10/10. Use `single_random_holdout` when the user explicitly requests a single
+random 80/10/10 split. `training_profile` describes compute policy.
 
 Use `tuning.enabled=true` only when the user requests optimization. Preserve an explicit trial count in `tuning.n_trials`. Keep eligible outlier analysis by default. After execution, verify the effective representation, validation protocol, tuning status and outlier-analysis status from structured results. Stop before persistence when
 those facts contradict the delegated contract.

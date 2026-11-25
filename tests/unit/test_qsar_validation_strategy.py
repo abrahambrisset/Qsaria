@@ -4,10 +4,11 @@ import pandas as pd
 import pytest
 
 from cs_copilot.tools.prediction.qsar_splitters import build_repeated_kfold_split_payloads
+from cs_copilot.tools.prediction.qsar_training_policy import assess_protocol_results
 from cs_copilot.tools.prediction.qsar_validation_strategy import resolve_validation_strategy
 
 
-def test_standard_qsar_strategy_delegates_to_existing_protocol():
+def test_standard_qsar_resolves_three_reproducible_holdout_families():
     policy = resolve_validation_strategy(
         requested_protocol="standard_qsar",
         validation_strategy=None,
@@ -16,8 +17,62 @@ def test_standard_qsar_strategy_delegates_to_existing_protocol():
     )
 
     assert policy["protocol"] == "standard_qsar"
-    assert [run["backend_split_type"] for run in policy["split_runs"]] == ["random"]
-    assert [run["split_sizes"] for run in policy["split_runs"]] == [[0.8, 0.1, 0.1]]
+    assert [run["backend_split_type"] for run in policy["split_runs"]] == [
+        "random",
+        "scaffold_balanced",
+        "kmeans",
+    ]
+    assert [run["split_sizes"] for run in policy["split_runs"]] == [[0.8, 0.1, 0.1]] * 3
+    assert [run["primary"] for run in policy["split_runs"]] == [True, False, False]
+    assert policy["seed_policy"]["random_split_seeds"] == [123]
+    replay = resolve_validation_strategy(
+        requested_protocol=None,
+        validation_strategy=None,
+        training_profile="local_light",
+        base_seed=123,
+    )
+    assert replay["split_runs"] == policy["split_runs"]
+
+
+def test_explicit_single_random_holdout_resolves_one_run():
+    policy = resolve_validation_strategy(
+        requested_protocol="single_random_holdout",
+        validation_strategy=None,
+        training_profile="local_light",
+        base_seed=123,
+    )
+
+    assert policy["protocol"] == "single_random_holdout"
+    assert policy["split_runs"] == [
+        {
+            "label": "random_seed_123",
+            "backend_split_type": "random",
+            "primary": True,
+            "seed": 123,
+            "split_sizes": [0.8, 0.1, 0.1],
+        }
+    ]
+
+
+def test_standard_qsar_can_meet_the_validation_gates():
+    assessment = assess_protocol_results(
+        [
+            {
+                "strategy_family": family,
+                "validation_protocol": "standard_qsar",
+                "metrics": {"test": {"r2": r2, "rmse": rmse, "n": 30}},
+            }
+            for family, r2, rmse in (
+                ("random", 0.86, 0.33),
+                ("scaffold", 0.83, 0.36),
+                ("cluster_kmeans", 0.79, 0.40),
+            )
+        ]
+    )
+
+    assert assessment["hardest_split"] == "cluster_kmeans"
+    assert assessment["delta_vs_random"]["cluster_kmeans"]["r2"] == pytest.approx(-0.07)
+    assert assessment["governance"]["recommended_status"] == "validated"
 
 
 def test_custom_holdout_uses_requested_split_sizes():

@@ -28,6 +28,8 @@ from .applicability_domain import (
     score_record_applicability_domain,
 )
 from .backend import PredictionModelRecord
+from .ensemble_backend import EnsembleBackend
+from .leakage import audit_record_overlap, overlap_markdown
 from .qsar_reporting import build_external_evaluation_reporting_handoff
 from .qsar_response_compaction import compact_applicability_domain_for_response
 from .qsar_training_policy import project_now, safe_slug
@@ -345,6 +347,7 @@ def _write_report(
     ad_metrics_by_target: Mapping[str, Any],
     ad_summary: Mapping[str, Any],
     artifacts: Mapping[str, Any],
+    leakage: Mapping[str, Any],
 ) -> None:
     def metric_summary(values: Mapping[str, Any]) -> str:
         if not values:
@@ -415,6 +418,10 @@ def _write_report(
             )
     lines.extend(
         [
+            "## Molecular overlap audit",
+            "",
+            overlap_markdown(leakage),
+            "",
             "## Raw metrics",
             "",
             "```json",
@@ -454,6 +461,12 @@ def evaluate_model_on_external_dataset(
             f"{missing_targets}. No evaluation was written."
         )
     smiles_found = resolve_smiles_column_name(source_df, smiles_column)
+    evaluation_smiles = source_df[smiles_found].tolist()
+    leakage = (
+        backend.audit_evaluation_overlap(record, evaluation_smiles)
+        if isinstance(backend, EnsembleBackend)
+        else audit_record_overlap(record, evaluation_smiles)
+    )
 
     created_at = project_now()
     label_slug = safe_slug(evaluation_label or Path(str(test_csv)).stem or "external_dataset")
@@ -659,6 +672,7 @@ def evaluate_model_on_external_dataset(
         "smiles_column": smiles_found,
         "target_columns": resolved_targets,
         "metrics": metrics,
+        "leakage": leakage,
         "target_metrics": target_metrics,
         "ad_metrics_by_target": ad_metrics_by_target,
         "applicability_domain": ad_result.get("summary") or {},
@@ -669,6 +683,7 @@ def evaluate_model_on_external_dataset(
         eval_dir / "metrics.json",
         {
             "metrics": metrics,
+            "leakage": leakage,
             "target_metrics": target_metrics,
             "ad_metrics_by_target": ad_metrics_by_target,
             "applicability_domain": ad_result.get("summary") or {},
@@ -686,6 +701,7 @@ def evaluate_model_on_external_dataset(
         ad_metrics_by_target=ad_metrics_by_target,
         ad_summary=ad_result.get("summary") or {},
         artifacts=artifacts,
+        leakage=leakage,
     )
 
     metadata = json.loads(metadata_path.read_text())

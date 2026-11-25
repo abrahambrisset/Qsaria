@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.prediction.backend import InvalidPredictionInputError
 from cs_copilot.tools.prediction.chemprop_toolkit import ChempropToolkit
 from cs_copilot.tools.prediction.lightgbm_toolkit import LightGBMToolkit
 from cs_copilot.tools.prediction.qsar_contracts import (
@@ -31,6 +33,185 @@ from cs_copilot.tools.prediction.qsar_training_toolkit import (
     _resolve_existing_training_csv,
 )
 from cs_copilot.tools.prediction.tabicl_toolkit import TabICLToolkit
+
+
+@pytest.mark.parametrize(
+    ("validation", "protocol", "families"),
+    [
+        (None, "standard_qsar", ["random", "scaffold", "cluster_kmeans"]),
+        ({"kind": "single_random_holdout", "seed": 123}, "single_random_holdout", ["random"]),
+    ],
+)
+def test_train_qsar_model_executes_the_requested_holdout_protocol(
+    tmp_path, validation, protocol, families
+):
+    fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
+    source_csv = tmp_path / "train.csv"
+    dataset = pd.read_csv(fixture).head(80).rename(columns={"smiles": "structure"})
+    dataset["signal"] = dataset["clogp"] + 0.02
+    dataset.to_csv(source_csv, index=False)
+    request = QsariaTrainingRequest.model_validate(
+        {
+            "target_columns": ["clogp"],
+            "smiles_column": "structure",
+            "task_type": "regression",
+            "representation": {"kind": "precomputed", "feature_columns": ["signal"]},
+            "outlier_analysis": {"enabled": False},
+            "applicability_domain": {"methods": ["bounding_box"]},
+            "compute": {"profile": "local_light"},
+            "backend": {"name": "lightgbm", "n_estimators": 4, "min_child_samples": 2},
+            **({"validation": validation} if validation else {}),
+        }
+    )
+
+    result = QSARTrainingToolkit().train_qsar_model(str(source_csv), request, str(tmp_path / "out"))
+
+    assert result["validation_protocol"] == protocol
+    assert result["resolved_plan"]["validation_protocol"] == protocol
+    assert [run["strategy_family"] for run in result["split_results"]] == families
+    assert len(result["resolved_plan"]["split_runs"]) == len(families)
+    assert set(result["validation_assessment"]["delta_vs_random"]) == set(families) - {"random"}
+    assert not result.get("hyperparameter_tuning")
+
+
+def test_standard_qsar_requires_enough_scaffolds_for_grouped_holdout(tmp_path):
+    source_csv = tmp_path / "train.csv"
+    pd.DataFrame(
+        {"smiles": ["C" * (i + 1) for i in range(20)], "activity": range(20), "signal": range(20)}
+    ).to_csv(source_csv, index=False)
+    request = QsariaTrainingRequest.model_validate(
+        {
+            "target_columns": ["activity"],
+            "task_type": "regression",
+            "representation": {"kind": "precomputed", "feature_columns": ["signal"]},
+            "outlier_analysis": {"enabled": False},
+            "applicability_domain": {"methods": ["bounding_box"]},
+            "compute": {"profile": "local_light"},
+            "backend": {"name": "lightgbm", "n_estimators": 4, "min_child_samples": 2},
+        }
+    )
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(InvalidPredictionInputError, match="scaffold.*single_random_holdout"):
+        QSARTrainingToolkit().train_qsar_model(str(source_csv), request, str(output_dir))
+
+    assert not list(output_dir.rglob("best.pkl"))
+
+
+def test_standard_qsar_checks_grouped_training_class_coverage_before_fitting(tmp_path):
+    source_csv = tmp_path / "train.csv"
+    smiles = ["C" * (i + 1) + "C1CCCCC1" for i in range(24)]
+    smiles += ["Cc1ccccc1", "CCc1ccccc1", "CCCc1ccccc1"]
+    smiles += ["Cc1ccncc1", "CCc1ccncc1", "CCCc1ccncc1"]
+    pd.DataFrame(
+        {"smiles": smiles, "activity": [0] * 27 + [1] * 3, "signal": range(len(smiles))}
+    ).to_csv(source_csv, index=False)
+    request = QsariaTrainingRequest.model_validate(
+        {
+            "target_columns": ["activity"],
+            "task_type": "classification",
+            "representation": {"kind": "precomputed", "feature_columns": ["signal"]},
+            "validation": {"kind": "standard_qsar", "seed": 123},
+            "outlier_analysis": {"enabled": False},
+            "applicability_domain": {"methods": ["bounding_box"]},
+            "compute": {"profile": "local_light"},
+            "backend": {"name": "lightgbm", "n_estimators": 4, "min_child_samples": 2},
+        }
+    )
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(
+        InvalidPredictionInputError, match="scaffold_balanced.*training partition.*activity"
+    ):
+        QSARTrainingToolkit().train_qsar_model(str(source_csv), request, str(output_dir))
+
+    assert not list(output_dir.rglob("best.pkl"))
+
+
+def test_explicit_standard_qsar_tuning_compares_all_holdout_families(tmp_path, monkeypatch):
+    fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
+    toolkit = LightGBMToolkit()
+
+    def return_fitted_metrics(**_kwargs):
+        return {
+            "validation_protocol": "standard_qsar",
+            "metrics": {"test": {"r2": 0.80, "rmse": 0.30, "n": 20}},
+        }
+
+    monkeypatch.setattr(toolkit, "_train_tuned_holdout", return_fitted_metrics)
+    result = toolkit.train_lightgbm_model(
+        train_csv=str(fixture),
+        output_dir=str(tmp_path / "out"),
+        task_type="regression",
+        target_columns=["clogp"],
+        feature_columns=["clogp"],
+        random_state=123,
+        hyperparameter_tuning={"enabled": True, "n_trials": 1},
+        outlier_analysis={"enabled": False},
+        resolved_parameters={"training_profile": "local_light"},
+    )
+
+    assert [run["strategy_family"] for run in result["split_results"]] == [
+        "random",
+        "scaffold",
+        "cluster_kmeans",
+    ]
+    assert result["validation_assessment"]["governance"]["recommended_status"] == "validated"
+
+
+def test_chemprop_standard_qsar_tuning_keeps_each_holdout_summary(tmp_path, monkeypatch):
+    fixture = Path(__file__).parents[2] / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
+    toolkit = ChempropToolkit()
+
+    def return_native_selection(*, output_dir, train_args, **_kwargs):
+        summary_path = output_dir / "hyperparameter_tuning_summary.json"
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "engine": "chemprop_hpopt_hyperopt",
+            "summary_path": str(summary_path),
+            "best_trial": {"params": {"depth": 2}},
+            "split_type": train_args["split_type"],
+        }
+        summary_path.write_text(json.dumps(summary))
+        return summary
+
+    monkeypatch.setattr(toolkit, "_run_chemprop_hpopt", return_native_selection)
+    monkeypatch.setattr(
+        toolkit,
+        "_train_single_run",
+        lambda **_: {"metrics": {"test": {"r2": 0.80, "rmse": 0.30, "n": 20}}},
+    )
+    monkeypatch.setattr(toolkit, "_build_applicability_domain", lambda **_: {})
+    result = toolkit.train_model(
+        train_csv=str(fixture),
+        output_dir=str(tmp_path / "out"),
+        bundle_path=str(tmp_path / "training.zip"),
+        task_type="regression",
+        target_columns=["clogp"],
+        hyperparameter_tuning={"enabled": True, "n_trials": 1},
+        outlier_analysis={"enabled": False},
+        resolved_parameters={"training_profile": "local_light", "random_state": 123},
+    )
+
+    assert [run["strategy_family"] for run in result["split_results"]] == [
+        "random",
+        "scaffold",
+        "cluster_kmeans",
+    ]
+    assert result["hyperparameter_tuning"]["split_type"] == "random"
+    study_paths = [
+        Path(run["hyperparameter_tuning_summary_path"]) for run in result["split_results"]
+    ]
+    assert len(set(study_paths)) == 3
+    assert [json.loads(path.read_text())["split_type"] for path in study_paths] == [
+        "random",
+        "scaffold_balanced",
+        "kmeans",
+    ]
+    compact = _compact_training_tool_result(result)
+    assert [
+        Path(run["hyperparameter_tuning_summary_path"]) for run in compact["split_results"]
+    ] == (study_paths)
 
 
 def _training_request(

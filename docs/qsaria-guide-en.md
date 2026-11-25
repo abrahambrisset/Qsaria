@@ -372,10 +372,13 @@ Prompt example:
 
 ### 7.2 Standard Training
 
-`standard_qsar` is the only named protocol. It applies one random 80/10/10
-split. Chemprop uses its molecular graph, LightGBM uses `rdkit_all` with 50
-Optuna/TPE trials when explicitly requested, and TabICL uses `rdkit_all`. Post-selection
-outlier analysis runs whenever it is applicable.
+`standard_qsar` runs one random, one scaffold and one cluster holdout, each
+targeting an 80/10/10 ratio. Scaffold and cluster groups stay intact. Use
+`single_random_holdout` for a smaller run with one 80/10/10 random split or when
+there are too few scaffold or cluster groups for the standard protocol.
+Chemprop uses its molecular graph. LightGBM and TabICL use `rdkit_all`.
+Optuna and post-selection outlier analysis follow the training request, with
+optimization enabled only on explicit request.
 
 Prompts:
 
@@ -391,9 +394,8 @@ Prompts:
 @qsaria Train a TabICL standard_qsar model for pEC50.
 ```
 
-For a general training request, QSARIA should use `standard_qsar`. It should
-not invent repeated holdout, scaffold, cluster, or cross-validation unless
-explicitly requested.
+For a general training request, QSARIA uses `standard_qsar`. Specify an
+explicit strategy for other ratios, repeated holdouts or cross-validation.
 
 ### 7.3 Custom Holdout
 

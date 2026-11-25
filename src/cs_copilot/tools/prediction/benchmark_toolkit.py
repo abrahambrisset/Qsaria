@@ -28,7 +28,6 @@ from .qsar_contracts import (
     MolecularGraphRepresentation,
     QsariaBenchmarkRequest,
     QsariaTrainingRequest,
-    StandardQsarValidation,
     TabICLConfig,
     TuningConfig,
     ValidationConfig,
@@ -300,16 +299,12 @@ class BenchmarkToolkit(Toolkit):
             if backend_name == "chemprop"
             else GeneratedRepresentation(name=candidate["representation_name"])
         )
-        seed = campaign_seed_policy.get("model_seed")
-        candidate_validation = validation
-        if isinstance(validation, StandardQsarValidation) and seed is not None:
-            candidate_validation = StandardQsarValidation(seed=int(seed))
         training_request = QsariaTrainingRequest(
             smiles_column=smiles_column,
             target_columns=list(target_columns),
             task_type=task_type,
             representation=representation,
-            validation=candidate_validation,
+            validation=validation,
             tuning=TuningConfig(enabled=tuning_enabled and backend_name != "tabicl"),
             compute=compute,
             backend=backend,
@@ -320,6 +315,7 @@ class BenchmarkToolkit(Toolkit):
             request=training_request,
             output_dir=str(candidate_dir),
             agent=agent,
+            seed_policy=campaign_seed_policy,
             **bundle_kwargs,
         )
         result["representation_name"] = candidate["representation_name"]
@@ -537,6 +533,7 @@ class BenchmarkToolkit(Toolkit):
                 {
                     "strategy_label": split_result.get("strategy_label"),
                     "test_count": split_result.get("test_count"),
+                    "leakage": split_result.get("leakage") or {},
                     "metrics": {
                         "r2": _safe_float(metrics.get("r2")),
                         "rmse": _safe_float(metrics.get("rmse")),
@@ -861,10 +858,11 @@ class BenchmarkToolkit(Toolkit):
             else request.compute.profile
         )
         protocol_policy = resolve_validation_strategy(
-            requested_protocol="standard_qsar",
+            requested_protocol=request.validation.kind if validation_strategy is None else None,
             validation_strategy=validation_strategy,
             training_profile=effective_training_profile,
             seed_policy_mode="generated_per_benchmark_campaign",
+            base_seed=request.validation.seed,
         )
         benchmark_protocol = protocol_policy["protocol"]
         effective_include_candidate_variants = include_candidate_variants

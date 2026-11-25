@@ -794,6 +794,7 @@ class ModelRegistryToolkit(Toolkit):
             "config_path": run_dir / "config.toml",
             "training_summary_path": _first_existing_or_default(training_summary_candidates),
             "splits_path": run_dir / "splits.json",
+            "leakage_reference_path": run_dir / "leakage_reference.csv",
             "validation_predictions_path": run_dir / "model_0" / "validation_predictions.csv",
             "test_predictions_path": _first_existing_or_default(test_prediction_candidates),
             "chemprop_training_input_csv": run_dir
@@ -831,6 +832,7 @@ class ModelRegistryToolkit(Toolkit):
             "config_path",
             "training_summary_path",
             "splits_path",
+            "leakage_reference_path",
             "validation_predictions_path",
             "test_predictions_path",
             "chemprop_training_input_csv",
@@ -1769,6 +1771,7 @@ class ModelRegistryToolkit(Toolkit):
             ),
             "config_path": summary_payload.get("config_path"),
             "splits_path": summary_payload.get("splits_path"),
+            "leakage_reference_path": summary_payload.get("leakage_reference_path"),
             "validation_predictions_path": summary_payload.get("validation_predictions_path"),
             "test_predictions_path": summary_payload.get("test_predictions_path"),
             "hyperparameter_tuning_summary_path": (
@@ -1805,6 +1808,7 @@ class ModelRegistryToolkit(Toolkit):
             "training_summary_path",
             "config_path",
             "splits_path",
+            "leakage_reference_path",
             "validation_predictions_path",
             "test_predictions_path",
             "hyperparameter_tuning_summary_path",

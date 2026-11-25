@@ -155,6 +155,11 @@ class StandardQsarValidation(StrictContract):
     seed: Optional[int] = Field(default=None, ge=0)
 
 
+class SingleRandomHoldoutValidation(StrictContract):
+    kind: Literal["single_random_holdout"] = "single_random_holdout"
+    seed: Optional[int] = Field(default=None, ge=0)
+
+
 class HoldoutValidation(StrictContract):
     kind: Literal["holdout"] = "holdout"
     split_family: SplitFamily = "random"
@@ -197,6 +202,7 @@ class FullTrainValidation(StrictContract):
 ValidationConfig = Annotated[
     Union[
         StandardQsarValidation,
+        SingleRandomHoldoutValidation,
         HoldoutValidation,
         RepeatedHoldoutValidation,
         CrossValidation,
@@ -897,7 +903,7 @@ class ResolvedTrainingPlan(StrictContract):
     representation_name: str
     feature_columns: List[str] = Field(default_factory=list)
     categorical_feature_columns: List[str] = Field(default_factory=list)
-    validation_protocol: Literal["standard_qsar", "custom"]
+    validation_protocol: Literal["standard_qsar", "single_random_holdout", "custom"]
     validation_strategy: Dict[str, Any]
     split_runs: List[Dict[str, Any]] = Field(default_factory=list)
     seed_policy: Dict[str, Any] = Field(default_factory=dict)
@@ -930,7 +936,7 @@ class ChempropHpoptWorkerJob(StrictContract):
 
 def canonical_validation_strategy(validation: ValidationConfig) -> Optional[Dict[str, Any]]:
     """Return the canonical strategy payload expected by existing policy resolvers."""
-    if isinstance(validation, StandardQsarValidation):
+    if isinstance(validation, (StandardQsarValidation, SingleRandomHoldoutValidation)):
         return None
     payload = validation.model_dump(exclude_none=True)
     payload["type"] = payload.pop("kind")

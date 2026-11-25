@@ -82,7 +82,7 @@ def test_seed_policy_helpers_tolerate_loose_agent_values():
 
 @pytest.mark.parametrize("protocol", ["fast_local", "robust_qsar", "challenging_qsar"])
 def test_removed_named_protocols_are_explicitly_invalid(protocol):
-    with pytest.raises(ValueError, match="only named protocol"):
+    with pytest.raises(ValueError, match="Unsupported validation_protocol"):
         resolve_validation_protocol(
             requested_protocol=protocol,
             training_profile="heavy_validation",

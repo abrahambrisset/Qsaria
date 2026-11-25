@@ -515,8 +515,14 @@ def test_evaluate_ensemble_appends_evaluations_and_writes_artifacts(tmp_path, mo
     model_b = tmp_path / "b.fake"
     model_a.write_text("a")
     model_b.write_text("b")
+    record_a = _record("a", "fake", model_a)
+    reference_a = tmp_path / "reference_a.csv"
+    pd.DataFrame({"smiles": ["CC"]}).to_csv(reference_a, index=False)
+    metadata_a = tmp_path / "metadata_a.json"
+    metadata_a.write_text(json.dumps({"artifacts": {"leakage_reference_path": reference_a.name}}))
+    record_a.metadata_path = str(metadata_a)
     catalog = PredictionModelCatalog(
-        records=[_record("a", "fake", model_a), _record("b", "fake2", model_b)],
+        records=[record_a, _record("b", "fake2", model_b)],
         source_path=tmp_path / "catalog.json",
     )
     catalog.save()
@@ -543,6 +549,9 @@ def test_evaluate_ensemble_appends_evaluations_and_writes_artifacts(tmp_path, mo
     assert Path(first["evaluation_summary_path"]).exists()
     assert Path(first["metrics_by_component_path"]).exists()
     assert first["ensemble_metrics"]["rmse"] == 0.0
+    assert first["leakage"]["status"] == "partial"
+    assert first["leakage"]["components"]["a"]["exact_overlap_count"] == 1
+    assert first["leakage"]["components"]["b"]["status"] == "unavailable"
     payload = json.loads(Path(created["model_path"]).read_text())
     assert len(payload["evaluations"]) == 2
     assert (

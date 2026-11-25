@@ -128,6 +128,31 @@ def test_external_evaluation_appends_metadata_and_artifacts(tmp_path):
     assert first["metrics"]["accuracy"] == 1.0
     assert Path(first["artifacts"]["plots"]["Y"]["confusion_matrix"]).exists()
     assert Path(first["artifacts"]["plots"]["Y"]["roc_curve"]).exists()
+    assert first["leakage"]["status"] == "unavailable"
+    assert first["leakage"]["exact_overlap_count"] is None
+
+
+def test_external_evaluation_uses_persisted_fit_reference(tmp_path):
+    record = _record(tmp_path)
+    metadata_path = Path(record.metadata_path)
+    metadata = json.loads(metadata_path.read_text())
+    metadata["artifacts"]["leakage_reference_path"] = "leakage_reference.csv"
+    metadata_path.write_text(json.dumps(metadata))
+    pd.DataFrame({"smiles": ["CCO"]}).to_csv(
+        metadata_path.parent / "leakage_reference.csv", index=False
+    )
+    test_csv = tmp_path / "external.csv"
+    pd.DataFrame({"SMILES": ["OCC", "CCN"], "Y": [0, 1]}).to_csv(test_csv, index=False)
+
+    evaluation = evaluate_model_on_external_dataset(
+        record=record, backend=_BinaryBackend(), test_csv=str(test_csv), smiles_column="SMILES"
+    )
+
+    assert evaluation["leakage"]["reference_scope"] == "fitted_rows"
+    assert evaluation["leakage"]["exact_overlap_count"] == 1
+    assert evaluation["reporting_handoff"]["report_facts"]["leakage"] == evaluation["leakage"]
+    report = Path(evaluation["evaluation_report_path"]).read_text()
+    assert "Exact standardized matches **1**" in report
 
 
 def test_external_evaluation_preserves_legacy_id_and_suffixes_only_on_collision(

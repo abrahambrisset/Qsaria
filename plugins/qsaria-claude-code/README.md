@@ -1,7 +1,8 @@
 # Qsaria for Claude Code
 
-Current bundle: `0.3.2`. The only named scientific protocol is
-`standard_qsar`; advanced validation is expressed with an explicit strategy.
+Current bundle: `0.3.2`. `standard_qsar` runs random, scaffold and cluster
+holdouts. `single_random_holdout` runs one random 80/10/10 split.
+Other validation is expressed with an explicit strategy.
 
 This personal plugin makes Claude Code the sole coordinator of deterministic
 Qsaria workflows. Five restricted specialists perform curation, training,

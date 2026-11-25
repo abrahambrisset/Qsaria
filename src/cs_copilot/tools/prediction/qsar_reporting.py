@@ -1154,6 +1154,11 @@ def _training_report_facts(result: Mapping[str, Any], *, metrics_status: str) ->
             "hyperparameter_optimization": _normalized_tuning_facts(result),
             "outlier_analysis": _normalized_outlier_facts(result),
             "validation_studies": _compact_fold_and_campaign_facts(result),
+            "leakage": [
+                {"split": run.get("strategy_label"), "audits": run["leakage"]}
+                for run in result.get("split_results") or [result]
+                if run.get("leakage")
+            ],
             "evaluation": _evaluation_scope(result, metrics_status=metrics_status),
             "final_variants": _normalized_outlier_facts(result).get("final_variants") or [],
             "governance": {
@@ -1355,6 +1360,7 @@ def build_external_evaluation_reporting_handoff(result: Mapping[str, Any]) -> Di
                 "statement": "This is an append-only labelled external evaluation.",
             },
             "applicability_domain": _normalized_ad_facts(ad),
+            "leakage": result.get("leakage") or {},
             "governance": {
                 "model_id": result.get("model_id"),
                 "status": result.get("status"),

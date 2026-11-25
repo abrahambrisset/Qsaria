@@ -43,6 +43,7 @@ from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
+    materialize_standard_split_runs,
 )
 from .qsar_training_policy import (
     assess_protocol_results,
@@ -527,7 +528,7 @@ class TabICLToolkit(Toolkit):
                     "classification",
                     "multiclass_classification",
                 ],
-                "supported_validation_protocols": ["standard_qsar"],
+                "supported_validation_protocols": ["standard_qsar", "single_random_holdout"],
                 "supported_split_families": ["random", "scaffold", "cluster_kmeans"],
                 "default_tabular_feature_policy": {
                     "automatic_representations": list(AUTOMATIC_TABULAR_REPRESENTATION_NAMES),
@@ -676,6 +677,7 @@ class TabICLToolkit(Toolkit):
         active_marker_path: Optional[Path] = None,
         worker_pid: Optional[int] = None,
         worker_status: Optional[str] = None,
+        smiles_column: str = "smiles",
     ) -> Dict[str, Any]:
         root_output_path = Path(resolved_output_dir)
         root_output_path.mkdir(parents=True, exist_ok=True)
@@ -715,7 +717,7 @@ class TabICLToolkit(Toolkit):
         ]
         task = PredictionTaskSpec(
             task_type=task_type,
-            smiles_columns=["smiles"],
+            smiles_columns=[smiles_column],
             target_columns=list(target_columns),
         )
         target_column = target_columns[0]
@@ -725,6 +727,9 @@ class TabICLToolkit(Toolkit):
             split_source_df,
             target_column=target_column,
             task_type=task_type,
+        )
+        split_runs = materialize_standard_split_runs(
+            protocol_policy=protocol_policy, df=split_source_df, task=task
         )
         is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
@@ -761,7 +766,7 @@ class TabICLToolkit(Toolkit):
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
         try:
-            for run_index, split_run in enumerate(protocol_policy["split_runs"], start=1):
+            for run_index, split_run in enumerate(split_runs, start=1):
                 label = split_run["label"]
                 run_output_dir = (
                     root_output_path / f"{safe_slug(label)}_split"
@@ -784,7 +789,7 @@ class TabICLToolkit(Toolkit):
                             split_type=split_run["backend_split_type"],
                             split_sizes=split_sizes_for_run,
                             random_state=int(split_run["seed"]),
-                            smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                            smiles_column=smiles_column,
                             feature_columns=feature_columns,
                         )
                 run_args = {
@@ -1201,6 +1206,7 @@ class TabICLToolkit(Toolkit):
         outlier_analysis: Optional[Dict[str, Any]] = None,
         resolved_parameters: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
+        smiles_column: str = "smiles",
     ) -> Dict[str, Any]:
         """Train a TabICLv2 model with shared QSAR validation protocols."""
         normalized_target_columns = (
@@ -1287,7 +1293,7 @@ class TabICLToolkit(Toolkit):
                 activity_cliffs = prepare_activity_cliff_context(
                     train_csv=train_csv,
                     output_dir=resolved_output_dir,
-                    smiles_column="smiles",
+                    smiles_column=smiles_column,
                     target_column=target_column,
                     **activity_args,
                 )
@@ -1356,7 +1362,7 @@ class TabICLToolkit(Toolkit):
             train_csv=train_csv,
             output_dir=resolved_output_dir,
             task_type=task_type,
-            smiles_columns=["smiles"],
+            smiles_columns=[smiles_column],
             target_columns=list(normalized_target_columns),
             resolved_parameters={
                 **{
@@ -1398,7 +1404,7 @@ class TabICLToolkit(Toolkit):
 
         task = PredictionTaskSpec(
             task_type=task_type,
-            smiles_columns=["smiles"],
+            smiles_columns=[smiles_column],
             target_columns=list(normalized_target_columns),
         )
         outlier_study: Dict[str, Any] = {

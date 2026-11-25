@@ -27,6 +27,7 @@ from .backend_capabilities import (
     enrich_backend_environment,
 )
 from .chemprop_backend import ChempropBackend
+from .leakage import audit_record_overlap
 from .lightgbm_backend import LightGBMBackend
 from .qsar_training_policy import safe_slug
 from .tabicl_backend import TabICLBackend
@@ -216,6 +217,26 @@ class EnsembleBackend(PredictionBackend):
                 or ensemble_record.task.target_columns,
             ),
         )
+
+    def audit_evaluation_overlap(
+        self, record: PredictionModelRecord, evaluation_smiles: list[Any]
+    ) -> Dict[str, Any]:
+        """Audit each component against its own fitted reference."""
+        payload = self._load_payload(Path(record.model_path).expanduser())
+        components = {
+            str(component["model_id"]): audit_record_overlap(
+                self._component_record(component, record), evaluation_smiles
+            )
+            for component in payload.get("components") or []
+        }
+        statuses = {report["status"] for report in components.values()}
+        if statuses == {"complete"}:
+            status = "complete"
+        elif statuses & {"complete", "partial"}:
+            status = "partial"
+        else:
+            status = "unavailable"
+        return {"status": status, "components": components}
 
     def _prepare_component_input_csv(
         self,

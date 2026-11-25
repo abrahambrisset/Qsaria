@@ -12,12 +12,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from rdkit import Chem
+from rdkit.Chem import Descriptors, Lipinski
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from sklearn.cluster import KMeans
 from sklearn.model_selection import RepeatedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from .backend import InvalidPredictionInputError
+from .backend import InvalidPredictionInputError, PredictionTaskSpec
+from .training_orchestration import is_classification_task, label_key, resolve_class_labels
 
 
 def _murcko_scaffold_smiles(smiles: str) -> str:
@@ -116,6 +118,7 @@ def _group_balanced_split_payload(
     split_type: str,
     split_sizes: List[float],
     random_state: int,
+    preserve_groups: bool = False,
 ) -> List[Dict[str, Any]]:
     n_rows = len(group_labels)
     counts = _target_counts(n_rows, split_sizes)
@@ -130,13 +133,25 @@ def _group_balanced_split_payload(
     group_items.sort(key=lambda item: len(item[1]), reverse=True)
 
     split_names = tuple(counts)
+    if preserve_groups and len(group_items) < len(split_names):
+        family = "scaffold" if split_type == "scaffold_balanced" else "cluster"
+        raise InvalidPredictionInputError(
+            f"Standard QSAR needs at least {len(split_names)} distinct {family} groups for "
+            f"a grouped holdout, but found {len(group_items)}. Use `single_random_holdout` "
+            "for an explicit random-only evaluation."
+        )
     assigned = {split_name: [] for split_name in split_names}
     current = dict.fromkeys(split_names, 0)
 
-    for _, indices in group_items:
+    for group_index, (_, indices) in enumerate(group_items):
+        candidates = split_names
+        if preserve_groups:
+            empty_splits = tuple(name for name in split_names if not assigned[name])
+            if len(group_items) - group_index == len(empty_splits):
+                candidates = empty_splits
         best_split = None
         best_score = None
-        for split_name in split_names:
+        for split_name in candidates:
             remaining = counts[split_name] - current[split_name]
             projected = remaining - len(indices)
             overflow_penalty = 0 if projected >= 0 else abs(projected) * 10_000
@@ -154,7 +169,7 @@ def _group_balanced_split_payload(
     if remainder:
         assigned["train"].extend(remainder)
 
-    # ponytail: grouped toy datasets can starve a target split; move one row rather than return invalid splits.
+    # Preserve the historical empty-partition fallback for explicit custom strategies.
     for split_name in split_names:
         if not assigned[split_name]:
             donor = max(split_names, key=lambda name: len(assigned[name]))
@@ -194,6 +209,91 @@ def _feature_cluster_labels(
     return [f"cluster_{label}" for label in labels.tolist()]
 
 
+def molecular_cluster_features(smiles: pd.Series) -> pd.DataFrame:
+    """Build a fixed molecular feature space for comparable cluster holdouts."""
+    descriptors = (
+        Descriptors.MolWt,
+        Descriptors.MolLogP,
+        Descriptors.TPSA,
+        Lipinski.NumHDonors,
+        Lipinski.NumHAcceptors,
+        Lipinski.RingCount,
+        Lipinski.NumRotatableBonds,
+        Descriptors.FractionCSP3,
+    )
+    rows = []
+    for value in smiles:
+        molecule = Chem.MolFromSmiles(str(value)) if pd.notna(value) else None
+        rows.append(
+            [float(descriptor(molecule)) for descriptor in descriptors]
+            if molecule is not None
+            else [0.0] * len(descriptors)
+        )
+    columns = [f"__qsaria_cluster_descriptor_{index}" for index in range(len(descriptors))]
+    return pd.DataFrame(rows, columns=columns, index=smiles.index)
+
+
+def materialize_standard_split_runs(
+    *,
+    protocol_policy: Dict[str, Any],
+    df: pd.DataFrame,
+    task: PredictionTaskSpec,
+) -> List[Dict[str, Any]]:
+    """Build the default holdouts up front, using molecular groups in every backend."""
+    split_runs = list(protocol_policy["split_runs"])
+    if protocol_policy["protocol"] != "standard_qsar":
+        return split_runs
+
+    smiles_column = task.smiles_columns[0]
+    expected_classes = {}
+    if is_classification_task(task.task_type):
+        for column in task.target_columns:
+            if column not in df.columns:
+                raise InvalidPredictionInputError(f"Missing target column: {column}")
+            expected_classes[column] = {
+                label_key(value) for value in resolve_class_labels(df[column])
+            }
+            if len(expected_classes[column]) < 2:
+                raise InvalidPredictionInputError(
+                    f"Classification target `{column}` requires at least two classes."
+                )
+
+    materialized = []
+    for planned_run in split_runs:
+        run = dict(planned_run)
+        split_type = run["backend_split_type"]
+        if run.get("split_payload") is None:
+            split_frame = df
+            feature_columns = None
+            if split_type == "kmeans":
+                if smiles_column not in df.columns:
+                    raise InvalidPredictionInputError(
+                        "Cluster holdout requires a valid SMILES column."
+                    )
+                split_frame = molecular_cluster_features(df[smiles_column])
+                feature_columns = list(split_frame.columns)
+            run["split_payload"] = build_qsar_split_payload(
+                df=split_frame,
+                split_type=split_type,
+                split_sizes=run["split_sizes"],
+                random_state=run["seed"],
+                smiles_column=smiles_column,
+                feature_columns=feature_columns,
+                preserve_groups=True,
+            )
+        for column, labels in expected_classes.items():
+            training_rows = df[column].iloc[run["split_payload"][0]["train"]]
+            train_labels = {label_key(value) for value in resolve_class_labels(training_rows)}
+            if missing := labels - train_labels:
+                raise InvalidPredictionInputError(
+                    f"Standard QSAR {split_type} training partition is missing target classes "
+                    f"for `{column}`: {', '.join(sorted(missing))}. Provide more labeled compounds "
+                    "or explicitly choose another validation strategy."
+                )
+        materialized.append(run)
+    return materialized
+
+
 def build_qsar_split_payload(
     *,
     df: pd.DataFrame,
@@ -202,6 +302,7 @@ def build_qsar_split_payload(
     random_state: int,
     smiles_column: Optional[str] = None,
     feature_columns: Optional[List[str]] = None,
+    preserve_groups: bool = False,
 ) -> List[Dict[str, Any]]:
     n_rows = len(df)
     if n_rows < 10:
@@ -253,6 +354,7 @@ def build_qsar_split_payload(
             split_type=split_type,
             split_sizes=split_sizes,
             random_state=random_state,
+            preserve_groups=preserve_groups,
         )
 
     if split_type == "kmeans":
@@ -266,6 +368,7 @@ def build_qsar_split_payload(
             split_type=split_type,
             split_sizes=split_sizes,
             random_state=random_state,
+            preserve_groups=preserve_groups,
         )
 
     raise InvalidPredictionInputError(

@@ -40,7 +40,7 @@ placed under `request.validation`.
 An unqualified standard LightGBM workflow means:
 
 - representation `{"kind":"generated","name":"rdkit_all"}`;
-- validation `{"kind":"standard_qsar"}`, the toolkit's fixed random 80/10/10 split;
+- validation `{"kind":"standard_qsar"}` for random, scaffold and cluster holdouts, or `{"kind":"single_random_holdout"}` if the user requests one random 80/10/10 split;
 - hyperparameter tuning disabled by default. Use `tuning.enabled=true` when explicitly requested;
 - eligible outlier analysis;
 - baseline and retained outlier-filtered evidence kept distinct.

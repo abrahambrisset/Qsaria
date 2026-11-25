@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         result = toolkit._run_protocol_training(
             train_csv=run_request.train_csv,
             task_type=run_request.task_type,
+            smiles_column=(run_request.smiles_columns or ["smiles"])[0],
             resolved_output_dir=str(Path(run_request.output_dir).expanduser().resolve()),
             target_columns=list(run_request.target_columns),
             feature_columns=run_request.feature_columns,

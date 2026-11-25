@@ -33,7 +33,6 @@ from .qsar_contracts import (
     QsariaTrainingRequest,
     ResolvedTrainingPlan,
     RuntimePaths,
-    StandardQsarValidation,
     TabICLTrainingRequest,
     canonical_validation_strategy,
 )
@@ -310,9 +309,12 @@ def _compact_split_result_for_response(split_result: Dict[str, Any]) -> Dict[str
             "validation_predictions_path",
             "test_predictions_path",
             "splits_path",
+            "leakage",
+            "leakage_reference_path",
             "chemprop_training_input_csv",
             "chemprop_splits_file",
             "chemprop_input_manifest_path",
+            "hyperparameter_tuning_summary_path",
             "output_dir",
             "source_train_count",
             "effective_train_count",
@@ -1357,6 +1359,7 @@ class QSARTrainingToolkit(Toolkit):
             "training_summary_path": summary_path,
             "config_path": result.get("config_path"),
             "splits_path": result.get("splits_path"),
+            "leakage_reference_path": result.get("leakage_reference_path"),
             "validation_predictions_path": result.get("validation_predictions_path"),
             "test_predictions_path": result.get("test_predictions_path"),
             "hyperparameter_tuning_summary_path": result.get("hyperparameter_tuning_summary_path")
@@ -1585,6 +1588,8 @@ class QSARTrainingToolkit(Toolkit):
         output_dir: str,
         bundle_dir: Optional[str] = None,
         agent: Optional[Agent] = None,
+        *,
+        seed_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Train a QSAR model from the strict public training contract."""
         if isinstance(request, dict):
@@ -1594,8 +1599,10 @@ class QSARTrainingToolkit(Toolkit):
         task_type = request.task_type
         smiles_column = request.smiles_column
         normalized_target_columns = list(request.target_columns)
-        validation_protocol = "standard_qsar"
         requested_validation_strategy = canonical_validation_strategy(request.validation)
+        validation_protocol = (
+            request.validation.kind if requested_validation_strategy is None else "standard_qsar"
+        )
         representation_name: Optional[str]
         normalized_feature_columns: Optional[List[str]]
         normalized_categorical_feature_columns: Optional[List[str]]
@@ -1658,11 +1665,10 @@ class QSARTrainingToolkit(Toolkit):
             1 if compute_profile == "local_light" else None
         )
         requested_resolved_parameters["validation_protocol"] = validation_protocol
-        if (
-            isinstance(request.validation, StandardQsarValidation)
-            and request.validation.seed is not None
-        ):
+        if requested_validation_strategy is None and request.validation.seed is not None:
             requested_resolved_parameters["random_state"] = request.validation.seed
+        if seed_policy is not None:
+            requested_resolved_parameters["seed_policy"] = seed_policy
         bundle_path = (
             str(
                 Path(bundle_dir).expanduser().resolve()
@@ -1706,6 +1712,7 @@ class QSARTrainingToolkit(Toolkit):
             result["candidate_train_csv"] = train_csv
         elif normalized_backend in {"lightgbm", "tabicl"}:
             working_train_csv = train_csv
+            tabular_smiles_column = smiles_column
             resolved_representation = representation_name
             if not normalized_feature_columns:
                 resolved_representation = (
@@ -1726,6 +1733,7 @@ class QSARTrainingToolkit(Toolkit):
                     or requested_resolved_parameters.get("n_jobs"),
                 )
                 working_train_csv = prepared["train_csv"]
+                tabular_smiles_column = "smiles"
                 normalized_feature_columns = prepared["feature_columns"]
                 feature_preparation = prepared["feature_preparation"]
             else:
@@ -1741,6 +1749,8 @@ class QSARTrainingToolkit(Toolkit):
 
             if normalized_backend == "lightgbm":
                 lightgbm_kwargs = {"bundle_path": bundle_path} if bundle_path else {}
+                if tabular_smiles_column != "smiles":
+                    lightgbm_kwargs["smiles_column"] = tabular_smiles_column
                 result = self.lightgbm_toolkit.train_lightgbm_model(
                     train_csv=working_train_csv,
                     task_type=task_type,
@@ -1767,6 +1777,11 @@ class QSARTrainingToolkit(Toolkit):
                     **lightgbm_kwargs,
                 )
             else:
+                tabicl_kwargs = (
+                    {"smiles_column": tabular_smiles_column}
+                    if tabular_smiles_column != "smiles"
+                    else {}
+                )
                 result = self.tabicl_toolkit.train_tabicl_model(
                     train_csv=working_train_csv,
                     task_type=task_type,
@@ -1789,6 +1804,7 @@ class QSARTrainingToolkit(Toolkit):
                     hyperparameter_tuning=requested_hyperparameter_tuning,
                     outlier_analysis=requested_outlier_analysis,
                     agent=agent,
+                    **tabicl_kwargs,
                 )
             result["backend_name"] = normalized_backend
             result["representation_name"] = resolved_representation
@@ -1808,10 +1824,14 @@ class QSARTrainingToolkit(Toolkit):
             feature_columns=list(result.get("feature_columns") or normalized_feature_columns or []),
             categorical_feature_columns=list(normalized_categorical_feature_columns or []),
             validation_protocol=(
-                "standard_qsar" if requested_validation_strategy is None else "custom"
+                validation_protocol if requested_validation_strategy is None else "custom"
             ),
             validation_strategy=requested_validation_strategy or {},
-            split_runs=list(result.get("split_runs") or []),
+            split_runs=list(
+                result.get("split_runs")
+                or (result.get("seed_policy") or {}).get("split_runs")
+                or []
+            ),
             seed_policy=dict(result.get("seed_policy") or {}),
             compute_profile=compute_profile,
             tuning=request.tuning,

@@ -114,6 +114,41 @@ def test_benchmark_public_contract_has_no_benchmark_mode():
     assert "extra_args" not in serialized
 
 
+def test_benchmark_candidate_reuses_campaign_seed_policy(tmp_path):
+    calls = []
+
+    class TrainingFacade:
+        def train_qsar_model(self, **kwargs):
+            calls.append(kwargs)
+            return {"train_csv": kwargs["train_csv"]}
+
+    campaign_seed_policy = {
+        "mode": "generated_per_benchmark_campaign",
+        "model_seed": 42,
+        "split_runs": [{"label": "random_seed_71", "seed": 71, "backend_split_type": "random"}],
+    }
+    toolkit = BenchmarkToolkit(training_toolkit=TrainingFacade())
+    toolkit._train_candidate(
+        candidate={
+            "candidate_id": "lightgbm_rdkit_all",
+            "backend_name": "lightgbm",
+            "representation_name": "rdkit_all",
+        },
+        train_csv=str(tmp_path / "curated.csv"),
+        task_type="regression",
+        smiles_column="smiles",
+        target_columns=["Y"],
+        candidate_dir=tmp_path / "candidate",
+        campaign_seed_policy=campaign_seed_policy,
+        validation=StandardQsarValidation(seed=71),
+        compute=ComputeConfig(profile="local_light"),
+        agent=_fake_agent(),
+    )
+
+    assert calls[0]["seed_policy"] == campaign_seed_policy
+    assert calls[0]["request"].validation.seed == 71
+
+
 @pytest.mark.parametrize("tuning_enabled", [False, True])
 def test_benchmark_propagates_one_explicit_strategy_to_every_candidate(tmp_path, tuning_enabled):
     calls = []

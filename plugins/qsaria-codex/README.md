@@ -1,8 +1,8 @@
 # Qsaria for Codex
 
-Current bundle: `0.3.1`. The only named scientific protocol is
-`standard_qsar`; advanced holdout, repeated holdout, cross-validation,
-scaffold, cluster, and full-train workflows use explicit validation strategies.
+Current bundle: `0.3.1`. `standard_qsar` runs random, scaffold and cluster holdouts.
+`single_random_holdout` runs one random 80/10/10 split. Other holdout,
+cross-validation and full-train workflows use explicit validation strategies.
 
 This repo-local plugin lets Codex coordinate Qsaria without launching an
 additional LLM inside the MCP server. The server exposes deterministic Qsaria

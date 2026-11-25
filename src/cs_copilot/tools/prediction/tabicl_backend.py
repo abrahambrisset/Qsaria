@@ -33,6 +33,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
+from .leakage import audit_training_split
 from .qsar_contracts import TabICLRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import project_now
@@ -469,7 +470,8 @@ class TabICLBackend(PredictionBackend):
             working[target_column] = encoded_target
         else:
             working[target_column] = pd.to_numeric(working[target_column], errors="coerce")
-        working = working.dropna(subset=[target_column]).reset_index(drop=True)
+        usable_target = working[target_column].notna()
+        working = working.loc[usable_target].reset_index(drop=True)
         if len(working) < 10:
             raise InvalidPredictionInputError(
                 "TabICL requires at least 10 rows after target cleanup."
@@ -794,7 +796,14 @@ class TabICLBackend(PredictionBackend):
                 metrics_payload["test"] = test_metrics
         else:
             test_predictions_path = None
+        leakage = audit_training_split(
+            dataset.loc[usable_target],
+            (task.smiles_columns or ["smiles"])[0],
+            split_map,
+            output_path,
+        )
         summary = {
+            **leakage,
             "backend_name": self.backend_name,
             "train_csv": train_csv,
             "task_type": task.task_type,
@@ -856,6 +865,7 @@ class TabICLBackend(PredictionBackend):
         canonical_summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 
         result = {
+            **leakage,
             "backend_name": self.backend_name,
             "model_path": str(model_artifact_path),
             "output_dir": str(output_path),

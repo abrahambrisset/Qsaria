@@ -73,7 +73,10 @@ or candidate.
 
 ## Training Contracts
 
-- `standard_qsar` is the only named protocol: one random 80/10/10 split.
+- `standard_qsar` runs random, scaffold and cluster holdouts with a target ratio
+  of 80/10/10. Each grouped holdout needs at least three groups and keeps each
+  group intact. Every classification fit must retain all classes. Use
+  `single_random_holdout` for one explicit random 80/10/10 split.
 - For LightGBM, the standard contract uses `rdkit_all` and eligible post-selection
   outlier analysis. Set `tuning.enabled=true` to request Optuna/TPE and optionally
   set `tuning.n_trials` to choose the trial budget.
@@ -83,6 +86,15 @@ or candidate.
   compute profiles. They control resources and never select validation.
 - Benchmark is a workflow kind, not a protocol. It defaults to
   `standard_qsar` and propagates one explicit strategy to every candidate.
+
+The molecular overlap audit compares each labelled holdout with its fit rows.
+It counts exact standardized identities and nonidentical molecules with a
+radius-two count-Morgan Tanimoto similarity of at least 0.95 or 0.99. It also
+reports the median and maximum nearest-neighbour similarity and how many rows
+could be audited. The registry keeps the fit-structure reference so external
+evaluations can repeat the audit, including for each ensemble component. Older
+models may have only a source dataset that includes holdout rows. The report
+identifies that broader reference or marks the audit unavailable.
 
 ## Backend Construction
 

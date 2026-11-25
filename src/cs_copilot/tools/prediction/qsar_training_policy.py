@@ -82,13 +82,15 @@ def _unique_replay_seeds(count: int, base_seed: int) -> List[int]:
     return seeds
 
 
-def _standard_split_templates() -> List[Dict[str, Any]]:
+def _standard_split_templates(*, single_random: bool = False) -> List[Dict[str, Any]]:
+    split_types = ("random",) if single_random else ("random", "scaffold_balanced", "kmeans")
     return [
         {
-            "backend_split_type": "random",
-            "primary": True,
+            "backend_split_type": split_type,
+            "primary": split_type == "random",
             "split_sizes": DEFAULT_QSAR_SPLIT_SIZES,
         }
+        for split_type in split_types
     ]
 
 
@@ -170,7 +172,7 @@ def resolve_seed_policy(
         "random_split_seeds": random_split_seeds,
         "scaffold_seed": scaffold_seed,
         "cluster_seed": cluster_seed,
-        "shared_across_candidates": resolved_mode == "generated_per_benchmark_campaign",
+        "shared_across_candidates": mode == "generated_per_benchmark_campaign",
         "reproducibility_note": (
             "Seeds were generated once for this benchmark campaign and shared across all candidates."
             if resolved_mode == "generated_per_benchmark_campaign"
@@ -181,7 +183,7 @@ def resolve_seed_policy(
             )
         ),
     }
-    if resolved_mode == "generated_per_benchmark_campaign":
+    if mode == "generated_per_benchmark_campaign":
         policy["campaign_seed"] = campaign_seed or seeds[0]
     policy["reporting_text"] = seed_policy_reporting_text(policy)
     policy["replay_supported"] = True
@@ -435,23 +437,29 @@ def resolve_validation_protocol(
     if not protocol:
         protocol = "standard_qsar"
 
-    if protocol == "standard_qsar":
+    reasons = {
+        "standard_qsar": "Standard QSAR default: one random, one scaffold, and one cluster holdout with 80/10/10 target proportions.",
+        "single_random_holdout": "Single random 80/10/10 train/validation/test holdout.",
+    }
+    if protocol in reasons:
         resolved_seed_policy = resolve_seed_policy(
-            split_templates=_standard_split_templates(),
+            split_templates=_standard_split_templates(
+                single_random=protocol == "single_random_holdout"
+            ),
             mode=seed_policy_mode,
             seed_policy=seed_policy,
             base_seed=base_seed,
         )
         return {
-            "protocol": "standard_qsar",
-            "reason": "Standard QSAR default: one fixed random 80/10/10 train/validation/test split.",
+            "protocol": protocol,
+            "reason": reasons[protocol],
             "split_runs": resolved_seed_policy["split_runs"],
             "seed_policy": resolved_seed_policy,
         }
 
     raise ValueError(
         f"Unsupported validation_protocol `{requested_protocol}`. "
-        "The only named protocol is `standard_qsar`; use validation_strategy "
+        "Named protocols are `standard_qsar` and `single_random_holdout`. Use validation_strategy "
         "for holdout, repeated holdout, cross-validation, scaffold, cluster, or full-train workflows."
     )
 

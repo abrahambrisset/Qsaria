@@ -127,6 +127,44 @@ def test_lightgbm_defaults_to_cpu_even_when_gpu_is_detected(monkeypatch):
     assert backend._resolve_device_type({"use_gpu": True})[0] == "gpu"
 
 
+def test_lightgbm_leakage_reference_uses_rows_kept_for_the_fit(tmp_path, monkeypatch):
+    backend = LightGBMBackend()
+    monkeypatch.setattr(backend, "_ensure_available", lambda: None)
+    monkeypatch.setattr(backend, "_import_lightgbm", _fake_classifier_module)
+    train_csv = tmp_path / "labelled.csv"
+    pd.DataFrame(
+        {
+            "smiles": ["CCO", "CCC", "CCN", "CCCl"] * 2 + ["OCC", "CCC", "CCO", "CCCC"],
+            "x": [0.0, 1.0] * 6,
+            "Y": [0, 1] * 6,
+        }
+    ).to_csv(train_csv, index=False)
+
+    result = backend.train_model(
+        build_backend_run_request(
+            backend="lightgbm",
+            train_csv=str(train_csv),
+            output_dir=str(tmp_path / "model"),
+            task_type="classification",
+            smiles_columns=["smiles"],
+            target_columns=["Y"],
+            resolved_parameters={
+                "feature_columns": ["x"],
+                "split_payload": [{"train": list(range(8)), "test": list(range(8, 12))}],
+                "excluded_train_indices": [0, 4],
+                "n_estimators": 5,
+                "early_stopping_rounds": 0,
+            },
+        )
+    )
+
+    assert result["leakage"]["test"]["exact_overlap_count"] == 1
+    assert (
+        pd.read_csv(result["leakage_reference_path"])["smiles"].tolist()
+        == ["CCC", "CCN", "CCCl"] * 2
+    )
+
+
 def test_lightgbm_binary_classification_roundtrip_with_text_labels(tmp_path, monkeypatch):
     backend = LightGBMBackend()
     monkeypatch.setattr(backend, "_ensure_available", lambda: None)

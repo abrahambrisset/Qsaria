@@ -53,6 +53,7 @@ from .qsar_splitters import (
     build_full_train_split_payload,
     build_qsar_split_payload,
     build_repeated_kfold_split_payloads,
+    materialize_standard_split_runs,
 )
 from .qsar_training_policy import (
     assess_protocol_results,
@@ -78,6 +79,7 @@ from .tabular_representations import (
 )
 from .training_orchestration import (
     apply_training_profile,
+    audit_selection_validation,
     build_applicability_domain_for_training,
     build_cross_validation_artifacts,
     build_training_plots_if_possible,
@@ -1306,7 +1308,7 @@ class LightGBMToolkit(Toolkit):
             split_type=split_run["backend_split_type"],
             split_sizes=split_sizes,
             random_state=int(split_run["seed"]),
-            smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+            smiles_column=task.smiles_columns[0],
             feature_columns=effective_feature_columns,
         )
         split_indices = split_payload[0]
@@ -1317,6 +1319,9 @@ class LightGBMToolkit(Toolkit):
             raise HyperparameterTuningError(
                 "Hyperparameter tuning requires non-empty train and validation splits."
             )
+        selection_leakage = audit_selection_validation(
+            split_source_df, task.smiles_columns[0], split_indices
+        )
 
         model_parameter_names = {
             "n_estimators",
@@ -1591,6 +1596,7 @@ class LightGBMToolkit(Toolkit):
                 "backend_split_type": split_run["backend_split_type"],
                 "seed": split_run["seed"],
                 "metrics": {"validation": selection_metrics},
+                "leakage": {"validation": selection_leakage},
                 "selection_validation": {
                     "metrics": best_trial.get("metrics") or {},
                     "diagnostics": best_trial.get("diagnostics") or {},
@@ -1648,6 +1654,7 @@ class LightGBMToolkit(Toolkit):
                 "split_payload": final_split_payload,
             }
         )
+        final_run.setdefault("leakage", {})["validation"] = selection_leakage
         outlier_study: Dict[str, Any] = {
             "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
             "config": outlier_config.as_dict(),
@@ -1817,6 +1824,20 @@ class LightGBMToolkit(Toolkit):
         write_training_summary(Path(result["summary_path"]), result)
         return result
 
+    @staticmethod
+    def _holdout_strategy_labels(split_run: Dict[str, Any]) -> tuple[str, str]:
+        split_type = split_run["backend_split_type"]
+        label = split_run["label"]
+        if split_type == "cross_validation":
+            return label, "cross_validation"
+        if split_type == "scaffold_balanced":
+            return "scaffold", "scaffold"
+        if split_type == "kmeans":
+            return "cluster_kmeans", "cluster_kmeans"
+        if label.startswith("random_seed_"):
+            return label, "random"
+        return "random", "random"
+
     def train_lightgbm_model(
         self,
         train_csv: str,
@@ -1845,6 +1866,7 @@ class LightGBMToolkit(Toolkit):
         resolved_parameters: Optional[Dict[str, Any]] = None,
         agent: Optional[Agent] = None,
         bundle_path: Optional[str] = None,
+        smiles_column: str = "smiles",
     ) -> Dict[str, Any]:
         """Train a LightGBM regressor with QSAR validation protocols."""
         normalized_target_columns = (
@@ -1932,7 +1954,7 @@ class LightGBMToolkit(Toolkit):
                 activity_cliffs = prepare_activity_cliff_context(
                     train_csv=train_csv,
                     output_dir=resolved_output_dir,
-                    smiles_column="smiles",
+                    smiles_column=smiles_column,
                     target_column=target_column,
                     **activity_args,
                 )
@@ -1969,6 +1991,16 @@ class LightGBMToolkit(Toolkit):
         training_policy["resolved_parameters"]["random_state"] = protocol_policy["seed_policy"][
             "model_seed"
         ]
+        task = PredictionTaskSpec(
+            task_type=task_type,
+            smiles_columns=[smiles_column],
+            target_columns=list(normalized_target_columns),
+        )
+        with S3.open(train_csv, "r") as fh:
+            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
+        split_runs = materialize_standard_split_runs(
+            protocol_policy=protocol_policy, df=split_source_df, task=task
+        )
         trained_at = project_now()
         active_marker_path = root_output_path / ".training_in_progress"
         prediction_state = get_prediction_state(agent) if agent is not None else None
@@ -2000,13 +2032,6 @@ class LightGBMToolkit(Toolkit):
             prediction_state["active_training_run"] = dict(active_run_record)
         write_active_training_marker(active_marker_path, active_run_record)
 
-        task = PredictionTaskSpec(
-            task_type=task_type,
-            smiles_columns=["smiles"],
-            target_columns=list(normalized_target_columns),
-        )
-        with S3.open(train_csv, "r") as fh:
-            split_source_df = strip_unnamed_columns(pd.read_csv(fh))
         is_cv_protocol = protocol_policy.get("validation_strategy_type") == "cross_validation"
         cv_split_payloads: Dict[str, List[Dict[str, Any]]] = {}
         if is_cv_protocol:
@@ -2020,7 +2045,6 @@ class LightGBMToolkit(Toolkit):
                 ),
                 outer_test_size=cv_strategy.get("outer_test_size"),
             )
-        split_runs = list(protocol_policy.get("split_runs") or [])
         single_holdout = (
             len(split_runs) == 1
             and not is_cv_protocol
@@ -2075,9 +2099,7 @@ class LightGBMToolkit(Toolkit):
                                 or normalized_split_sizes
                                 or [],
                                 random_state=int(split_run["seed"]),
-                                smiles_column=(
-                                    "smiles" if "smiles" in split_source_df.columns else None
-                                ),
+                                smiles_column=smiles_column,
                                 feature_columns=list(normalized_feature_columns or []),
                             )
                         split_label = str(split_run.get("label") or f"split_{run_index}")
@@ -2113,11 +2135,16 @@ class LightGBMToolkit(Toolkit):
                             ),
                             progress_callback=publish_active_progress,
                         )
+                        strategy, strategy_family = self._holdout_strategy_labels(split_run)
                         tuned_split_result.update(
                             {
+                                "strategy": strategy,
                                 "strategy_label": split_label,
                                 "strategy_family": (
-                                    "cross_validation" if is_cv_protocol else "repeated_holdout"
+                                    strategy_family
+                                    if protocol_policy["protocol"] == "standard_qsar"
+                                    or is_cv_protocol
+                                    else "repeated_holdout"
                                 ),
                                 "repeat_index": split_run.get("repeat_index"),
                                 "fold_index": split_run.get("fold_index"),
@@ -2161,6 +2188,8 @@ class LightGBMToolkit(Toolkit):
                                 base_variant_id,
                             ]
                             variant_id = "_".join(part for part in identity_parts if part)
+                            if repeat_index is None and fold_index is None:
+                                variant_id = f"{split_label}_{variant_id}"
                         else:
                             variant_id = base_variant_id
                         variant.update(
@@ -2214,7 +2243,11 @@ class LightGBMToolkit(Toolkit):
                         "validation_strategy": protocol_policy.get("validation_strategy"),
                         "validation_protocol": protocol_policy["protocol"],
                         "catalog_model_policy": "outlier_variants_no_test_winner",
-                        "tuning_scope": "one_study_per_validation_fold",
+                        "tuning_scope": (
+                            "one_study_per_holdout"
+                            if protocol_policy["protocol"] == "standard_qsar"
+                            else "one_study_per_validation_fold"
+                        ),
                         "test_selection_policy": "no_test_metric_selects_a_candidate",
                         "summary_path": str(root_output_path / "cs_copilot_training_summary.json"),
                         "canonical_summary_path": str(
@@ -2222,6 +2255,8 @@ class LightGBMToolkit(Toolkit):
                         ),
                     }
                 )
+                if protocol_policy["protocol"] == "standard_qsar":
+                    composite["validation_assessment"] = assess_protocol_results(tuned_splits)
                 composite["outlier_analysis"] = {
                     "enabled": bool(outlier_config.enabled and outlier_skip_reason is None),
                     "status": "completed" if all_variants else "skipped",
@@ -2282,7 +2317,7 @@ class LightGBMToolkit(Toolkit):
         multi_run_protocol = len(protocol_policy["split_runs"]) > 1
 
         try:
-            for run_index, split_run in enumerate(protocol_policy["split_runs"], start=1):
+            for run_index, split_run in enumerate(split_runs, start=1):
                 label = split_run["label"]
                 run_output_dir = (
                     root_output_path / f"{safe_slug(label)}_split"
@@ -2305,7 +2340,7 @@ class LightGBMToolkit(Toolkit):
                             split_type=split_run["backend_split_type"],
                             split_sizes=split_sizes_for_run,
                             random_state=int(split_run["seed"]),
-                            smiles_column="smiles" if "smiles" in split_source_df.columns else None,
+                            smiles_column=smiles_column,
                             feature_columns=normalized_feature_columns,
                         )
                 run_args = {
@@ -2341,21 +2376,7 @@ class LightGBMToolkit(Toolkit):
                     resolved_parameters=run_args,
                 )
 
-                if label.startswith("cv_repeat_"):
-                    strategy = label
-                    strategy_family = "cross_validation"
-                elif "scaffold" in label:
-                    strategy = "scaffold"
-                    strategy_family = "scaffold"
-                elif "kmeans" in label or "cluster" in label:
-                    strategy = "cluster_kmeans"
-                    strategy_family = "cluster_kmeans"
-                elif "random_seed_" in label:
-                    strategy = label
-                    strategy_family = "random"
-                else:
-                    strategy = "random"
-                    strategy_family = "random"
+                strategy, strategy_family = self._holdout_strategy_labels(split_run)
 
                 completed_at = project_now()
                 single_result["strategy"] = strategy

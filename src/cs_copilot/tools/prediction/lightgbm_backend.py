@@ -32,6 +32,7 @@ from .backend import (
     PredictionTaskSpec,
 )
 from .backend_capabilities import enrich_backend_environment
+from .leakage import audit_training_split
 from .qsar_contracts import LightGBMRunRequest
 from .qsar_splitters import build_full_train_split_payload, build_qsar_split_payload
 from .qsar_training_policy import describe_compute_environment, project_now, safe_slug
@@ -972,7 +973,18 @@ class LightGBMBackend(PredictionBackend):
             )
 
         completed_at = project_now()
+        leakage = (
+            audit_training_split(
+                dataset,
+                (task.smiles_columns or ["smiles"])[0],
+                effective_split_payload[0],
+                output_path,
+            )
+            if persist_artifacts
+            else {}
+        )
         return {
+            **leakage,
             "model_path": str(model_path) if persist_artifacts else None,
             "best_model_path": str(model_path) if persist_artifacts else None,
             "validation_predictions_path": (

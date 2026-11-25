@@ -375,11 +375,13 @@ Prompt exemple:
 
 ### 7.2 Entrainement standard
 
-`standard_qsar` est l'unique protocole nomme. Il applique un split random
-80/10/10. Chemprop utilise son graphe moléculaire. LightGBM et TabICL utilisent
-`rdkit_all`. Activez l’optimisation des hyperparamètres sur demande explicite avec
-`tuning.enabled=true`. L'analyse
-post-selection des outliers est executee lorsqu'elle est applicable.
+`standard_qsar` exécute un découpage aléatoire, un par scaffold et un par cluster,
+avec un ratio cible de 80/10/10 pour chacun. Les groupes de scaffold et de cluster
+restent entiers. Utilise `single_random_holdout` pour un seul découpage aléatoire
+80/10/10 ou lorsque le nombre de groupes est insuffisant pour le protocole standard.
+Chemprop utilise son graphe moléculaire. LightGBM et TabICL utilisent `rdkit_all`.
+L’optimisation se lance sur demande explicite avec `tuning.enabled=true`.
+L’analyse des valeurs aberrantes après sélection s’exécute lorsqu’elle est applicable.
 
 Prompts:
 
@@ -395,9 +397,9 @@ Prompts:
 @qsaria Entraine un modele TabICL standard_qsar pour pEC50.
 ```
 
-Pour une demande generale d'entrainement, QSARIA doit utiliser
-`standard_qsar`. Il ne doit pas inventer de repeated holdout, scaffold, cluster
-ou cross-validation sans demande explicite.
+Pour une demande générale d’entraînement, QSARIA utilise `standard_qsar`.
+Les autres ratios, les découpages répétés et la validation croisée utilisent
+une stratégie explicite.
 
 ### 7.3 Holdout personnalise
 
