@@ -67,6 +67,31 @@ Le script de restitution recalcule les scores et les écarts ponctuels depuis le
 - Le domaine d’applicabilité est la boîte à bornes strictes de Qsaria ajustée aux seules empreintes d’entraînement. Rapporter les effectifs avec les scores de chaque classe de domaine. Une AUROC est calculable si les deux classes sont présentes.
 - `manifest.json` donne le commit, les empreintes de l’archive, de `uv.lock` et de la configuration, ainsi que les versions des bibliothèques. Les fichiers `predictions.csv` et `summary.json` fournissent l’évidence ligne par ligne et les métriques recalculées correspondantes.
 
+## Comparaison AutoML à budget égal
+
+Depuis le paquet de soumission, avec l’environnement verrouillé et l’archive déjà préparée, exécuter la sélection sur le développement. Utiliser un nouveau répertoire pour chaque phase. Les deux méthodes disposent de quatre candidats, de 80 arbres par ajustement et d’un cœur. Les durées mesurées sont dans les rapports, avec les trois refits de chaque gagnant sur le test officiel.
+
+```bash
+uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
+  --config benchmarks/qsaria-v1-automl.toml \
+  --archive .files/publication/datasets/tdc-admet-4426004.zip \
+  select --output .files/publication/reproduction-automl-development
+```
+
+Comparer l’empreinte SHA-256 affichée par cette commande à celle enregistrée ci-dessous. L’évaluation vérifie l’empreinte de la sélection, de l’archive et des fichiers du protocole avant d’ouvrir les partitions de test.
+
+```bash
+qsaria_selection=.files/publication/reproduction-automl-development/selection.json
+qsaria_selection_hash=444830fe103819888c6a95ce4c8153bec5d67b6c30256028868166ddd7c2d21a
+uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
+  --config benchmarks/qsaria-v1-automl.toml \
+  --archive .files/publication/datasets/tdc-admet-4426004.zip \
+  evaluate --selection "$qsaria_selection" --selection-sha256 "$qsaria_selection_hash" \
+  --output .files/publication/reproduction-automl-test
+```
+
+Le rapport distingue les identités exactes des voisins non identiques à Tanimoto ≥ 0,95 et ≥ 0,99. Le test reprend les partitions publiques du benchmark à réglages fixes. [Rapport développement](results/qsaria-v1/automl-development.json) · [Rapport test](results/qsaria-v1/automl-evaluation.json)
+
 ## Vérification des parcours
 
 La [fixture synthétique](fixtures/qsaria-v1-synthetic.csv) contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les jeux du groupe ADMET. [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)

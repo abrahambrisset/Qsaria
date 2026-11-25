@@ -1,0 +1,143 @@
+{
+  "datasets": {
+    "bbb_martins": {
+      "candidates": {
+        "classical_automl": {
+          "extra_trees_10_percent": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 1.452,
+            "validation_score": 0.9269841269841269
+          },
+          "extra_trees_sqrt": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.298,
+            "validation_score": 0.9261778785588309
+          },
+          "random_forest_10_percent": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.969,
+            "validation_score": 0.9172587553539935
+          },
+          "random_forest_sqrt": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.284,
+            "validation_score": 0.9156462585034013
+          }
+        },
+        "qsaria_lightgbm": {
+          "eta005_leaves31": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.48,
+            "validation_score": 0.9223230032753842
+          },
+          "eta005_leaves63": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.377,
+            "validation_score": 0.9155202821869489
+          },
+          "eta010_leaves31": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.303,
+            "validation_score": 0.9132527084908038
+          },
+          "eta010_leaves63": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.376,
+            "validation_score": 0.9202569916855631
+          }
+        }
+      },
+      "fit_rows": 1298,
+      "metric": "auroc",
+      "overlap_audit": {
+        "evaluation_rows": 326,
+        "evaluation_valid_rows": 326,
+        "exact_overlap_count": 0,
+        "identity": "qsaria_standardized_smiles_without_stereochemistry",
+        "near_duplicate_counts": {
+          "0.95": 0,
+          "0.99": 0
+        },
+        "nearest_neighbor_similarity": {
+          "max": 0.94,
+          "median": 0.5929276315789473
+        },
+        "similarity": "sparse_count_morgan_radius_2_tanimoto",
+        "status": "complete",
+        "training_rows": 1298,
+        "training_valid_rows": 1298
+      },
+      "validation_rows": 326
+    },
+    "solubility_aqsoldb": {
+      "candidates": {
+        "classical_automl": {
+          "extra_trees_10_percent": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 9.354,
+            "validation_score": 0.9800496105375232
+          },
+          "extra_trees_sqrt": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 4.058,
+            "validation_score": 0.9960024993658235
+          },
+          "random_forest_10_percent": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 5.098,
+            "validation_score": 1.0017555829073852
+          },
+          "random_forest_sqrt": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 2.378,
+            "validation_score": 1.0229617227752914
+          }
+        },
+        "qsaria_lightgbm": {
+          "eta005_leaves31": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 1.304,
+            "validation_score": 1.083412729926201
+          },
+          "eta005_leaves63": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.931,
+            "validation_score": 1.0056448887381932
+          },
+          "eta010_leaves31": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.861,
+            "validation_score": 0.9872889269491929
+          },
+          "eta010_leaves63": {
+            "actual_trees": 80,
+            "fit_predict_seconds": 0.841,
+            "validation_score": 0.9515756618726651
+          }
+        }
+      },
+      "fit_rows": 6414,
+      "metric": "mae",
+      "overlap_audit": {
+        "evaluation_rows": 1570,
+        "evaluation_valid_rows": 1570,
+        "exact_overlap_count": 0,
+        "identity": "qsaria_standardized_smiles_without_stereochemistry",
+        "near_duplicate_counts": {
+          "0.95": 4,
+          "0.99": 2
+        },
+        "nearest_neighbor_similarity": {
+          "max": 1.0,
+          "median": 0.5918367346938775
+        },
+        "similarity": "sparse_count_morgan_radius_2_tanimoto",
+        "status": "complete",
+        "training_rows": 6414,
+        "training_valid_rows": 6414
+      },
+      "validation_rows": 1570
+    }
+  },
+  "selection_sha256": "444830fe103819888c6a95ce4c8153bec5d67b6c30256028868166ddd7c2d21a"
+}

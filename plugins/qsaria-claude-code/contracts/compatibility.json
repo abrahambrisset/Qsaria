@@ -11,10 +11,10 @@
   ],
   "source": {
     "repository": "https://github.com/abrahambrisset/Qsaria",
-    "commit": "4b476e50073aad7ac1a9fbc19f98cd48f982741f",
-    "tree": "87502f30e7ce91bedaa91bca3878f85a76e4c2ba",
-    "signed_tree": "sha256:6207be1988f813ce7a14fa7a268c7a5e9b3550eb90eaddade20de75953f832e5",
-    "describe": "v1.0.0-alpha-4-g4b476e5",
+    "commit": "160f715e55daa94f5b910292388fc7bafd87b181",
+    "tree": "bc77c39da76236257bbe17a0d60ee3f22363946e",
+    "signed_tree": "sha256:2d11e806997d524129978b87a02930db6b5a000f3778cca7e481598b4cbe4284",
+    "describe": "qsaria-v1-publication-eval-5-g160f715",
     "dirty": false
   },
   "contracts": {
@@ -30,7 +30,7 @@
       "scientific_invariants": "sha256:56d021a1e593b4903c4503276e76967fdc8e357a325bd418ccbe018a11da1f40"
     },
     "runtime": "sha256:5ef676e50c74dfdce57cccbadb07fc195758c37b05138bab718ce9b9fb236db7",
-    "bundle": "sha256:75fbc195df22d10f661013ab21c97c6aac216b812391ffbd12199050129af015"
+    "bundle": "sha256:6810068966e02dc2bb398eaf67de3eddbc2416c63dadd369e9ba09ea42837d1d"
   },
   "runtime_bootstrap_validation": "automated_validate_shared_runtime",
   "scientific_pilot": {

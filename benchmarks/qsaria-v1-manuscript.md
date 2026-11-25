@@ -37,6 +37,19 @@ Figure 1. The point is the paired difference for seed 42 and the line is its 95%
 
 The bounding box classified all 1,993 scored AqSolDB rows as in-domain. On BBB_Martins, 397 rows were in-domain and nine were out-of-domain. The subgroup AUROCs at seed 42 were 0.864 and 0.850, respectively. The counts limit the evidence about performance outside the fitted box.
 
+### Matched classical AutoML comparison
+
+A follow-up used the same archived partitions, grouped development validation and molecular representation. Both arms evaluated four candidates on one core with 80 trees per fit. The Qsaria arm searched LightGBM learning rate and leaf count. The classical arm selected between Random Forest and ExtraTrees, each at two feature-subsampling settings. ExtraTrees with 10% feature subsampling won on both development endpoints. The checksummed selections were recorded before the follow-up opened either test partition. Both winners were refitted at seeds 42, 1701 and 2026. This matches tree, candidate and core budgets. Fit and prediction times differed and are included in the run reports. [Protocol](qsaria-v1-automl.toml) · [Development run](results/qsaria-v1/automl-development.json)
+
+| Dataset and cohort | Rows | Metric | Qsaria LightGBM | Selected classical AutoML | Paired difference (95% interval) |
+| --- | ---: | --- | ---: | ---: | ---: |
+| AqSolDB, all scored | 1,993 | MAE | 1.215 | 1.306 | −0.090 [−0.120, −0.063] |
+| AqSolDB, unseen identities | 1,966 | MAE | 1.219 | 1.313 | −0.095 [−0.126, −0.067] |
+| BBB_Martins, all scored | 406 | AUROC | 0.8668 | 0.8670 | −0.00025 [−0.03537, 0.03575] |
+| BBB_Martins, unseen identities | 403 | AUROC | 0.8621 | 0.8618 | 0.00022 [−0.03542, 0.03609] |
+
+Table 2. Test results at seed 42. The difference is Qsaria LightGBM minus the selected classical model, with the same paired identity bootstrap as in the fixed-model comparison. The AqSolDB intervals favoured Qsaria in all three seeds, and all BBB_Martins intervals included zero. The molecular overlap audit found 27 exact matches and one nonidentical test row with count-Morgan Tanimoto similarity of at least 0.95 on AqSolDB, and three exact matches and zero such neighbours on BBB_Martins. [Official test run](results/qsaria-v1/automl-evaluation.json)
+
 ## Workflow verification
 
 An installation check in an isolated Codex configuration verified plugin registration. An MCP stdio client initialized the Qsaria profile and listed 53 tools. A local functional check created an experiment and trained the V1 LightGBM backend with 40 synthetic structures, 12 trees and the optimization field omitted. The run produced prediction artifacts. This fixture uses a computed cLogP target and supplies functional evidence about the tool path.
@@ -49,10 +62,10 @@ We also exercised the team instantiated by Chainlit against a scripted model tra
 
 ## Limitations
 
-The predictive evaluation covers two archived endpoints and one fixed Qsaria learner. Its conclusions apply to these representations, comparator configurations, and partitions. Restricting evaluation to unseen standardized identities controls exact overlap under this definition. It allows closely related structures to occur on both sides. The applicability-domain result concerns a strict bounding box on binary fingerprints. It supplies a coverage diagnostic and the observed subgroup scores. Using three seeds on fixed test memberships leaves the effect of alternative dataset partitions unmeasured.
+The predictive evaluation covers two archived endpoints and one Qsaria learner. Its conclusions apply to these representations, comparator configurations, and partitions. The AutoML follow-up reuses test partitions already used in the fixed-model comparison. It evaluates finite searches over two tree-based model families and the Qsaria LightGBM settings. Restricting evaluation to unseen standardized identities controls exact overlap under this definition. It allows closely related structures to occur on both sides. The applicability-domain result concerns a strict bounding box on binary fingerprints. It supplies a coverage diagnostic and the observed subgroup scores. Using three seeds on fixed test memberships leaves the effect of alternative dataset partitions unmeasured.
 
 The workflow trials use one small synthetic fixture. Open-ended Chainlit interaction with an external model provider remains outside the coverage of the scripted trial.
 
 ## Code, data and reproduction
 
-The predictive results refer to Qsaria V1 revision `1179b63d42eea5be044bdc041a0f12c35983019c`. The run manifest records the input hashes and library versions. The benchmark configuration, commands, aggregate results and figure are supplied with the manuscript. Replaying the benchmark produces row-level predictions tied to the source archive. [Reproduction guide](README.md) · [Run manifest](results/qsaria-v1/manifest.json)
+The fixed-model results refer to Qsaria V1 revision `1179b63d42eea5be044bdc041a0f12c35983019c`. The AutoML follow-up records checksums for its inputs and source files, and both reports record the library versions. The benchmark configurations, commands, aggregate results and figure are supplied with the manuscript. Replaying the benchmarks produces row-level predictions tied to the source archive. [Reproduction guide](README.md) · [Fixed-model manifest](results/qsaria-v1/manifest.json) · [AutoML manifest and results](results/qsaria-v1/automl-evaluation.json)
