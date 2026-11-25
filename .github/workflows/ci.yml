@@ -60,3 +60,25 @@ jobs:
         env:
           USE_S3: "false"
           CS_COPILOT_STORAGE_ROOT: "data"
+
+      - name: Run offline Qsaria reference workflows
+        run: |
+          mkdir -p "$CS_COPILOT_STORAGE_ROOT" "$HF_HOME" "$MPLCONFIGDIR" "$TMPDIR" "$XDG_CACHE_HOME"
+          uv run --no-sync python -m pytest -q -o cache_dir=.files/publication/agentic-ci/pytest-cache tests/integration/test_qsaria_v1_mcp_workflow.py
+          uv run --no-sync python -m scripts.check_qsaria_v1_chainlit
+        env:
+          USE_S3: "false"
+          CS_COPILOT_STORAGE_ROOT: ${{ github.workspace }}/.files/publication/agentic-ci-chainlit/storage
+          HF_HOME: ${{ github.workspace }}/.files/publication/agentic-ci-chainlit/models
+          MPLCONFIGDIR: ${{ github.workspace }}/.files/publication/agentic-ci-chainlit/mpl
+          TMPDIR: ${{ github.workspace }}/.files/publication/agentic-ci-chainlit/tmp
+          XDG_CACHE_HOME: ${{ github.workspace }}/.files/publication/agentic-ci-chainlit/cache
+          AGNO_TELEMETRY: "false"
+          HF_HUB_OFFLINE: "1"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          MPLBACKEND: Agg
+          OMP_NUM_THREADS: "1"
+          OMP_THREAD_LIMIT: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          CS_COPILOT_DISABLE_PROCESS_POOLS: "1"

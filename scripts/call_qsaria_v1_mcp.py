@@ -27,9 +27,9 @@ SERVER_ARGS = [
 ]
 
 
-def server_parameters() -> StdioServerParameters:
+def server_parameters(workspace: Path = WORKSPACE) -> StdioServerParameters:
     paths = {
-        name: WORKSPACE / directory
+        name: workspace / directory
         for name, directory in (
             ("CS_COPILOT_STORAGE_ROOT", "storage"),
             ("HF_HOME", "models"),
@@ -43,17 +43,28 @@ def server_parameters() -> StdioServerParameters:
     environment = {
         **os.environ,
         **{name: str(path) for name, path in paths.items()},
-        "QSARIA_MODEL_CATALOG_PATH": str(WORKSPACE / "catalog.json"),
+        "QSARIA_MODEL_CATALOG_PATH": str(workspace / "catalog.json"),
         "USE_S3": "false",
         "HF_HUB_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "AGNO_TELEMETRY": "false",
         "MPLBACKEND": "Agg",
         "OMP_NUM_THREADS": "1",
+        "OMP_THREAD_LIMIT": "1",
         "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
         "CS_COPILOT_DISABLE_PROCESS_POOLS": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     if sys.platform == "darwin":
-        libomp = Path(sys.prefix) / "lib" / "python3.12" / "site-packages" / "torch" / "lib"
+        libomp = (
+            Path(sys.prefix)
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+            / "torch"
+            / "lib"
+        )
         if (libomp / "libomp.dylib").is_file():
             environment["DYLD_FALLBACK_LIBRARY_PATH"] = str(libomp)
     return StdioServerParameters(

@@ -1,17 +1,22 @@
 """Exercise Chainlit's real team and tool dispatch against a scripted local model transport."""
 
 import ast
+import csv
 import json
 import os
+from hashlib import sha256
 from itertools import count
+from math import isclose
 from pathlib import Path
+from statistics import mean
 from uuid import uuid4
 
 import httpx
+from agno.db.sqlite import SqliteDb
 from agno.models.openai import OpenAIChat
 
 root = Path(__file__).resolve().parents[1]
-directory = root / ".files/publication/chainlit-roundtrip"
+directory = root / ".files/publication/chainlit-roundtrip" / uuid4().hex
 directory.mkdir(parents=True, exist_ok=True)
 os.environ["MODEL_PROVIDER"] = "ollama"
 os.environ["MODEL_ID"] = "offline-qsaria-fixture"
@@ -23,9 +28,9 @@ source = root / "benchmarks/fixtures/qsaria-v1-synthetic.csv"
 curated = directory / "curated.csv"
 model_id = "offline-qsaria-fixture"
 sequence = count(1)
-trace = []
 observed = {}
 member_ids = {}
+workflow_roles = ("curation", "training", "report")
 training_request = {
     "target_columns": ["clogp"],
     "task_type": "regression",
@@ -53,8 +58,8 @@ def handler(request):
     arguments = None
     if "delegate_task_to_member" in tools:
         role_index = len(history)
-        if role_index < 3:
-            role = ["curation", "training", "report"][role_index]
+        if role_index < len(workflow_roles):
+            role = workflow_roles[role_index]
             arguments = (
                 "delegate_task_to_member",
                 {
@@ -104,7 +109,6 @@ def handler(request):
     message = {"role": "assistant", "content": content if arguments is None else None}
     if arguments:
         name, payload = arguments
-        trace.append(name)
         message["tool_calls"] = [
             {
                 "id": f"call_{next(sequence)}",
@@ -140,7 +144,9 @@ with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         base_url="http://qsaria-fixture.invalid/v1",
     )
     team = chainlit_app._create_session_agent("qsar")
-    for role in ("curation", "training", "report"):
+    team.db = SqliteDb(db_file=str(directory / "memory.db"))
+    team.store_member_responses = True
+    for role in workflow_roles:
         member = next(member for member in team.members if role in member.name)
         member.set_id()
         member_ids[role] = member.id
@@ -151,6 +157,40 @@ with httpx.Client(transport=httpx.MockTransport(handler)) as http:
     )
 assert observed["curation"] == 40
 assert observed["training"]["tuning"] is False
-assert Path(observed["training"]["predictions"]).is_file()
-assert response.content == observed["report"], response.content
-print(json.dumps({"team": team.name, "tools": trace, **observed}, indent=2))
+assert [tool.tool_name for tool in response.tools] == ["delegate_task_to_member"] * len(
+    workflow_roles
+)
+assert [tool.tool_args["member_id"] for tool in response.tools] == [
+    member_ids[role] for role in workflow_roles
+]
+assert all(not tool.tool_call_error for tool in response.tools)
+assert [member.agent_id for member in response.member_responses] == [
+    member_ids[role] for role in workflow_roles
+]
+assert [
+    [tool.tool_name for tool in member.tools or []] for member in response.member_responses
+] == [["curate_qsar_dataset"], ["train_lightgbm_model"], []]
+curation, training, report = response.member_responses
+assert not curation.tools[0].tool_call_error
+assert not training.tools[0].tool_call_error
+assert training.tools[0].tool_args["train_csv"] == curation.tools[0].tool_args["output_csv"]
+
+predictions = Path(observed["training"]["predictions"])
+with predictions.open(newline="") as handle:
+    rows = list(csv.DictReader(handle))
+assert len(rows) == 4
+mae = mean(abs(float(row["y_true"]) - float(row["y_pred"])) for row in rows)
+assert isclose(mae, observed["training"]["mae"], rel_tol=1e-10, abs_tol=1e-10)
+assert response.content == report.content == f"40 molecules retained. Test MAE {mae:.6f}."
+observed["training"]["predictions_sha256"] = sha256(predictions.read_bytes()).hexdigest()
+trace = [
+    tool.tool_name
+    for delegation, member in zip(response.tools, response.member_responses, strict=True)
+    for tool in [delegation, *(member.tools or [])]
+]
+print(
+    json.dumps(
+        {"team": team.name, "tools": trace, **observed, "test_rows": len(rows), "test_mae": mae},
+        indent=2,
+    )
+)
