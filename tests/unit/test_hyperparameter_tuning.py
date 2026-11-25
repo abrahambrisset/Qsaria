@@ -110,7 +110,7 @@ def test_sampler_metadata_and_catalog_provenance_keep_multivariate_settings():
     assert catalog["parameterization"] == parameterization
 
 
-def test_standard_protocol_is_one_fixed_random_holdout_and_rdkit_is_tabular_default():
+def test_standard_protocol_uses_three_holdouts_and_rdkit_is_tabular_default():
     protocol = resolve_validation_protocol(
         requested_protocol=None,
         training_profile="local_light",
@@ -118,9 +118,12 @@ def test_standard_protocol_is_one_fixed_random_holdout_and_rdkit_is_tabular_defa
     )
 
     assert protocol["protocol"] == "standard_qsar"
-    assert len(protocol["split_runs"]) == 1
-    assert protocol["split_runs"][0]["backend_split_type"] == "random"
-    assert protocol["split_runs"][0]["split_sizes"] == [0.8, 0.1, 0.1]
+    assert [run["backend_split_type"] for run in protocol["split_runs"]] == [
+        "random",
+        "scaffold_balanced",
+        "kmeans",
+    ]
+    assert all(run["split_sizes"] == [0.8, 0.1, 0.1] for run in protocol["split_runs"])
     assert default_tabular_representation_for_protocol("standard_qsar") == "rdkit_all"
 
 
