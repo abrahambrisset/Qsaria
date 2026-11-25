@@ -367,6 +367,12 @@ La curation gere:
 - detection d'outliers;
 - rapport de curation.
 
+Après extraction du parent ChEMBL, Qsaria exporte le tautomère canonique de
+modélisation sans stéréochimie. Cette structure sert à résoudre les doublons et
+à calculer les descripteurs. Les structures sources et les parents ChEMBL
+restent dans les artefacts de curation. Relance la curation d’un ancien fichier
+si l’entraînement signale que des structures distinctes deviennent identiques.
+
 Prompt exemple:
 
 ```text

@@ -15,9 +15,14 @@ from agno.agent import Agent
 from agno.tools.toolkit import Toolkit
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.chemistry.qsar_identity import (
+    QSAR_REMOVE_STEREOCHEMISTRY,
+    QSAR_STRUCTURE_POLICY,
+    QSAR_STRUCTURE_POLICY_COLUMN,
+    prepare_qsar_smiles,
+)
 from cs_copilot.tools.chemistry.standardize import (
     resolve_smiles_column_name,
-    standardize_smiles_column,
 )
 from cs_copilot.tools.features.molecular_feature_toolkit import MolecularFeatureToolkit
 
@@ -282,6 +287,7 @@ def _compact_feature_preparation(feature_preparation: Dict[str, Any]) -> Dict[st
             "mode",
             "representation_name",
             "representation_display_name",
+            "structure_standardization",
             "prepared_train_csv",
             "feature_cache_key",
             "feature_cache_status",
@@ -951,7 +957,7 @@ class QSARTrainingToolkit(Toolkit):
         )
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        df = standardize_smiles_column(df, resolved_smiles_column)
+        df = prepare_qsar_smiles(df, resolved_smiles_column, reject_collisions=True)
         if resolved_smiles_column != "smiles":
             df["smiles"] = df[resolved_smiles_column]
             df = df.drop(columns=[resolved_smiles_column])
@@ -1007,14 +1013,22 @@ class QSARTrainingToolkit(Toolkit):
         missing_targets = [column for column in target_columns if column not in source_df.columns]
         if missing_targets:
             raise ValueError(f"Missing target columns: {missing_targets}")
-        normalized_df = source_df.copy()
+        normalized_df = prepare_qsar_smiles(
+            source_df,
+            resolved_smiles_column,
+            max_workers=resolved_feature_n_jobs,
+            reject_collisions=True,
+        )
         if resolved_smiles_column != "smiles":
             normalized_df["smiles"] = normalized_df[resolved_smiles_column]
             normalized_df = normalized_df.drop(columns=[resolved_smiles_column])
         normalized_df[QSAR_ROW_ID_COLUMN] = range(len(normalized_df))
+        normalized_df[QSAR_STRUCTURE_POLICY_COLUMN] = QSAR_STRUCTURE_POLICY
         normalized_csv = features_dir / f"{Path(train_csv).stem}_feature_base.csv"
         with S3.open(str(normalized_csv), "w") as fh:
-            normalized_df[[QSAR_ROW_ID_COLUMN, "smiles", *target_columns]].to_csv(fh, index=False)
+            normalized_df[
+                [QSAR_ROW_ID_COLUMN, "smiles", QSAR_STRUCTURE_POLICY_COLUMN, *target_columns]
+            ].to_csv(fh, index=False)
         base_csv_for_features = str(normalized_csv)
         feature_smiles_column = "smiles"
         duration_steps.append(
@@ -1300,6 +1314,10 @@ class QSARTrainingToolkit(Toolkit):
             "mode": "generated_tabular_features",
             "representation_name": representation_name,
             "representation_display_name": spec.display_name,
+            "structure_standardization": {
+                "policy": QSAR_STRUCTURE_POLICY,
+                "remove_stereochemistry": QSAR_REMOVE_STEREOCHEMISTRY,
+            },
             "input_csv": train_csv,
             "base_csv_for_features": base_csv_for_features,
             "prepared_train_csv": tabular["output_csv"],

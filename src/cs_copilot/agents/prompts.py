@@ -1630,7 +1630,7 @@ DATASET_CURATION_INSTRUCTIONS = [
     "  - Distinguish multi-fragment salt/counterion cases from true mixtures and track them separately in the report.",
     "  - Treat ChEMBL standardization as a real chemistry step: standardize_mol, get_parent_mol, checker diagnostics on the standardized parent, salt/solvent stripping, and QSAR identity generation.",
     "  - Treat ChEMBL checker findings as diagnostics by default; do not describe checker-flagged rows as removed unless the curation artifact explicitly says they were removed.",
-    "  - For QSAR identity, use `strip_then_deduplicate`: strip stereochemistry for identity, then resolve duplicate identity groups.",
+    "  - Use the toolkit's recorded modeling identity: after ChEMBL parent extraction, canonicalize the tautomer, remove stereochemistry, and resolve duplicates on that same structure.",
     "  - Track duplicate QSAR identity groups and distinguish between aggregatable duplicates and conflicting duplicates.",
     "  - For regression datasets, use duplicate conflict threshold 0.5 unless the user explicitly requests another value: aggregate coherent groups, remove strongly conflicting groups, and report both counts.",
     "  - When reporting duplicate removals, use `duplicate_conflicting_rows_removed` for rows removed due to conflicts and `duplicate_groups_aggregated` for coherent groups merged by mean. Do not merge the aggregation row reduction into the conflicting-duplicate count.",

@@ -9,9 +9,9 @@
 - Standardize structures through the mandatory `chembl_structure_v1` toolkit pipeline. If one row fails, preserve `standardization_failed` evidence and continue with usable rows; never substitute another standardizer.
 - Remove detected inorganic structures, organometallic structures, and true multi-organic-fragment mixtures before standardization. Keep salt/counterion cases distinct from mixtures.
 - Treat ChEMBL checker flags as diagnostics unless the structured artifact explicitly records row removal.
-- Use the toolkit's `strip_then_deduplicate` QSAR identity policy. For regression, retain the default duplicate conflict threshold `0.5` unless the user explicitly changes it: aggregate coherent groups by the toolkit policy and remove strongly conflicting groups.
+- Use the toolkit's model identity for duplicate resolution. After extracting the ChEMBL parent, the toolkit canonicalizes the tautomer, removes stereochemistry, and exports that same structure for modeling. Keep the default regression duplicate conflict threshold `0.5` unless the user explicitly changes it.
 - Preserve `duplicate_conflicting_rows_removed` and `duplicate_groups_aggregated` as distinct facts; never combine them into one removal count.
-- Report salt/fragment handling, charge and tautomer decisions when returned by the toolkit.
+- Report salt and fragment handling and the recorded tautomer and stereochemistry policy.
 - Preserve activity units and transformations. Never mix incompatible units or infer a log transform.
 - Flag statistical target outliers without removing them unless the user explicitly requested removal.
 - Retain target, assay, organism, and provenance constraints when present.

@@ -18,10 +18,8 @@ from rdkit import Chem
 from rdkit.Chem import Descriptors, rdFingerprintGenerator
 
 from cs_copilot.storage import S3
-from cs_copilot.tools.chemistry.standardize import (
-    resolve_smiles_column_name,
-    standardize_smiles_column,
-)
+from cs_copilot.tools.chemistry.qsar_identity import prepare_qsar_smiles
+from cs_copilot.tools.chemistry.standardize import resolve_smiles_column_name
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +220,7 @@ def _canonicalize_join_columns(
     if "smiles" in join_on and canonicalize_smiles:
         if "smiles" not in normalized.columns:
             raise ValueError(f"{df_name} is missing join column 'smiles'.")
-        normalized = standardize_smiles_column(normalized, "smiles")
+        normalized = prepare_qsar_smiles(normalized, "smiles")
         invalid_mask = normalized["smiles"].isna()
         if invalid_mask.any():
             invalid_rows = int(invalid_mask.sum())
@@ -289,8 +287,8 @@ class MolecularFeatureToolkit(Toolkit):
             df = pd.read_csv(fh)
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        working = standardize_smiles_column(
-            df.copy(), resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
+        working = prepare_qsar_smiles(
+            df, resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
         )
         if resolved_smiles_column != "smiles":
             working["smiles"] = working[resolved_smiles_column]
@@ -376,8 +374,8 @@ class MolecularFeatureToolkit(Toolkit):
             df = pd.read_csv(fh)
 
         resolved_smiles_column = resolve_smiles_column_name(df, smiles_column)
-        working = standardize_smiles_column(
-            df.copy(), resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
+        working = prepare_qsar_smiles(
+            df, resolved_smiles_column, max_workers=resolved_n_jobs if n_jobs else None
         )
         if resolved_smiles_column != "smiles":
             working["smiles"] = working[resolved_smiles_column]

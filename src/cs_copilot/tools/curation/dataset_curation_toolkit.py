@@ -19,6 +19,10 @@ from agno.tools.toolkit import Toolkit
 from rdkit import Chem
 
 from cs_copilot.storage import S3
+from cs_copilot.tools.chemistry.qsar_identity import (
+    QSAR_STRUCTURE_POLICY,
+    QSAR_STRUCTURE_POLICY_COLUMN,
+)
 from cs_copilot.tools.curation.backends import (
     ensure_chembl_structure_pipeline_available,
     standardize_with_chembl_structure_v1,
@@ -765,7 +769,8 @@ class DatasetCurationToolkit(Toolkit):
         working["stereochemistry_removed_for_identity"] = standardization_map.reindex(
             working.index
         )["stereochemistry_removed_for_identity"].values
-        working["smiles"] = working["standardized_smiles"]
+        working["smiles"] = working["qsar_identity_smiles"]
+        working[QSAR_STRUCTURE_POLICY_COLUMN] = QSAR_STRUCTURE_POLICY
         checker_warning_mask = (
             pd.to_numeric(working["checker_max_penalty"], errors="coerce").fillna(0) > 0
         )
@@ -1150,6 +1155,8 @@ class DatasetCurationToolkit(Toolkit):
         removed_rows.to_csv(removed_rows_path, index=False)
         identity_diagnostics = {
             "curation_backend": DEFAULT_CURATION_BACKEND,
+            "structure_policy": curation_policy["structure_policy"],
+            "remove_stereochemistry": curation_policy["remove_stereochemistry"],
             "duplicate_identity_column": duplicate_identity_column,
             "duplicate_conflict_threshold": duplicate_conflict_threshold,
             "duplicate_groups_detected": duplicate_groups_detected,
@@ -1171,6 +1178,8 @@ class DatasetCurationToolkit(Toolkit):
             "curation_backend": DEFAULT_CURATION_BACKEND,
             "curation_policy": {
                 "stereochemistry_policy": curation_policy.get("stereochemistry_policy"),
+                "remove_stereochemistry": curation_policy["remove_stereochemistry"],
+                "structure_policy": curation_policy["structure_policy"],
                 "duplicate_identity_policy": curation_policy.get("duplicate_identity_policy"),
                 "duplicate_conflict_threshold": duplicate_conflict_threshold,
                 "checker_policy": curation_policy.get("checker_policy"),

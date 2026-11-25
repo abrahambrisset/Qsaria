@@ -364,6 +364,12 @@ Curation handles:
 - outlier detection;
 - curation report generation.
 
+After ChEMBL parent extraction, Qsaria exports the canonical modeling tautomer
+without stereochemistry and uses that same structure for duplicate resolution
+and feature generation. The original and ChEMBL parent structures stay in the
+curation evidence. Recurate older data if training reports that distinct input
+structures collapse into the same molecular identity.
+
 Prompt example:
 
 ```text

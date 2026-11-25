@@ -7,10 +7,9 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from rdkit import Chem
 
-from cs_copilot.tools.curation.identity import (
-    has_explicit_stereochemistry,
-    strip_stereochemistry_from_smiles,
-)
+from cs_copilot.tools.chemistry.qsar_identity import QSAR_REMOVE_STEREOCHEMISTRY
+from cs_copilot.tools.chemistry.standardize import standardize_smiles
+from cs_copilot.tools.curation.identity import has_explicit_stereochemistry
 
 
 def _format_checker_issues(issues: List[Tuple[Any, Any]]) -> Tuple[str, int]:
@@ -89,7 +88,9 @@ def standardize_with_chembl_structure_v1(raw_smiles: pd.Series) -> Dict[str, Any
                 issues = checker.check_molblock(_mol_to_molblock(parent_mol))
                 checker_issues, checker_max_penalty = _format_checker_issues(issues)
             qsar_identity = (
-                strip_stereochemistry_from_smiles(standardized) if standardized else None
+                standardize_smiles(standardized, remove_stereochemistry=QSAR_REMOVE_STEREOCHEMISTRY)
+                if standardized
+                else None
             )
             parent_structure_changed = bool(standardized and raw and standardized != raw)
             stereo_removed = bool(

@@ -69,28 +69,34 @@ Le script de restitution recalcule les scores et les écarts ponctuels depuis le
 
 ## Comparaison AutoML à budget égal
 
-Depuis le paquet de soumission, avec l’environnement verrouillé et l’archive déjà préparée, exécuter la sélection sur le développement. Utiliser un nouveau répertoire pour chaque phase. Les deux méthodes disposent de quatre candidats, de 80 arbres par ajustement et d’un cœur. Les durées mesurées sont dans les rapports, avec les trois refits de chaque gagnant sur le test officiel.
+Rejouer le comparatif depuis sa révision archivée, avec l’archive préparée dans le dépôt principal. Utiliser un worktree et des répertoires de sortie neufs. Les deux méthodes disposent de quatre candidats, de 80 arbres par ajustement et d’un cœur. Les durées mesurées sont dans les rapports, avec les trois refits de chaque gagnant sur le test officiel.
 
 ```bash
-uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
-  --config benchmarks/qsaria-v1-automl.toml \
-  --archive .files/publication/datasets/tdc-admet-4426004.zip \
-  select --output .files/publication/reproduction-automl-development
+qsaria_publication="$PWD/.files/publication"
+git worktree add --detach "$qsaria_publication/replay-automl-v1" \
+  89d02af3760d495a280b924f254be0c3e9721239 && (
+  set -e
+  cd "$qsaria_publication/replay-automl-v1"
+  uv sync --locked --python 3.12 --extra prediction --extra mcp
+  export USE_S3=false OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MPLBACKEND=Agg
+  if [ "$(uname -s)" = Darwin ]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="$PWD/.venv/lib/python3.12/site-packages/torch/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+  fi
+  qsaria_archive="$qsaria_publication/datasets/tdc-admet-4426004.zip"
+  qsaria_development="$qsaria_publication/reproduction-automl-development"
+  uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
+    --config benchmarks/qsaria-v1-automl.toml --archive "$qsaria_archive" \
+    select --output "$qsaria_development"
+  qsaria_selection_hash=444830fe103819888c6a95ce4c8153bec5d67b6c30256028868166ddd7c2d21a
+  uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
+    --config benchmarks/qsaria-v1-automl.toml --archive "$qsaria_archive" \
+    evaluate --selection "$qsaria_development/selection.json" \
+    --selection-sha256 "$qsaria_selection_hash" \
+    --output "$qsaria_publication/reproduction-automl-test"
+)
 ```
 
-Comparer l’empreinte SHA-256 affichée par cette commande à celle enregistrée ci-dessous. L’évaluation vérifie l’empreinte de la sélection, de l’archive et des fichiers du protocole avant d’ouvrir les partitions de test.
-
-```bash
-qsaria_selection=.files/publication/reproduction-automl-development/selection.json
-qsaria_selection_hash=444830fe103819888c6a95ce4c8153bec5d67b6c30256028868166ddd7c2d21a
-uv run --no-sync python scripts/benchmark_qsaria_v1_automl.py \
-  --config benchmarks/qsaria-v1-automl.toml \
-  --archive .files/publication/datasets/tdc-admet-4426004.zip \
-  evaluate --selection "$qsaria_selection" --selection-sha256 "$qsaria_selection_hash" \
-  --output .files/publication/reproduction-automl-test
-```
-
-Le rapport distingue les identités exactes des voisins non identiques à Tanimoto ≥ 0,95 et ≥ 0,99. Le test reprend les partitions publiques du benchmark à réglages fixes. [Rapport développement](results/qsaria-v1/automl-development.json) · [Rapport test](results/qsaria-v1/automl-evaluation.json)
+L’évaluation vérifie les empreintes de la sélection, de l’archive et des fichiers du protocole avant d’ouvrir les partitions de test. Le rapport distingue les identités exactes des voisins non identiques à Tanimoto ≥ 0,95 et ≥ 0,99. Le test reprend les partitions publiques du benchmark à réglages fixes. [Rapport développement](results/qsaria-v1/automl-development.json) · [Rapport test](results/qsaria-v1/automl-evaluation.json)
 
 ## Vérification des parcours
 
