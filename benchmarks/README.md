@@ -98,9 +98,15 @@ git worktree add --detach "$qsaria_publication/replay-automl-v1" \
 
 L’évaluation vérifie les empreintes de la sélection, de l’archive et des fichiers du protocole avant d’ouvrir les partitions de test. Le rapport distingue les identités exactes des voisins non identiques à Tanimoto ≥ 0,95 et ≥ 0,99. Le test reprend les partitions publiques du benchmark à réglages fixes. [Rapport développement](results/qsaria-v1/automl-development.json) · [Rapport test](results/qsaria-v1/automl-evaluation.json)
 
+## Falaises d’activité sur MoleculeACE
+
+Ce complément utilise deux jeux de régression de MoleculeACE 3.0.0, ABL1 (CHEMBL1862 Ki) et FXR (CHEMBL2047 EC50). Les modèles conservent les partitions fournies. Le rapport donne la RMSE de tout le test et celle du sous-ensemble annoté `cliff_mol`. Le versionnement des données est important pour la reproduction, car la version 3 a corrigé les annotations de falaises et le découpage associé. [Étude MoleculeACE](https://doi.org/10.1021/acs.jcim.2c01073) · [Correction](https://doi.org/10.1021/acs.jcim.3c01576) · [Version 3](https://github.com/molML/MoleculeACE/releases/tag/v3.0.0)
+
+Le protocole indique les sources, les mesures et les commandes de rejeu. Les résultats agrégés conservent les effectifs, les résultats par graine, l’audit de similarité et les empreintes des prédictions. [Protocole et reproduction](qsaria-v1-moleculeace.md) · [Rapport MoleculeACE](results/qsaria-v1/moleculeace.json)
+
 ## Vérification des parcours
 
-La [fixture synthétique](fixtures/qsaria-v1-synthetic.csv) contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les jeux du groupe ADMET. [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)
+La fixture synthétique contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les partitions officielles TDC ADMET et MoleculeACE. [Fixture synthétique](fixtures/qsaria-v1-synthetic.csv) · [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)
 
 Les deux essais d’entraînement dans Terra ont utilisé le pont de validation, qui lance le serveur MCP en stdio et journalise ses réponses dans `.files/publication/agentic/tool_calls/`. Un troisième chat Terra a confirmé les appels natifs `qsaria_bootstrap` et `qsaria_list_experiments` en lecture seule dans Codex Desktop, depuis la racine du dépôt avec le plugin installé.
 
@@ -113,5 +119,11 @@ USE_S3=false CS_COPILOT_STORAGE_ROOT="$PWD/.files/publication/chainlit-check-dat
 ```
 
 La seconde commande vérifie la délégation réelle dans l’équipe construite par Chainlit avec un transport de modèle simulé en local. Elle produit des prédictions LightGBM et vérifie le résultat renvoyé par le rapport.
+
+La CI rejoue aussi deux parcours sur le serveur MCP réel. Le premier déroule curation, entraînement, enregistrement du modèle et rapport. Le second vérifie le refus d’un entraînement avant le handoff et le rejet d’un identifiant d’artefact inventé, puis termine la même expérience. Les assertions relient le modèle, le découpage et le CSV à leurs artefacts et recalculent la MAE et la RMSE du test. Le contrôle Chainlit vérifie les délégations exécutées par Agno et recalcule la MAE annoncée. Ces scénarios sont déterministes et tournent sans appel à un LLM distant, avec 12 arbres sur CPU et l’optimisation désactivée. [Scénarios MCP](../tests/integration/test_qsaria_v1_mcp_workflow.py) · [Configuration CI](../.github/workflows/ci.yml)
+
+```bash
+uv run --no-sync python -m pytest -q tests/integration/test_qsaria_v1_mcp_workflow.py
+```
 
 [Essais Terra](results/qsaria-v1/agentic.json) · [Essai Chainlit](results/qsaria-v1/chainlit.json) · [Empreintes du rejeu](results/qsaria-v1/reproduction.json)
