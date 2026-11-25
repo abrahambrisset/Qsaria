@@ -43,13 +43,15 @@ An installation check in an isolated Codex configuration verified plugin registr
 
 We tested two equivalent requests for curation and lightweight LightGBM training in fresh GPT-6.1 Terra chats at high reasoning effort. Both accessed the actual Qsaria MCP server through a repository-local stdio bridge. Both preserved the requested CPU, `local_light`, binary Morgan, 12-estimator budget and disabled optimization and training outlier analysis. Each kept 40 rows after curation and produced four test predictions. The reported MAEs, 0.4340 and 1.0935, matched recomputation from the respective CSVs. Different effective seeds preclude interpreting the MAE difference as an effect of the wording. The coordinator initially attempted training before recording the curation handoff in both chats. The server enforced the handoff and both completed an authorized fit. One chat created a second experiment during recovery. The trials expose first-attempt sequencing and session-recovery issues. [Terra evidence](results/qsaria-v1/agentic.json)
 
+A separate read-only test confirmed direct MCP use in Codex Desktop. With the local plugin installed and the repository root open as a project, a fresh GPT-6.1 Terra chat at high reasoning effort called `qsaria_bootstrap` and `qsaria_list_experiments` through the native integration. Bootstrap returned `ok` with the `qsaria` profile and server-side LLM use disabled. The experiment query completed and returned an empty list. [Native Codex test](results/qsaria-v1/agentic.json)
+
 We also exercised the team instantiated by Chainlit against a scripted model transport. The real team delegated curation, training and reporting for the same fixture. It retained 40 rows and returned a test MAE of 0.884744, verified against four predictions. This test covers the Agno team and its tools with deterministic model responses. [Chainlit evidence](results/qsaria-v1/chainlit.json)
 
 ## Limitations
 
 The predictive evaluation covers two archived endpoints and one fixed Qsaria learner. Its conclusions apply to these representations, comparator configurations, and partitions. Restricting evaluation to unseen standardized identities controls exact overlap under this definition. It allows closely related structures to occur on both sides. The applicability-domain result concerns a strict bounding box on binary fingerprints. It supplies a coverage diagnostic and the observed subgroup scores. Using three seeds on fixed test memberships leaves the effect of alternative dataset partitions unmeasured.
 
-The workflow trials use one small synthetic fixture. Native MCP registration in an open Codex Desktop chat remains to be verified, as does open-ended Chainlit interaction with an external model provider.
+The workflow trials use one small synthetic fixture. Open-ended Chainlit interaction with an external model provider remains outside the coverage of the scripted trial.
 
 ## Code, data and reproduction
 

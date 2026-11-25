@@ -41,5 +41,32 @@
       "training_log": ".files/publication/agentic/tool_calls/495c25d2b40a408fadbbb9cbd6d5071d.json",
       "predictions_sha256": "d0228dfec48e7ee25a255c9bf7a0bb5111acbca53dff575370f310861bc8fe04"
     }
-  ]
+  ],
+  "native_codex_desktop": {
+    "chat": "01a212f3-cacb-7843-a94c-d07720823c5c",
+    "model": "gpt-6.1-terra",
+    "reasoning": "high",
+    "mode": "read_only",
+    "tool_calls": [
+      {
+        "server": "qsaria",
+        "tool": "qsaria_bootstrap",
+        "arguments": {},
+        "status": "completed",
+        "result": {
+          "status": "ok",
+          "profile": "qsaria",
+          "llm_policy": "disabled",
+          "compatible_client": "codex_v1"
+        }
+      },
+      {
+        "server": "qsaria",
+        "tool": "qsaria_list_experiments",
+        "arguments": {"limit": 1},
+        "status": "completed",
+        "result": []
+      }
+    ]
+  }
 }

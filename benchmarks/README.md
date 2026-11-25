@@ -71,7 +71,7 @@ Le script de restitution recalcule les scores et les écarts ponctuels depuis le
 
 La [fixture synthétique](fixtures/qsaria-v1-synthetic.csv) contient les 40 premières structures de `tests/data/reference_regression.csv` de la PR 5 avec leur cLogP calculé. Elle vérifie les parcours des outils. Les mesures prédictives du papier utilisent les jeux du groupe ADMET. [PR 5](https://github.com/abrahambrisset/Qsaria/pull/5)
 
-Le pont de validation lance le vrai serveur MCP en stdio et journalise ses réponses complètes dans `.files/publication/agentic/tool_calls/`. Il s’utilise depuis un environnement local isolé. Les essais Terra ont appelé ce pont quand les outils Qsaria étaient absents du sélecteur natif du chat.
+Les deux essais d’entraînement dans Terra ont utilisé le pont de validation, qui lance le serveur MCP en stdio et journalise ses réponses dans `.files/publication/agentic/tool_calls/`. Un troisième chat Terra a confirmé les appels natifs `qsaria_bootstrap` et `qsaria_list_experiments` en lecture seule dans Codex Desktop, depuis la racine du dépôt avec le plugin installé.
 
 ```bash
 uv run --no-sync python scripts/call_qsaria_v1_mcp.py qsaria_bootstrap \
