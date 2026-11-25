@@ -571,9 +571,11 @@ def test_chemprop_backend_normalizes_multiclass_prediction_output(monkeypatch, t
         input_csv=str(input_csv),
         model_record=record,
         preds_path=str(preds_path),
+        accelerator="cpu",
     )
 
     predictions = pd.read_csv(preds_path)
+    assert result["command"][-2:] == ["--accelerator", "cpu"]
     assert result["prediction_format"] == "qsaria_classification_canonical"
     assert predictions["prediction"].tolist() == ["CYP3A4", "CYP2C9"]
     assert predictions["probability_cyp2d6"].tolist() == [0.2, 0.1]

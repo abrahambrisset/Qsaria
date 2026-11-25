@@ -799,6 +799,7 @@ class ChempropRunRequest(BackendRunBase):
     split: Optional[str] = None
     split_sizes: Optional[List[float]] = None
     data_seed: Optional[int] = Field(default=None, ge=0)
+    pytorch_seed: Optional[int] = Field(default=None, ge=0)
     raytune_num_samples: Optional[int] = Field(default=None, ge=1)
     raytune_num_workers: Optional[int] = Field(default=None, ge=1)
     raytune_max_concurrent_trials: Optional[int] = Field(default=None, ge=1)

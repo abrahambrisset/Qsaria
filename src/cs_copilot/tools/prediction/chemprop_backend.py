@@ -555,6 +555,7 @@ class ChempropBackend(PredictionBackend):
         preds_path: str,
         *,
         return_uncertainty: bool = False,
+        accelerator: Optional[str] = None,
     ) -> Dict[str, Any]:
         input_path = Path(input_csv).expanduser()
         if not input_path.exists():
@@ -580,6 +581,9 @@ class ChempropBackend(PredictionBackend):
 
         if model_record.task.reaction_columns:
             args.extend(["--reaction-columns", *model_record.task.reaction_columns])
+
+        if accelerator is not None:
+            args.extend(["--accelerator", accelerator])
 
         if return_uncertainty and model_record.task.uncertainty_method:
             args.extend(["--uncertainty-method", model_record.task.uncertainty_method])
@@ -742,6 +746,7 @@ class ChempropBackend(PredictionBackend):
             "split",
             "split_sizes",
             "data_seed",
+            "pytorch_seed",
         }
         sanitized_resolved_parameters = {
             key: value for key, value in request.parameter_payload().items() if key in train_fields

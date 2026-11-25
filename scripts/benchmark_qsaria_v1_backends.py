@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import platform
-import subprocess
-import sys
 import time
 import tomllib
 from importlib.metadata import version
@@ -19,10 +17,8 @@ from sklearn.model_selection import train_test_split
 from threadpoolctl import threadpool_limits
 
 from cs_copilot.tools.prediction.backend import PredictionModelRecord, PredictionTaskSpec
-from cs_copilot.tools.prediction.chemprop_adapter import (
-    normalize_chemprop_classification_predictions,
-)
-from cs_copilot.tools.prediction.qsar_contracts import TabICLRunRequest
+from cs_copilot.tools.prediction.chemprop_backend import ChempropBackend
+from cs_copilot.tools.prediction.qsar_contracts import ChempropRunRequest, TabICLRunRequest
 from cs_copilot.tools.prediction.tabicl_backend import TabICLBackend
 from scripts.benchmark_qsaria_v1 import (
     ROOT,
@@ -40,74 +36,44 @@ TDC_CONFIG = ROOT / "benchmarks/qsaria-v1.toml"
 ACE_CONFIG = ROOT / "benchmarks/qsaria-v1-moleculeace.toml"
 
 
-def run_chemprop_cli(directory, stage, args):
-    cli = Path(sys.executable).with_name("chemprop")
-    with (directory / f"{stage}.log").open("w") as handle:
-        subprocess.run(
-            [str(cli), stage, *args], check=True, stdout=handle, stderr=subprocess.STDOUT
-        )
-
-
 def predict_chemprop(directory, fit, evaluation, task, config, seed):
     training_csv = directory / "fit.csv"
     test_csv = directory / "evaluation.csv"
     fit[["identity", "Y"]].to_csv(training_csv, index=False)
     evaluation[["identity"]].to_csv(test_csv, index=False)
     output_dir = directory / "model"
-    common = ["--accelerator", "cpu", "--devices", "1", "--num-workers", "0"]
-    options = []
-    for name, value in config.items():
-        options.extend([f"--{name.replace('_', '-')}", str(value)])
-    run_chemprop_cli(
-        directory,
-        "train",
-        [
-            "--data-path",
-            str(training_csv),
-            "--output-dir",
-            str(output_dir),
-            "--task-type",
-            task,
-            "--smiles-columns",
-            "identity",
-            "--target-columns",
-            "Y",
-            "--split-sizes",
-            "1.0",
-            "0.0",
-            "0.0",
-            "--data-seed",
-            str(seed),
-            "--pytorch-seed",
-            str(seed),
-            "--remove-checkpoints",
-            *common,
-            *options,
-        ],
-    )
-    output_csv = directory / "native_predictions.csv"
-    run_chemprop_cli(
-        directory,
-        "predict",
-        [
-            "--test-path",
-            str(test_csv),
-            "--preds-path",
-            str(output_csv),
-            "--model-paths",
-            str(output_dir / "model_0/best.pt"),
-            "--smiles-columns",
-            "identity",
-            *common,
-        ],
-    )
-    predictions = pd.read_csv(output_csv)
-    if task == "classification":
-        predictions = normalize_chemprop_classification_predictions(
-            predictions, task=PredictionTaskSpec(task, target_columns=["Y"])
+    backend = ChempropBackend()
+    training = backend.train_model(
+        ChempropRunRequest(
+            train_csv=str(training_csv),
+            output_dir=str(output_dir),
+            task_type=task,
+            smiles_columns=["identity"],
+            target_columns=["Y"],
+            split_sizes=[1.0, 0.0, 0.0],
+            final_refit=True,
+            data_seed=seed,
+            pytorch_seed=seed,
+            accelerator="cpu",
+            devices=1,
+            num_workers=0,
+            **config,
         )
-        return predictions.positive_probability.to_numpy()
-    return predictions.Y.to_numpy()
+    )
+    record = PredictionModelRecord(
+        "benchmark",
+        "chemprop",
+        str(output_dir / "model_0/best.pt"),
+        PredictionTaskSpec(task, smiles_columns=["identity"], target_columns=["Y"]),
+    )
+    output_csv = directory / "qsaria_predictions.csv"
+    prediction = backend.predict_from_csv(str(test_csv), record, str(output_csv), accelerator="cpu")
+    write_json(directory / "backend_trace.json", {"training": training, "prediction": prediction})
+    predictions = pd.read_csv(output_csv)
+    if not predictions.identity.equals(evaluation.identity.reset_index(drop=True)):
+        raise ValueError("Chemprop predictions do not match the input molecule order.")
+    column = "positive_probability" if task == "classification" else "Y"
+    return predictions[column].to_numpy()
 
 
 def select_context(fit, task, config):
@@ -310,6 +276,8 @@ def main():
                 ROOT / "uv.lock",
                 ROOT / "scripts/benchmark_qsaria_v1.py",
                 ROOT / "scripts/benchmark_qsaria_v1_moleculeace.py",
+                ROOT / "src/cs_copilot/tools/prediction/chemprop_backend.py",
+                ROOT / "src/cs_copilot/tools/prediction/qsar_contracts.py",
             )
         },
         "python": platform.python_version(),

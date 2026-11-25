@@ -573,6 +573,7 @@ def test_chemprop_backend_keeps_supported_architecture_and_schedule_arguments(
                 "max_lr": 0.001,
                 "final_lr": 0.00001,
                 "warmup_epochs": 2,
+                "pytorch_seed": 1701,
             },
         )
     )
@@ -587,6 +588,7 @@ def test_chemprop_backend_keeps_supported_architecture_and_schedule_arguments(
         "--warmup-epochs",
     ):
         assert flag in args
+    assert args[args.index("--pytorch-seed") + 1] == "1701"
 
 
 def test_chemprop_hpopt_receives_train_validation_only_and_keeps_only_summary(tmp_path):
